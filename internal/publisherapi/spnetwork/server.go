@@ -96,16 +96,17 @@ func (s *server) maintainSPConnection(ctx context.Context) {
 			return
 		default:
 			if err := s.connectToSP(ctx); err != nil {
-				if ctx.Err() == nil { // Don't log errors during shutdown
-					log.Error("Shared publisher connection failed", "err", err)
+				if ctx.Err() != nil {
+					return
 				}
-			}
+				log.Error("Shared publisher connection failed", "err", err)
 
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(spReconnectInterval):
-				continue
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(spReconnectInterval):
+					// Continue to next iteration
+				}
 			}
 		}
 	}
@@ -284,13 +285,11 @@ func (s *server) triggerSPReconnect() {
 	}
 }
 
-// Stop gracefully stops the server.
-func (s *server) Stop(ctx context.Context) error {
+// Stop forcefully stops the server.
+func (s *server) Stop(_ context.Context) error {
 	if !s.running.CompareAndSwap(true, false) {
 		return ErrServerNotRunning
 	}
-
-	log.Info("Stopping SP server")
 
 	if s.spCtxCancel != nil {
 		s.spCtxCancel()
@@ -309,20 +308,6 @@ func (s *server) Stop(ctx context.Context) error {
 		return true
 	})
 
-	// Wait for all goroutines with timeout
-	done := make(chan struct{})
-	go func() {
-		s.wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		log.Info("Server stopped gracefully")
-	case <-ctx.Done():
-		log.Warn("Server stop timeout")
-		return ctx.Err()
-	}
-
+	log.Info("Shared publisher server stopped")
 	return nil
 }

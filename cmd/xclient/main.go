@@ -114,7 +114,14 @@ func main() {
 		},
 	}
 
-	encodedPayload, err := proto.Marshal(xtRequest)
+	spMsg := &xt.Message{
+		SenderId: "localhost1",
+		Payload: &xt.Message_XtRequest{
+			XtRequest: xtRequest,
+		},
+	}
+
+	encodedPayload, err := proto.Marshal(spMsg)
 	if err != nil {
 		log.Fatalf("Failed to marshal XTRequest: %v", err)
 	}

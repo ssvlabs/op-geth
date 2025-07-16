@@ -371,7 +371,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 
 	serverCfg := spnetwork.ServerConfig{
 		ListenAddr:          ":9898",
-		SharedPublisherAddr: "localhost:8080",
+		SharedPublisherAddr: "localhost:18080",
 		ReadTimeout:         30 * time.Second,
 		WriteTimeout:        30 * time.Second,
 		MaxMessageSize:      10485760, // 10 MB
@@ -654,6 +654,7 @@ func (s *Ethereum) Stop() error {
 	s.chainDb.Close()
 	s.eventMux.Stop()
 
+	// TODO: ethereum doesn't support context graceful shutdown thus close it forcefully
 	err := s.APIBackend.spServer.Stop(context.Background())
 	if err != nil {
 		return err
