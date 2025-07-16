@@ -19,6 +19,7 @@ package ethapi
 
 import (
 	"context"
+	"github.com/ethereum/go-ethereum/internal/xt"
 	"math/big"
 	"time"
 
@@ -89,6 +90,9 @@ type Backend interface {
 	HistoryPruningCutoff() uint64
 	HistoricalRPCService() *rpc.Client
 	Genesis() *types.Block
+
+	// Shared publisher API
+	ForwardXTxs(ctx context.Context, xTxs []*xt.TransactionRequest) error
 
 	// This is copied from filters.Backend
 	// eth/filters needs to be initialized from this backend type, so methods needed by

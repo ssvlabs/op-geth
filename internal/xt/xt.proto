@@ -11,4 +11,11 @@ message XTRequest {
 message TransactionRequest {
   bytes chain_id = 1;
   repeated bytes transaction = 2; // RLP encoded Ethereum transactions
-} 
+}
+
+message Message {
+  string sender_id = 1;
+  oneof payload {
+    XTRequest xt_request = 2;
+  }
+}

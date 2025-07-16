@@ -1761,21 +1761,35 @@ func (api *TransactionAPI) SendTransaction(ctx context.Context, args Transaction
 	return SubmitTransaction(ctx, api.b, signed)
 }
 
-func (api *TransactionAPI) SendRawXTransaction(ctx context.Context, input hexutil.Bytes) ([]common.Hash, error) {
-	var xtReq xt.XTRequest
-	if err := proto.Unmarshal(input, &xtReq); err != nil {
-		return nil, err
+func (api *TransactionAPI) SendXTransaction(ctx context.Context, input hexutil.Bytes) ([]common.Hash, error) {
+	var msg xt.Message
+	if err := proto.Unmarshal(input, &msg); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal xtReq input: %v", err)
+	}
+
+	var xtReq *xt.XTRequest
+	switch payload := msg.Payload.(type) {
+	case *xt.Message_XtRequest:
+		xtReq = payload.XtRequest
+		log.Info("Received transaction bundle", "senderID", msg.SenderId)
+	default:
+		return nil, fmt.Errorf("unknown message type: %T", payload)
 	}
 
 	var hashes []common.Hash
+	var xTxs []*xt.TransactionRequest
+
 	for _, txReq := range xtReq.Transactions {
 		txChainID := new(big.Int).SetBytes(txReq.ChainId)
 		if txChainID.Cmp(api.b.ChainConfig().ChainID) == 0 {
+			// Process transactions for this chain
 			for _, txBytes := range txReq.Transaction {
 				tx := new(types.Transaction)
 				if err := tx.UnmarshalBinary(txBytes); err != nil {
-					return nil, err
+					return nil, fmt.Errorf("failed to unmarshal this chain transaction: %v", err)
 				}
+
+				log.Info("Submit local transaction", "senderID", msg.SenderId)
 				hash, err := SubmitTransaction(ctx, api.b, tx)
 				if err != nil {
 					return nil, err
@@ -1783,7 +1797,19 @@ func (api *TransactionAPI) SendRawXTransaction(ctx context.Context, input hexuti
 				hashes = append(hashes, hash)
 			}
 		} else {
-			log.Info("Received cross-chain transaction for another chain", "chainID", txChainID)
+			// Collect cross-chain transactions
+			log.Info("Received cross-chain transaction for another chain", "chainID", txChainID, "senderID", msg.SenderId)
+			xTxs = append(xTxs, &xt.TransactionRequest{
+				ChainId:     txReq.ChainId,
+				Transaction: txReq.Transaction,
+			})
+		}
+	}
+
+	if len(xTxs) > 0 {
+		err := api.b.ForwardXTxs(ctx, xTxs)
+		if err != nil {
+			return nil, err
 		}
 	}
 

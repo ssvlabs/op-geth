@@ -45,6 +45,9 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rpc"
+
+	spnetwork "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
+	"github.com/ethereum/go-ethereum/internal/xt"
 )
 
 // EthAPIBackend implements ethapi.Backend and tracers.Backend for full nodes
@@ -54,6 +57,7 @@ type EthAPIBackend struct {
 	disableTxPool       bool
 	eth                 *Ethereum
 	gpo                 *gasprice.Oracle
+	spServer            spnetwork.Server
 }
 
 // ChainConfig returns the active chain configuration.
@@ -508,4 +512,17 @@ func (b *EthAPIBackend) HistoricalRPCService() *rpc.Client {
 
 func (b *EthAPIBackend) Genesis() *types.Block {
 	return b.eth.blockchain.Genesis()
+}
+
+func (b *EthAPIBackend) ForwardXTxs(ctx context.Context, xTxs []*xt.TransactionRequest) error {
+	spMsg := &xt.Message{
+		SenderId: b.ChainConfig().ChainID.String(),
+		Payload: &xt.Message_XtRequest{
+			XtRequest: &xt.XTRequest{
+				Transactions: xTxs,
+			},
+		},
+	}
+
+	return b.spServer.SendToSP(ctx, spMsg)
 }

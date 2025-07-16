@@ -66,6 +66,9 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 	gethversion "github.com/ethereum/go-ethereum/version"
 	"golang.org/x/time/rate"
+
+	splogger "github.com/ethereum/go-ethereum/internal/publisherapi/logger"
+	spnetwork "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
 )
 
 // Config contains the configuration options of the ETH protocol.
@@ -361,11 +364,24 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	eth.miner.SetExtra(makeExtraData(config.Miner.ExtraData))
 	eth.miner.SetPrioAddresses(config.TxPool.Locals)
 
-	eth.APIBackend = &EthAPIBackend{stack.Config().ExtRPCEnabled(), stack.Config().AllowUnprotectedTxs, config.RollupDisableTxPoolAdmission, eth, nil}
+	eth.APIBackend = &EthAPIBackend{stack.Config().ExtRPCEnabled(), stack.Config().AllowUnprotectedTxs, config.RollupDisableTxPoolAdmission, eth, nil, nil}
 	if eth.APIBackend.allowUnprotectedTxs {
 		log.Info("Unprotected transactions allowed")
 	}
 	eth.APIBackend.gpo = gasprice.NewOracle(eth.APIBackend, config.GPO, config.Miner.GasPrice)
+
+	serverCfg := spnetwork.ServerConfig{
+		ListenAddr:          ":9898",
+		SharedPublisherAddr: "localhost:8080",
+		ReadTimeout:         30 * time.Second,
+		WriteTimeout:        30 * time.Second,
+		MaxMessageSize:      10485760, // 10 MB
+		MaxConnections:      1000,
+	}
+
+	zeroLogger := splogger.New("info", false)
+	spServer := spnetwork.NewServer(serverCfg, zeroLogger.Logger)
+	eth.APIBackend.spServer = spServer
 
 	if config.RollupSequencerHTTP != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -504,6 +520,12 @@ func (s *Ethereum) Start() error {
 	// start log indexer
 	s.filterMaps.Start()
 	go s.updateFilterMapsHeads()
+
+	err := s.APIBackend.spServer.Start(context.Background())
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -631,6 +653,11 @@ func (s *Ethereum) Stop() error {
 
 	s.chainDb.Close()
 	s.eventMux.Stop()
+
+	err := s.APIBackend.spServer.Stop(context.Background())
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
