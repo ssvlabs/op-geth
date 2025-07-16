@@ -21,6 +21,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/internal/xt"
+	"google.golang.org/protobuf/proto"
 	gomath "math"
 	"math/big"
 	"strings"
@@ -1757,6 +1759,35 @@ func (api *TransactionAPI) SendTransaction(ctx context.Context, args Transaction
 		return common.Hash{}, err
 	}
 	return SubmitTransaction(ctx, api.b, signed)
+}
+
+func (api *TransactionAPI) SendRawXTransaction(ctx context.Context, input hexutil.Bytes) ([]common.Hash, error) {
+	var xtReq xt.XTRequest
+	if err := proto.Unmarshal(input, &xtReq); err != nil {
+		return nil, err
+	}
+
+	var hashes []common.Hash
+	for _, txReq := range xtReq.Transactions {
+		txChainID := new(big.Int).SetBytes(txReq.ChainId)
+		if txChainID.Cmp(api.b.ChainConfig().ChainID) == 0 {
+			for _, txBytes := range txReq.Transaction {
+				tx := new(types.Transaction)
+				if err := tx.UnmarshalBinary(txBytes); err != nil {
+					return nil, err
+				}
+				hash, err := SubmitTransaction(ctx, api.b, tx)
+				if err != nil {
+					return nil, err
+				}
+				hashes = append(hashes, hash)
+			}
+		} else {
+			log.Info("Received cross-chain transaction for another chain", "chainID", txChainID)
+		}
+	}
+
+	return hashes, nil
 }
 
 // FillTransaction fills the defaults (nonce, gas, gasPrice or 1559 fields)
