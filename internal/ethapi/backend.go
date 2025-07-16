@@ -92,7 +92,8 @@ type Backend interface {
 	Genesis() *types.Block
 
 	// Shared publisher API
-	ForwardXTxs(ctx context.Context, xTxs []*xt.TransactionRequest) error
+	HandleSPMessage(ctx context.Context, from string, msg *xt.Message) ([]common.Hash, error)
+	//ForwardXTxs(ctx context.Context, xTxs []*xt.TransactionRequest) error
 
 	// This is copied from filters.Backend
 	// eth/filters needs to be initialized from this backend type, so methods needed by

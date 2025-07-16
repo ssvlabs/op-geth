@@ -188,7 +188,7 @@ func (c *client) receiveLoop(ctx context.Context) {
 			}
 
 			if c.handler != nil {
-				if err := c.handler(ctx, msg.SenderId, &msg); err != nil {
+				if _, err := c.handler(ctx, msg.SenderId, &msg); err != nil {
 					c.log.Error().Err(err).Msg("Handler error")
 				}
 			}

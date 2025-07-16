@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"github.com/ethereum/go-ethereum/common"
 	"net"
 	"time"
 
@@ -37,7 +38,7 @@ type Client interface {
 }
 
 // MessageHandler processes incoming messages
-type MessageHandler func(ctx context.Context, from string, msg *xt.Message) error
+type MessageHandler func(ctx context.Context, from string, msg *xt.Message) ([]common.Hash, error)
 
 // ConnectionInfo contains information about a connection
 type ConnectionInfo struct {

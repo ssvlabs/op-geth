@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/crypto"
 	"math/big"
 	"time"
 
@@ -514,15 +515,103 @@ func (b *EthAPIBackend) Genesis() *types.Block {
 	return b.eth.blockchain.Genesis()
 }
 
-func (b *EthAPIBackend) ForwardXTxs(ctx context.Context, xTxs []*xt.TransactionRequest) error {
-	spMsg := &xt.Message{
-		SenderId: b.ChainConfig().ChainID.String(),
-		Payload: &xt.Message_XtRequest{
-			XtRequest: &xt.XTRequest{
-				Transactions: xTxs,
-			},
-		},
+func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, from string, msg *xt.Message) ([]common.Hash, error) {
+	log.Info("Received transaction bundle", "from", from)
+
+	var hashes []common.Hash
+	var xTxs []*xt.TransactionRequest
+
+	var xtReq *xt.XTRequest
+	switch payload := msg.Payload.(type) {
+	case *xt.Message_XtRequest:
+		xtReq = payload.XtRequest
+	default:
+		return nil, fmt.Errorf("unknown message type: %T", payload)
 	}
 
-	return b.spServer.SendToSP(ctx, spMsg)
+	for _, txReq := range xtReq.Transactions {
+		txChainID := new(big.Int).SetBytes(txReq.ChainId)
+		if txChainID.Cmp(b.ChainConfig().ChainID) == 0 {
+			// Process transactions for this chain
+			for _, txBytes := range txReq.Transaction {
+				tx := new(types.Transaction)
+				if err := tx.UnmarshalBinary(txBytes); err != nil {
+					return nil, fmt.Errorf("failed to unmarshal this chain transaction: %v", err)
+				}
+
+				log.Info("Submit local transaction", "senderID", msg.SenderId)
+				hash, err := SubmitTransaction(ctx, b, tx)
+				if err != nil {
+					return nil, err
+				}
+				hashes = append(hashes, hash)
+			}
+		} else {
+			// Collect cross-chain transactions
+			log.Info("Received cross-chain transaction for another chain", "chainID", txChainID, "senderID", msg.SenderId)
+			xTxs = append(xTxs, &xt.TransactionRequest{
+				ChainId:     txReq.ChainId,
+				Transaction: txReq.Transaction,
+			})
+		}
+	}
+
+	if len(xTxs) > 0 {
+		spMsg := &xt.Message{
+			SenderId: b.ChainConfig().ChainID.String(),
+			Payload: &xt.Message_XtRequest{
+				XtRequest: &xt.XTRequest{
+					Transactions: xTxs,
+				},
+			},
+		}
+		return hashes, b.spServer.SendToSP(ctx, spMsg)
+	}
+
+	return hashes, nil
+}
+
+// TODO: lets duplicate for PoC but should be extracted to separate package which can be reused by both api_backend.go and api.go
+// SubmitTransaction is a helper function that submits tx to txPool and logs a message.
+func SubmitTransaction(ctx context.Context, b *EthAPIBackend, tx *types.Transaction) (common.Hash, error) {
+	// If the transaction fee cap is already specified, ensure the
+	// fee of the given transaction is _reasonable_.
+	if err := checkTxFee(tx.GasPrice(), tx.Gas(), b.RPCTxFeeCap()); err != nil {
+		return common.Hash{}, err
+	}
+	if !b.UnprotectedAllowed() && !tx.Protected() {
+		// Ensure only eip155 signed transactions are submitted if EIP155Required is set.
+		return common.Hash{}, errors.New("only replay-protected (EIP-155) transactions allowed over RPC")
+	}
+	if err := b.SendTx(ctx, tx); err != nil {
+		return common.Hash{}, err
+	}
+	// Print a log with full tx details for manual investigations and interventions
+	head := b.CurrentBlock()
+	signer := types.MakeSigner(b.ChainConfig(), head.Number, head.Time)
+	from, err := types.Sender(signer, tx)
+	if err != nil {
+		return common.Hash{}, err
+	}
+
+	if tx.To() == nil {
+		addr := crypto.CreateAddress(from, tx.Nonce())
+		log.Info("Submitted contract creation", "hash", tx.Hash().Hex(), "from", from, "nonce", tx.Nonce(), "contract", addr.Hex(), "value", tx.Value())
+	} else {
+		log.Info("Submitted transaction", "hash", tx.Hash().Hex(), "from", from, "nonce", tx.Nonce(), "recipient", tx.To(), "value", tx.Value())
+	}
+	return tx.Hash(), nil
+}
+
+func checkTxFee(gasPrice *big.Int, gas uint64, cap float64) error {
+	// Short circuit if there is no cap for transaction fee at all.
+	if cap == 0 {
+		return nil
+	}
+	feeEth := new(big.Float).Quo(new(big.Float).SetInt(new(big.Int).Mul(gasPrice, new(big.Int).SetUint64(gas))), new(big.Float).SetInt(big.NewInt(params.Ether)))
+	feeFloat, _ := feeEth.Float64()
+	if feeFloat > cap {
+		return fmt.Errorf("tx fee (%.2f ether) exceeds the configured cap (%.2f ether)", feeFloat, cap)
+	}
+	return nil
 }

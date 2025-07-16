@@ -67,7 +67,6 @@ import (
 	gethversion "github.com/ethereum/go-ethereum/version"
 	"golang.org/x/time/rate"
 
-	splogger "github.com/ethereum/go-ethereum/internal/publisherapi/logger"
 	spnetwork "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
 )
 
@@ -379,8 +378,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		MaxConnections:      1000,
 	}
 
-	zeroLogger := splogger.New("info", false)
-	spServer := spnetwork.NewServer(serverCfg, zeroLogger.Logger)
+	spServer := spnetwork.NewServer(serverCfg)
 	eth.APIBackend.spServer = spServer
 
 	if config.RollupSequencerHTTP != "" {
@@ -525,6 +523,8 @@ func (s *Ethereum) Start() error {
 	if err != nil {
 		return err
 	}
+
+	s.APIBackend.spServer.SetHandler(s.APIBackend.HandleSPMessage)
 
 	return nil
 }
