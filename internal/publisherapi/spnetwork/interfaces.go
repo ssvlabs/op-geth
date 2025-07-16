@@ -15,8 +15,6 @@ type Server interface {
 	Start(ctx context.Context) error
 	// Stop gracefully stops the server
 	Stop(ctx context.Context) error
-	// SendToSP sends a message to a shared publisher
-	SendToSP(ctx context.Context, msg *xt.Message) error
 	// SetHandler sets the message handler
 	SetHandler(handler MessageHandler)
 }
@@ -35,6 +33,8 @@ type Client interface {
 	IsConnected() bool
 	// GetID returns the client identifier
 	GetID() string
+	// Reconnect reestablishes connection to the server
+	Reconnect(ctx context.Context) error
 }
 
 // MessageHandler processes incoming messages

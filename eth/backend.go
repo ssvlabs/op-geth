@@ -20,6 +20,7 @@ package eth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"runtime"
@@ -363,23 +364,33 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	eth.miner.SetExtra(makeExtraData(config.Miner.ExtraData))
 	eth.miner.SetPrioAddresses(config.TxPool.Locals)
 
-	eth.APIBackend = &EthAPIBackend{stack.Config().ExtRPCEnabled(), stack.Config().AllowUnprotectedTxs, config.RollupDisableTxPoolAdmission, eth, nil, nil}
+	eth.APIBackend = &EthAPIBackend{stack.Config().ExtRPCEnabled(), stack.Config().AllowUnprotectedTxs, config.RollupDisableTxPoolAdmission, eth, nil, nil, nil}
 	if eth.APIBackend.allowUnprotectedTxs {
 		log.Info("Unprotected transactions allowed")
 	}
 	eth.APIBackend.gpo = gasprice.NewOracle(eth.APIBackend, config.GPO, config.Miner.GasPrice)
 
 	serverCfg := spnetwork.ServerConfig{
-		ListenAddr:          ":9898",
-		SharedPublisherAddr: "localhost:18080",
-		ReadTimeout:         30 * time.Second,
-		WriteTimeout:        30 * time.Second,
-		MaxMessageSize:      10485760, // 10 MB
-		MaxConnections:      1000,
+		ListenAddr:     ":9898",
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   30 * time.Second,
+		MaxMessageSize: 10485760, // 10 MB
+		MaxConnections: 1000,
 	}
 
 	spServer := spnetwork.NewServer(serverCfg)
 	eth.APIBackend.spServer = spServer
+
+	clientCfg := spnetwork.ClientConfig{
+		ServerAddr:     "localhost:18080",
+		ConnectTimeout: 10 * time.Second,
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   30 * time.Second,
+		ReconnectDelay: 5 * time.Second,
+		MaxMessageSize: 10485760, // 10 MB
+	}
+	spClient := spnetwork.NewClient(clientCfg)
+	eth.APIBackend.spClient = spClient
 
 	if config.RollupSequencerHTTP != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -523,8 +534,16 @@ func (s *Ethereum) Start() error {
 	if err != nil {
 		return err
 	}
-
 	s.APIBackend.spServer.SetHandler(s.APIBackend.HandleSPMessage)
+
+	spClient := s.APIBackend.spClient
+
+	err = spClient.Connect(context.Background())
+	if err != nil {
+		return err
+	}
+
+	spClient.SetHandler(s.APIBackend.HandleSPMessage)
 
 	return nil
 }
@@ -654,9 +673,13 @@ func (s *Ethereum) Stop() error {
 	s.chainDb.Close()
 	s.eventMux.Stop()
 
-	// TODO: ethereum doesn't support context graceful shutdown thus close it forcefully
 	err := s.APIBackend.spServer.Stop(context.Background())
 	if err != nil {
+		return err
+	}
+
+	err = s.APIBackend.spClient.Disconnect(context.Background())
+	if err != nil && !errors.Is(err, spnetwork.ErrNotConnected) {
 		return err
 	}
 

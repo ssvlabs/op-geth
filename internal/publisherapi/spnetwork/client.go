@@ -11,7 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/rs/zerolog"
+
+	"github.com/ethereum/go-ethereum/log"
 )
 
 // ClientConfig contains client configuration.
@@ -30,7 +31,6 @@ type client struct {
 	id      string
 	handler MessageHandler
 	codec   *Codec
-	log     zerolog.Logger
 
 	conn      net.Conn
 	writer    *StreamWriter
@@ -43,12 +43,11 @@ type client struct {
 }
 
 // NewClient creates a new client instance.
-func NewClient(cfg ClientConfig, log zerolog.Logger) Client {
+func NewClient(cfg ClientConfig) Client {
 	return &client{
 		cfg:   cfg,
 		id:    uuid.New().String(),
 		codec: NewCodec(cfg.MaxMessageSize),
-		log:   log.With().Str("component", "client").Logger(),
 	}
 }
 
@@ -71,7 +70,7 @@ func (c *client) Connect(ctx context.Context) error {
 
 	conn, err := dialer.DialContext(connCtx, "tcp", c.cfg.ServerAddr)
 	if err != nil {
-		return fmt.Errorf("failed to connect: %w", err)
+		return fmt.Errorf("failed to connect to SP server: %w", err)
 	}
 
 	c.conn = conn
@@ -83,10 +82,7 @@ func (c *client) Connect(ctx context.Context) error {
 	c.wg.Add(1)
 	go c.receiveLoop(ctx)
 
-	c.log.Info().
-		Str("server", c.cfg.ServerAddr).
-		Str("client_id", c.id).
-		Msg("Connected to server")
+	log.Info("Connected to SP server", "server", c.cfg.ServerAddr)
 
 	return nil
 }
@@ -100,7 +96,7 @@ func (c *client) Disconnect(ctx context.Context) error {
 		return ErrNotConnected
 	}
 
-	c.log.Info().Msg("Disconnecting")
+	log.Info("Disconnecting")
 
 	if c.cancel != nil {
 		c.cancel()
@@ -118,9 +114,9 @@ func (c *client) Disconnect(ctx context.Context) error {
 
 	select {
 	case <-done:
-		c.log.Info().Msg("Disconnected")
+		log.Info("Disconnected")
 	case <-ctx.Done():
-		c.log.Warn().Msg("Disconnect timeout")
+		log.Warn("Disconnect timeout")
 		return ctx.Err()
 	}
 
@@ -128,19 +124,41 @@ func (c *client) Disconnect(ctx context.Context) error {
 	return nil
 }
 
-// Send sends a message to the server.
-func (c *client) Send(_ context.Context, msg *xt.Message) error {
-	c.mu.RLock()
-	writer := c.writer
-	c.mu.RUnlock()
+func (c *client) Send(ctx context.Context, msg *xt.Message) error {
+	const maxRetries = 3
+	var lastErr error
 
-	if !c.connected.Load() || writer == nil {
-		return ErrNotConnected
+	for i := 0; i < maxRetries; i++ {
+		c.mu.RLock()
+		writer := c.writer
+		connected := c.connected.Load()
+		c.mu.RUnlock()
+
+		if !connected || writer == nil {
+			// Attempt to reconnect
+			if err := c.Reconnect(ctx); err != nil {
+				lastErr = err
+				time.Sleep(c.cfg.ReconnectDelay)
+				continue
+			}
+
+			c.mu.RLock()
+			writer = c.writer
+			c.mu.RUnlock()
+		}
+
+		msg.SenderId = c.id
+		if err := writer.Write(msg); err != nil {
+			lastErr = err
+			c.connected.Store(false)
+			time.Sleep(c.cfg.ReconnectDelay)
+			continue
+		}
+
+		return nil
 	}
 
-	msg.SenderId = c.id
-
-	return writer.Write(msg)
+	return fmt.Errorf("failed to send after %d reconnect retries: %w", maxRetries, lastErr)
 }
 
 // SetHandler sets the message handler.
@@ -163,7 +181,7 @@ func (c *client) receiveLoop(ctx context.Context) {
 	defer c.wg.Done()
 	defer func() {
 		c.connected.Store(false)
-		c.log.Info().Msg("Receive loop ended")
+		log.Info("Connection to SP closed")
 	}()
 
 	for {
@@ -178,18 +196,18 @@ func (c *client) receiveLoop(ctx context.Context) {
 			var msg xt.Message
 			if err := c.codec.Decode(c.conn, &msg); err != nil {
 				if err == io.EOF {
-					c.log.Debug().Msg("Server closed connection")
+					log.Debug("Server closed connection")
 				} else if ne, ok := err.(net.Error); ok && ne.Timeout() {
 					continue // Read timeout, continue
 				} else {
-					c.log.Error().Err(err).Msg("Read error")
+					log.Error("Read error", "err", err)
 				}
 				return
 			}
 
 			if c.handler != nil {
 				if _, err := c.handler(ctx, msg.SenderId, &msg); err != nil {
-					c.log.Error().Err(err).Msg("Handler error")
+					log.Error("Handler error", "err", err)
 				}
 			}
 		}
@@ -198,10 +216,11 @@ func (c *client) receiveLoop(ctx context.Context) {
 
 // Reconnect attempts to reconnect to the server.
 func (c *client) Reconnect(ctx context.Context) error {
-	if err := c.Disconnect(ctx); err != nil {
-		c.log.Warn().Err(err).Msg("Error during disconnect before reconnect")
+	if c.IsConnected() {
+		if err := c.Disconnect(ctx); err != nil {
+			log.Warn("Error during disconnect before reconnect", "err", err)
+		}
 	}
 
-	time.Sleep(c.cfg.ReconnectDelay)
 	return c.Connect(ctx)
 }

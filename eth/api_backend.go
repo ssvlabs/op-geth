@@ -59,6 +59,7 @@ type EthAPIBackend struct {
 	eth                 *Ethereum
 	gpo                 *gasprice.Oracle
 	spServer            spnetwork.Server
+	spClient            spnetwork.Client
 }
 
 // ChainConfig returns the active chain configuration.
@@ -516,7 +517,7 @@ func (b *EthAPIBackend) Genesis() *types.Block {
 }
 
 func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, from string, msg *xt.Message) ([]common.Hash, error) {
-	log.Info("Received transaction bundle", "from", from)
+	log.Info("Received SP message", "clientID", from)
 
 	var hashes []common.Hash
 	var xTxs []*xt.TransactionRequest
@@ -565,7 +566,7 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, from string, msg *x
 				},
 			},
 		}
-		return hashes, b.spServer.SendToSP(ctx, spMsg)
+		return hashes, b.spClient.Send(ctx, spMsg)
 	}
 
 	return hashes, nil

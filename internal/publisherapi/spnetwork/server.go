@@ -14,19 +14,13 @@ import (
 	"github.com/google/uuid"
 )
 
-const (
-	spClientID          = "0"
-	spReconnectInterval = 10 * time.Second
-)
-
 // ServerConfig contains server configuration.
 type ServerConfig struct {
-	ListenAddr          string
-	SharedPublisherAddr string
-	ReadTimeout         time.Duration
-	WriteTimeout        time.Duration
-	MaxMessageSize      int
-	MaxConnections      int
+	ListenAddr     string
+	ReadTimeout    time.Duration
+	WriteTimeout   time.Duration
+	MaxMessageSize int
+	MaxConnections int
 }
 
 // server implements the Server interface
@@ -67,15 +61,10 @@ func (s *server) Start(ctx context.Context) error {
 	}
 	s.listener = listener
 
-	log.Info("Server started", "addr", s.cfg.ListenAddr, "sharedPublisherAddr", s.cfg.SharedPublisherAddr, "max_connections", s.cfg.MaxConnections)
+	log.Info("Server started", "addr", s.cfg.ListenAddr, "max_connections", s.cfg.MaxConnections)
 
 	s.wg.Add(1)
 	go s.acceptLoop(ctx)
-
-	if s.cfg.SharedPublisherAddr != "" {
-		s.wg.Add(1)
-		go s.maintainSPConnection(ctx)
-	}
 
 	return nil
 }
@@ -83,69 +72,6 @@ func (s *server) Start(ctx context.Context) error {
 // SetHandler sets the message handler.
 func (s *server) SetHandler(handler MessageHandler) {
 	s.handler = handler
-}
-
-func (s *server) maintainSPConnection(ctx context.Context) {
-	defer s.wg.Done()
-
-	log.Info("Starting shared publisher connection manager", "addr", s.cfg.SharedPublisherAddr)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			if err := s.connectToSP(ctx); err != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				log.Error("Shared publisher connection failed", "err", err)
-
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(spReconnectInterval):
-					// Continue to next iteration
-				}
-			}
-		}
-	}
-}
-
-// connectToSP establishes connection to shared publisher
-func (s *server) connectToSP(ctx context.Context) error {
-	// Create connection with timeout
-	dialer := net.Dialer{Timeout: 5 * time.Second}
-	netConn, err := dialer.DialContext(ctx, "tcp", s.cfg.SharedPublisherAddr)
-	if err != nil {
-		return fmt.Errorf("failed to dial shared publisher: %w", err)
-	}
-
-	// Create connection wrapper
-	conn := NewConnection(netConn, spClientID)
-	writer := NewStreamWriter(conn, s.codec)
-
-	s.connections.Store(spClientID, conn)
-	s.writers.Store(spClientID, writer)
-	s.spConnected.Store(true)
-
-	log.Info("Connected to shared publisher", "addr", s.cfg.SharedPublisherAddr)
-
-	spCtx, cancel := context.WithCancel(ctx)
-	s.spCtxCancel = cancel
-
-	defer func() {
-		cancel()
-		s.spConnected.Store(false)
-		s.connections.Delete(spClientID)
-		s.writers.Delete(spClientID)
-		writer.Close()
-		conn.Close()
-		log.Info("Shared publisher connection closed")
-	}()
-
-	<-spCtx.Done()
-	return spCtx.Err()
 }
 
 // acceptLoop accepts new connections.
@@ -174,9 +100,7 @@ func (s *server) acceptLoop(ctx context.Context) {
 			// Check connection limit (excluding shared publisher)
 			connCount := 0
 			s.connections.Range(func(key, _ interface{}) bool {
-				if key.(string) != spClientID {
-					connCount++
-				}
+				connCount++
 				return true
 			})
 
@@ -244,44 +168,6 @@ func (s *server) handleConnection(ctx context.Context, netConn net.Conn) {
 				}
 			}
 		}
-	}
-}
-
-func (s *server) SendToSP(ctx context.Context, msg *xt.Message) error {
-	return s.sendToSPWithRetry(ctx, msg, true)
-}
-
-func (s *server) sendToSPWithRetry(ctx context.Context, msg *xt.Message, allowRetry bool) error {
-	if !s.spConnected.Load() {
-		return fmt.Errorf("shared publisher not connected")
-	}
-
-	writer, ok := s.writers.Load(spClientID)
-	if !ok {
-		return fmt.Errorf("shared publisher writer not found")
-	}
-
-	err := writer.(*StreamWriter).Write(msg)
-	if err != nil && allowRetry {
-		log.Debug("Send to shared publisher failed, triggering reconnection")
-
-		s.triggerSPReconnect()
-
-		select {
-		case <-time.After(500 * time.Millisecond):
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-
-		return s.sendToSPWithRetry(ctx, msg, false)
-	}
-
-	return err
-}
-
-func (s *server) triggerSPReconnect() {
-	if s.spCtxCancel != nil {
-		s.spCtxCancel()
 	}
 }
 
