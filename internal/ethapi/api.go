@@ -1769,6 +1769,7 @@ func (api *TransactionAPI) SendXTransaction(ctx context.Context, input hexutil.B
 
 	switch payload := msg.Payload.(type) {
 	case *xt.Message_XtRequest:
+		ctx = context.WithValue(ctx, "forward", true)
 		return api.b.HandleSPMessage(ctx, msg.SenderId, &msg)
 	default:
 		return nil, fmt.Errorf("unknown message type: %T", payload)

@@ -557,7 +557,7 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, from string, msg *x
 		}
 	}
 
-	if len(xTxs) > 0 {
+	if shouldForward(ctx) && len(xTxs) > 0 {
 		spMsg := &xt.Message{
 			SenderId: b.ChainConfig().ChainID.String(),
 			Payload: &xt.Message_XtRequest{
@@ -574,6 +574,17 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, from string, msg *x
 	}
 
 	return hashes, nil
+}
+
+func shouldForward(ctx context.Context) bool {
+	var forward bool
+	if value := ctx.Value("forward"); value != nil {
+		var ok bool
+		if forward, ok = value.(bool); !ok {
+			return false
+		}
+	}
+	return forward
 }
 
 // TODO: lets duplicate for PoC but should be extracted to separate package which can be reused by both api_backend.go and api.go
