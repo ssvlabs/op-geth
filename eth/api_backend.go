@@ -517,8 +517,6 @@ func (b *EthAPIBackend) Genesis() *types.Block {
 }
 
 func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, from string, msg *xt.Message) ([]common.Hash, error) {
-	log.Info("Received SP message", "clientID", from)
-
 	var hashes []common.Hash
 	var xTxs []*xt.TransactionRequest
 
@@ -530,6 +528,7 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, from string, msg *x
 		return nil, fmt.Errorf("unknown message type: %T", payload)
 	}
 
+	localTxCount := 0
 	for _, txReq := range xtReq.Transactions {
 		txChainID := new(big.Int).SetBytes(txReq.ChainId)
 		if txChainID.Cmp(b.ChainConfig().ChainID) == 0 {
@@ -541,6 +540,7 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, from string, msg *x
 				}
 
 				log.Info("Submit local transaction", "senderID", msg.SenderId)
+				localTxCount++
 				hash, err := SubmitTransaction(ctx, b, tx)
 				if err != nil {
 					return nil, err
@@ -549,13 +549,14 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, from string, msg *x
 			}
 		} else {
 			// Collect cross-chain transactions
-			log.Debug("Received cross-chain transactions", "chainID", txReq.ChainId, "senderID", msg.SenderId, "txCount", len(txReq.Transaction))
 			xTxs = append(xTxs, &xt.TransactionRequest{
 				ChainId:     txReq.ChainId,
 				Transaction: txReq.Transaction,
 			})
 		}
 	}
+
+	log.Info("Received transaction bundle", "senderID", msg.SenderId, "local", localTxCount, "external", len(xTxs))
 
 	if shouldForward(ctx) && len(xTxs) > 0 {
 		spMsg := &xt.Message{
