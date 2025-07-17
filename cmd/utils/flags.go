@@ -1107,6 +1107,20 @@ Please note that --` + MetricsHTTPFlag.Name + ` must be set to start the server.
 		Value:    metrics.DefaultConfig.InfluxDBOrganization,
 		Category: flags.MetricsCategory,
 	}
+
+	SharedPublisherListenAddr = &cli.StringFlag{
+		Name:     "sp.listen.addr",
+		Usage:    `Address to listen for incoming cross transactions initiated by shared publisher`,
+		Value:    ethconfig.Defaults.SPListenAddr,
+		Category: flags.SharedPublisherCategory,
+	}
+
+	SharedPublisherServerAddr = &cli.StringFlag{
+		Name:     "sp.addr",
+		Usage:    `Shared publisher address to which cross transactions should be broadcasted`,
+		Value:    ethconfig.Defaults.SPServerAddr,
+		Category: flags.SharedPublisherCategory,
+	}
 )
 
 var (
@@ -1526,6 +1540,18 @@ func SetNodeConfig(ctx *cli.Context, cfg *node.Config) {
 	setNodeUserIdent(ctx, cfg)
 	SetDataDir(ctx, cfg)
 	setSmartCard(ctx, cfg)
+
+	if ctx.IsSet(SharedPublisherListenAddr.Name) {
+		cfg.SPListenAddr = ctx.String(SharedPublisherListenAddr.Name)
+	} else {
+		cfg.SPListenAddr = ethconfig.Defaults.SPListenAddr
+	}
+
+	if ctx.IsSet(SharedPublisherServerAddr.Name) {
+		cfg.SPAddr = ctx.String(SharedPublisherServerAddr.Name)
+	} else {
+		cfg.SPAddr = ethconfig.Defaults.SPServerAddr
+	}
 
 	if ctx.IsSet(JWTSecretFlag.Name) {
 		cfg.JWTSecret = ctx.String(JWTSecretFlag.Name)

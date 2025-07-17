@@ -20,7 +20,6 @@ package eth
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math/big"
 	"runtime"
@@ -67,8 +66,6 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 	gethversion "github.com/ethereum/go-ethereum/version"
 	"golang.org/x/time/rate"
-
-	spnetwork "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
 )
 
 // Config contains the configuration options of the ETH protocol.
@@ -370,28 +367,6 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	}
 	eth.APIBackend.gpo = gasprice.NewOracle(eth.APIBackend, config.GPO, config.Miner.GasPrice)
 
-	serverCfg := spnetwork.ServerConfig{
-		ListenAddr:     ":9898",
-		ReadTimeout:    30 * time.Second,
-		WriteTimeout:   30 * time.Second,
-		MaxMessageSize: 10485760, // 10 MB
-		MaxConnections: 1000,
-	}
-
-	spServer := spnetwork.NewServer(serverCfg)
-	eth.APIBackend.spServer = spServer
-
-	clientCfg := spnetwork.ClientConfig{
-		ServerAddr:     "localhost:18080",
-		ConnectTimeout: 10 * time.Second,
-		ReadTimeout:    30 * time.Second,
-		WriteTimeout:   30 * time.Second,
-		ReconnectDelay: 5 * time.Second,
-		MaxMessageSize: 10485760, // 10 MB
-	}
-	spClient := spnetwork.NewClient(clientCfg)
-	eth.APIBackend.spClient = spClient
-
 	if config.RollupSequencerHTTP != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		client, err := rpc.DialContext(ctx, config.RollupSequencerHTTP)
@@ -426,6 +401,9 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 
 	// Successful startup; push a marker and check previous unclean shutdowns.
 	eth.shutdownTracker.MarkStartup()
+
+	eth.APIBackend.spServer = stack.SPServer()
+	eth.APIBackend.spClient = stack.SPClient()
 
 	return eth, nil
 }
@@ -530,20 +508,8 @@ func (s *Ethereum) Start() error {
 	s.filterMaps.Start()
 	go s.updateFilterMapsHeads()
 
-	err := s.APIBackend.spServer.Start(context.Background())
-	if err != nil {
-		return err
-	}
 	s.APIBackend.spServer.SetHandler(s.APIBackend.HandleSPMessage)
-
-	spClient := s.APIBackend.spClient
-
-	err = spClient.Connect(context.Background())
-	if err != nil {
-		return err
-	}
-
-	spClient.SetHandler(s.APIBackend.HandleSPMessage)
+	s.APIBackend.spClient.SetHandler(s.APIBackend.HandleSPMessage)
 
 	return nil
 }
@@ -672,16 +638,6 @@ func (s *Ethereum) Stop() error {
 
 	s.chainDb.Close()
 	s.eventMux.Stop()
-
-	err := s.APIBackend.spServer.Stop(context.Background())
-	if err != nil {
-		return err
-	}
-
-	err = s.APIBackend.spClient.Disconnect(context.Background())
-	if err != nil && !errors.Is(err, spnetwork.ErrNotConnected) {
-		return err
-	}
 
 	return nil
 }

@@ -549,7 +549,7 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, from string, msg *x
 			}
 		} else {
 			// Collect cross-chain transactions
-			log.Info("Received cross-chain transaction for another chain", "chainID", txChainID, "senderID", msg.SenderId)
+			log.Debug("Received cross-chain transactions", "chainID", txReq.ChainId, "senderID", msg.SenderId, "txCount", len(txReq.Transaction))
 			xTxs = append(xTxs, &xt.TransactionRequest{
 				ChainId:     txReq.ChainId,
 				Transaction: txReq.Transaction,
@@ -565,6 +565,10 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, from string, msg *x
 					Transactions: xTxs,
 				},
 			},
+		}
+		for _, xTx := range xTxs {
+			txChainID := new(big.Int).SetBytes(xTx.ChainId)
+			log.Info("Forward cross-chain transactions to SP", "chainID", txChainID, "senderID", msg.SenderId, "txCount", len(xTx.Transaction))
 		}
 		return hashes, b.spClient.Send(ctx, spMsg)
 	}

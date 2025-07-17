@@ -17,9 +17,11 @@
 package node
 
 import (
+	"context"
 	crand "crypto/rand"
 	"errors"
 	"fmt"
+	spnetwork "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
 	"hash/crc32"
 	"net/http"
 	"os"
@@ -28,6 +30,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
@@ -65,6 +68,9 @@ type Node struct {
 	wsAuth        *httpServer //
 	ipc           *ipcServer  // Stores information about the ipc http server
 	inprocHandler *rpc.Server // In-process RPC request handler to process the API requests
+
+	spServer spnetwork.Server
+	spClient spnetwork.Client
 
 	databases map[*closeTrackingDB]struct{} // All open databases
 }
@@ -155,6 +161,28 @@ func New(conf *Config) (*Node, error) {
 	node.ws = newHTTPServer(node.log, rpc.DefaultHTTPTimeouts)
 	node.wsAuth = newHTTPServer(node.log, rpc.DefaultHTTPTimeouts)
 	node.ipc = newIPCServer(node.log, conf.IPCEndpoint())
+
+	// TODO: make configurable after POC
+	serverCfg := spnetwork.ServerConfig{
+		ListenAddr:     conf.SPListenAddr,
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   30 * time.Second,
+		MaxMessageSize: 10485760, // 10 MB
+		MaxConnections: 1000,
+	}
+
+	node.spServer = spnetwork.NewServer(serverCfg)
+
+	// TODO: make configurable after POC
+	clientCfg := spnetwork.ClientConfig{
+		ConnectTimeout: 10 * time.Second,
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   30 * time.Second,
+		ReconnectDelay: 5 * time.Second,
+		MaxMessageSize: 10485760, // 10 MB
+		ServerAddr:     conf.SPAddr,
+	}
+	node.spClient = spnetwork.NewClient(clientCfg)
 
 	return node, nil
 }
@@ -271,8 +299,19 @@ func (n *Node) openEndpoints() error {
 	if err := n.server.Start(); err != nil {
 		return convertFileLockError(err)
 	}
+
+	err := n.spServer.Start(context.Background())
+	if err != nil {
+		return err
+	}
+
+	err = n.spClient.Connect(context.Background())
+	if err != nil {
+		return err
+	}
+
 	// start RPC endpoints
-	err := n.startRPC()
+	err = n.startRPC()
 	if err != nil {
 		n.stopRPC()
 		n.server.Stop()
@@ -295,6 +334,16 @@ func (n *Node) stopServices(running []Lifecycle) error {
 
 	// Stop p2p networking.
 	n.server.Stop()
+
+	err := n.spServer.Stop(context.Background())
+	if err != nil {
+		return err
+	}
+
+	err = n.spClient.Disconnect(context.Background())
+	if err != nil && !errors.Is(err, spnetwork.ErrNotConnected) {
+		return err
+	}
 
 	if len(failure.Services) > 0 {
 		return failure
@@ -643,6 +692,20 @@ func (n *Node) Server() *p2p.Server {
 	defer n.lock.Unlock()
 
 	return n.server
+}
+
+func (n *Node) SPServer() spnetwork.Server {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+
+	return n.spServer
+}
+
+func (n *Node) SPClient() spnetwork.Client {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+
+	return n.spClient
 }
 
 // DataDir retrieves the current datadir used by the protocol stack.
