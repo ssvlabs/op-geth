@@ -15,20 +15,48 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rpc"
 	"google.golang.org/protobuf/proto"
+	"gopkg.in/yaml.v3"
 
 	"github.com/ethereum/go-ethereum/internal/xt"
 )
 
 const (
-	L2_A_ADDRESS = "http://localhost:8545"
-	L2_B_ADDRESS = "http://localhost:10545"
+	sendTxRPCMethod = "eth_sendXTransaction"
+	configFile      = "config.yml"
 )
 
-func main() {
-	chainA_ID := big.NewInt(11111)
-	chainB_ID := big.NewInt(22222)
+type Rollup struct {
+	RPC        string `yaml:"rpc"`
+	ChainID    int64  `yaml:"chain_id"`
+	PrivateKey string `yaml:"private_key"`
+}
 
-	privateKeyA, privateKeyB := getPrivateKeysFromEnv()
+func (r *Rollup) GetChainID() *big.Int {
+	return big.NewInt(r.ChainID)
+}
+
+type Config struct {
+	Rollups map[string]Rollup `yaml:"rollups"`
+}
+
+func main() {
+	config := loadConfigFromYAML(configFile)
+
+	rollupA, exists := config.Rollups["A"]
+	if !exists {
+		log.Fatal("Rollup 'A' not found in configuration")
+	}
+
+	rollupB, exists := config.Rollups["B"]
+	if !exists {
+		log.Fatal("Rollup 'B' not found in configuration")
+	}
+
+	chainA_ID := rollupA.GetChainID()
+	chainB_ID := rollupB.GetChainID()
+
+	privateKeyA := parsePrivateKey(rollupA.PrivateKey)
+	privateKeyB := parsePrivateKey(rollupB.PrivateKey)
 
 	publicKey := privateKeyA.Public()
 	publicKeyECDSA, _ := publicKey.(*ecdsa.PublicKey)
@@ -36,27 +64,25 @@ func main() {
 
 	publicKey = privateKeyB.Public()
 	publicKeyECDSA, _ = publicKey.(*ecdsa.PublicKey)
-	//addressB := crypto.PubkeyToAddress(*publicKeyECDSA)
+	addressB := crypto.PubkeyToAddress(*publicKeyECDSA)
 
-	nonceA, err := getNonceFor(L2_A_ADDRESS, addressA)
+	nonceA, err := getNonceFor(rollupA.RPC, addressA)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	nonceB := uint64(0)
-	//nonceB, err := getNonceFor(L2_B_ADDRESS, addressB)
-	//if err != nil {
-	//	log.Fatal(err)
-	//}
+	nonceB, err := getNonceFor(rollupB.RPC, addressB)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	toAddressA := common.HexToAddress("0x71C7656EC7ab88b098defB751B7401B5f6d8976F")
 	txDataA := &types.DynamicFeeTx{
 		ChainID:    chainA_ID,
 		Nonce:      nonceA,
 		GasTipCap:  big.NewInt(1000000000),
 		GasFeeCap:  big.NewInt(20000000000),
 		Gas:        21000,
-		To:         &toAddressA,
+		To:         &addressB,
 		Value:      big.NewInt(1000000000000000),
 		Data:       nil,
 		AccessList: nil,
@@ -73,14 +99,13 @@ func main() {
 		log.Fatal(err)
 	}
 
-	toAddressB := common.HexToAddress("0x0000000000000000000000000000000000000001")
 	txDataB := &types.DynamicFeeTx{
 		ChainID:    chainB_ID,
 		Nonce:      nonceB,
 		GasTipCap:  big.NewInt(1000000000),
 		GasFeeCap:  big.NewInt(20000000000),
 		Gas:        21000,
-		To:         &toAddressB,
+		To:         &addressA,
 		Value:      big.NewInt(1000000000000000),
 		Data:       nil,
 		AccessList: nil,
@@ -128,14 +153,14 @@ func main() {
 
 	fmt.Printf("Successfully encoded payload. Size: %d bytes\n", len(encodedPayload))
 
-	l1Client, err := rpc.Dial("http://localhost:8545")
+	l1Client, err := rpc.Dial(rollupA.RPC)
 	if err != nil {
 		log.Fatalf("could not connect to custom rpc: %v", err)
 	}
 	defer l1Client.Close()
 
 	var resultHashes []common.Hash
-	err = l1Client.CallContext(context.Background(), &resultHashes, "eth_sendXTransaction", hexutil.Encode(encodedPayload))
+	err = l1Client.CallContext(context.Background(), &resultHashes, sendTxRPCMethod, hexutil.Encode(encodedPayload))
 	if err != nil {
 		log.Fatalf("RPC call failed: %v", err)
 	}
@@ -144,6 +169,39 @@ func main() {
 	for i, hash := range resultHashes {
 		fmt.Printf("  Tx %d Hash: %s\n", i+1, hash.Hex())
 	}
+}
+
+func loadConfigFromYAML(filename string) Config {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		log.Fatalf("Failed to read config file %s: %v", filename, err)
+	}
+
+	var config Config
+	err = yaml.Unmarshal(data, &config)
+	if err != nil {
+		log.Fatalf("Failed to parse YAML config: %v", err)
+	}
+
+	return config
+}
+
+func parsePrivateKey(privKeyHex string) *ecdsa.PrivateKey {
+	if privKeyHex == "" {
+		log.Fatal("Private key cannot be empty")
+	}
+
+	// Remove 0x prefix if present
+	if len(privKeyHex) >= 2 && privKeyHex[:2] == "0x" {
+		privKeyHex = privKeyHex[2:]
+	}
+
+	privateKey, err := crypto.HexToECDSA(privKeyHex)
+	if err != nil {
+		log.Fatalf("Failed to parse private key: %v", err)
+	}
+
+	return privateKey
 }
 
 func getNonceFor(networkRPCAddr string, address common.Address) (uint64, error) {
@@ -158,35 +216,4 @@ func getNonceFor(networkRPCAddr string, address common.Address) (uint64, error) 
 	}
 
 	return nonce, nil
-}
-
-func getPrivateKeysFromEnv() (*ecdsa.PrivateKey, *ecdsa.PrivateKey) {
-	privKeyHexA := os.Getenv("PRIV_KEY_A")
-	privKeyHexB := os.Getenv("PRIV_KEY_B")
-
-	if privKeyHexA == "" {
-		log.Fatal("PRIV_KEY_A environment variable not set")
-	}
-	if privKeyHexB == "" {
-		log.Fatal("PRIV_KEY_B environment variable not set")
-	}
-
-	if len(privKeyHexA) >= 2 && privKeyHexA[:2] == "0x" {
-		privKeyHexA = privKeyHexA[2:]
-	}
-	if len(privKeyHexB) >= 2 && privKeyHexB[:2] == "0x" {
-		privKeyHexB = privKeyHexB[2:]
-	}
-
-	privateKeyA, err := crypto.HexToECDSA(privKeyHexA)
-	if err != nil {
-		log.Fatalf("Failed to parse PRIV_KEY_A: %v", err)
-	}
-
-	privateKeyB, err := crypto.HexToECDSA(privKeyHexB)
-	if err != nil {
-		log.Fatalf("Failed to parse PRIV_KEY_B: %v", err)
-	}
-
-	return privateKeyA, privateKeyB
 }

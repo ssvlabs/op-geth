@@ -1,0 +1,9 @@
+rollups:
+  A:
+    chain_id: 11111
+    rpc: http://localhost:8545
+    private_key: 0x..
+  B:
+    chain_id: 22222
+    rpc: http://localhost:10545
+    private_key: 0x..
