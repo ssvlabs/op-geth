@@ -632,3 +632,65 @@ func checkTxFee(gasPrice *big.Int, gas uint64, cap float64) error {
 	}
 	return nil
 }
+
+// SimulateTransaction simulates the execution of a transaction in the context of a specific block.
+func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*core.ExecutionResult, error) {
+	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
+	if err != nil {
+		return nil, err
+	}
+
+	snapshot := stateDB.Snapshot()
+	defer stateDB.RevertToSnapshot(snapshot)
+
+	signer := types.MakeSigner(b.ChainConfig(), header.Number, header.Time)
+	msg, err := core.TransactionToMessage(tx, signer, header.BaseFee)
+	if err != nil {
+		return nil, err
+	}
+
+	blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
+	evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), *b.eth.blockchain.GetVMConfig())
+
+	result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(msg.GasLimit))
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// SimulateTransactionWithSSVTrace simulates a transaction and returns SSV trace data.
+func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*SSVTraceResult, error) {
+	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
+	if err != nil {
+		return nil, err
+	}
+
+	snapshot := stateDB.Snapshot()
+	defer stateDB.RevertToSnapshot(snapshot)
+
+	signer := types.MakeSigner(b.ChainConfig(), header.Number, header.Time)
+	msg, err := core.TransactionToMessage(tx, signer, header.BaseFee)
+	if err != nil {
+		return nil, err
+	}
+
+	tracer := NewSSVTracer()
+
+	vmConfig := *b.eth.blockchain.GetVMConfig()
+	vmConfig.Tracer = tracer.Hooks()
+
+	blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
+	evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), vmConfig)
+
+	result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(msg.GasLimit))
+	if err != nil {
+		return nil, err
+	}
+
+	traceResult := tracer.GetResult()
+	traceResult.ExecutionResult = result
+
+	return traceResult, nil
+}
