@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/eth/tracers/native"
 	"math/big"
 	"time"
 
@@ -661,7 +662,7 @@ func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Trans
 }
 
 // SimulateTransactionWithSSVTrace simulates a transaction and returns SSV trace data.
-func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*SSVTraceResult, error) {
+func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*native.SSVTraceResult, error) {
 	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
 	if err != nil {
 		return nil, err
@@ -676,7 +677,7 @@ func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx 
 		return nil, err
 	}
 
-	tracer := NewSSVTracer()
+	tracer := native.NewSSVTracer()
 
 	vmConfig := *b.eth.blockchain.GetVMConfig()
 	vmConfig.Tracer = tracer.Hooks()
@@ -689,7 +690,7 @@ func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx 
 		return nil, err
 	}
 
-	traceResult := tracer.GetResult()
+	traceResult := tracer.GetTraceResult()
 	traceResult.ExecutionResult = result
 
 	return traceResult, nil

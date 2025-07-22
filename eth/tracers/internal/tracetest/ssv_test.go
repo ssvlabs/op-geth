@@ -9,21 +9,36 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/eth/tracers"
-	"github.com/ethereum/go-ethereum/eth/tracers/native"
 	"github.com/ethereum/go-ethereum/tests"
-	"github.com/stretchr/testify/require"
 )
+
+// ssvOperation represents a single operation for test output
+type ssvOperation struct {
+	Type         string         `json:"type"`
+	Address      common.Address `json:"address"`
+	CallData     hexutil.Bytes  `json:"callData,omitempty"`
+	StorageKey   hexutil.Bytes  `json:"storageKey,omitempty"`
+	StorageValue hexutil.Bytes  `json:"storageValue,omitempty"`
+	From         common.Address `json:"from"`
+	Gas          hexutil.Uint64 `json:"gas"`
+}
+
+// ssvTraceResult contains the test result structure
+type ssvTraceResult struct {
+	Operations []ssvOperation `json:"operations"`
+}
 
 // ssvTracerTest defines a single test to check the ssv tracer against.
 type ssvTracerTest struct {
-	TracerTestEnv
-	Result *native.SSVTraceResult `json:"result"`
+	tracerTestEnv
+	Result *ssvTraceResult `json:"result"`
 }
 
 // TestSsvTracer runs the ssv tracer tests.
@@ -55,7 +70,7 @@ func TestSsvTracer(t *testing.T) {
 
 			var (
 				signer  = types.MakeSigner(test.Genesis.Config, new(big.Int).SetUint64(uint64(test.Context.Number)), uint64(test.Context.Time))
-				context = test.Context.ToBlockContext(test.Genesis)
+				context = test.Context.toBlockContext(test.Genesis)
 				st      = tests.MakePreState(rawdb.NewMemoryDatabase(), test.Genesis.Alloc, false, rawdb.HashScheme)
 			)
 			defer st.Close()
@@ -85,16 +100,14 @@ func TestSsvTracer(t *testing.T) {
 				t.Fatalf("failed to retrieve trace result: %v", err)
 			}
 
-			var have native.SSVTraceResult
-			require.NoError(t, json.Unmarshal(res, &have))
-
-			wantJSON, err := json.Marshal(test.Result)
-			require.NoError(t, err)
-
-			haveJSON, err := json.Marshal(have)
-			require.NoError(t, err)
-
-			require.JSONEq(t, string(wantJSON), string(haveJSON), "trace mismatch")
+			// Compare results
+			want, err := json.Marshal(test.Result)
+			if err != nil {
+				t.Fatalf("failed to marshal test result: %v", err)
+			}
+			if string(want) != string(res) {
+				t.Fatalf("trace mismatch\n have: %v\n want: %v\n", string(res), string(want))
+			}
 		})
 	}
 }
