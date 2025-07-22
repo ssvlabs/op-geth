@@ -70,6 +70,9 @@ var Defaults = Config{
 	RPCEVMTimeout:      5 * time.Second,
 	GPO:                FullNodeGPO,
 	RPCTxFeeCap:        1, // 1 ether
+
+	SPListenAddr: ":9898",
+	SPServerAddr: "localhost:18080",
 }
 
 //go:generate go run github.com/fjl/gencodec -type Config -formats toml -out gen_config.go
@@ -194,6 +197,9 @@ type Config struct {
 
 	InteropMessageRPC       string `toml:",omitempty"`
 	InteropMempoolFiltering bool   `toml:",omitempty"`
+
+	SPListenAddr string
+	SPServerAddr string
 }
 
 // CreateConsensusEngine creates a consensus engine for the given chain config.

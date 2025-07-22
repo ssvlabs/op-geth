@@ -21,6 +21,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/internal/xt"
+	"google.golang.org/protobuf/proto"
 	gomath "math"
 	"math/big"
 	"strings"
@@ -1757,6 +1759,21 @@ func (api *TransactionAPI) SendTransaction(ctx context.Context, args Transaction
 		return common.Hash{}, err
 	}
 	return SubmitTransaction(ctx, api.b, signed)
+}
+
+func (api *TransactionAPI) SendXTransaction(ctx context.Context, input hexutil.Bytes) ([]common.Hash, error) {
+	var msg xt.Message
+	if err := proto.Unmarshal(input, &msg); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal xtReq input: %v", err)
+	}
+
+	switch payload := msg.Payload.(type) {
+	case *xt.Message_XtRequest:
+		ctx = context.WithValue(ctx, "forward", true)
+		return api.b.HandleSPMessage(ctx, msg.SenderId, &msg)
+	default:
+		return nil, fmt.Errorf("unknown message type: %T", payload)
+	}
 }
 
 // FillTransaction fills the defaults (nonce, gas, gasPrice or 1559 fields)

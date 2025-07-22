@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  geth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        COMMIT: "${COMMIT:-}"
+        VERSION: "${VERSION:-}"
+        BUILDNUM: "${BUILDNUM:-}"
+    container_name: geth-node
+    ports:
+      - "8545:8545"   # HTTP RPC
+      - "8546:8546"   # WebSocket RPC
+      - "8551:8551"   # Auth RPC
+      - "9898:9898"   # SP listen port
+      - "30303:30303" # P2P TCP
+      - "30303:30303/udp" # P2P UDP
+    volumes:
+      - ./datadir:/datadir
+      - ./jwt.txt:/jwt.txt:ro
+    command: >
+      --datadir=/datadir
+      --http
+      --http.corsdomain="*"
+      --http.vhosts="*"
+      --http.addr=0.0.0.0
+      --http.api=web3,debug,eth,txpool,net,engine
+      --ws
+      --ws.addr=0.0.0.0
+      --ws.port=8546
+      --ws.origins="*"
+      --ws.api=debug,eth,txpool,net,engine
+      --syncmode=full
+      --gcmode=archive
+      --nodiscover
+      --maxpeers=0
+      --networkid=42069
+      --authrpc.vhosts="*"
+      --authrpc.addr=0.0.0.0
+      --authrpc.port=8551
+      --authrpc.jwtsecret=/jwt.txt
+      --rollup.disabletxpoolgossip=true
+      --sp.addr=localhost:18080
+      --sp.listen.addr=:9898
+    restart: unless-stopped
+    networks:
+      - geth-network
+
+volumes:
+  geth-data:
+    driver: local
+
+networks:
+  geth-network:
+    driver: bridge
