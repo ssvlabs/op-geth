@@ -1,14 +1,22 @@
-package eth
+package native
 
 import (
+	"encoding/json"
+	"math/big"
+	"sync/atomic"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
-	"math/big"
-	"sync/atomic"
+	"github.com/ethereum/go-ethereum/eth/tracers"
+	"github.com/ethereum/go-ethereum/params"
 )
+
+func init() {
+	tracers.DefaultDirectory.Register("ssvTracer", newSSVTracer, false)
+}
 
 // SSVOperation represents a single operation tracked by SSVTracer
 type SSVOperation struct {
@@ -48,28 +56,32 @@ type SSVTracer struct {
 	watchedAddresses map[common.Address]bool
 }
 
-func NewSSVTracer() *SSVTracer {
-	// TODO: Replace with actual watched addresses
+// newSSVTracer is the registered constructor.
+func newSSVTracer(ctx *tracers.Context, cfg json.RawMessage, chainConfig *params.ChainConfig) (*tracers.Tracer, error) {
+	// TODO: The watched addresses are currently mocked. In a real scenario,
+	// these would likely be passed in via the `cfg` json.RawMessage.
 	mockAddr1 := common.HexToAddress("0x1234567890123456789012345678901234567890")
 	mockAddr2 := common.HexToAddress("0xabcdefabcdefabcdefabcdefabcdefabcdefabcd")
 
-	return &SSVTracer{
+	t := &SSVTracer{
 		callStack: make([]*SSVCall, 0),
 		watchedAddresses: map[common.Address]bool{
 			mockAddr1: true,
 			mockAddr2: true,
 		},
 	}
-}
 
-func (t *SSVTracer) Hooks() *tracing.Hooks {
-	return &tracing.Hooks{
-		OnEnter:         t.OnEnter,
-		OnExit:          t.OnExit,
-		OnTxStart:       t.OnTxStart,
-		OnStorageChange: t.OnStorageChange,
-		OnOpcode:        t.OnOpcode,
-	}
+	return &tracers.Tracer{
+		Hooks: &tracing.Hooks{
+			OnEnter:         t.OnEnter,
+			OnExit:          t.OnExit,
+			OnTxStart:       t.OnTxStart,
+			OnStorageChange: t.OnStorageChange,
+			OnOpcode:        t.OnOpcode,
+		},
+		GetResult: t.GetResult,
+		Stop:      t.Stop,
+	}, nil
 }
 
 func (t *SSVTracer) OnTxStart(env *tracing.VMContext, tx *types.Transaction, from common.Address) {
@@ -180,10 +192,15 @@ func (t *SSVTracer) Stop(err error) {
 	t.interrupt.Store(true)
 }
 
-func (t *SSVTracer) GetResult() *SSVTraceResult {
-	return &SSVTraceResult{
+func (t *SSVTracer) GetResult() (json.RawMessage, error) {
+	result := &SSVTraceResult{
 		RootCall: t.rootCall,
 	}
+	res, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	return res, t.err
 }
 
 func (t *SSVTracer) GetFlatOperations() []SSVOperation {
