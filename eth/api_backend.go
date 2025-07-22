@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/core/ssv"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth/tracers/native"
 	"math/big"
@@ -662,7 +663,7 @@ func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Trans
 }
 
 // SimulateTransactionWithSSVTrace simulates a transaction and returns SSV trace data.
-func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*native.SSVTraceResult, error) {
+func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
 	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
 	if err != nil {
 		return nil, err
@@ -677,15 +678,19 @@ func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx 
 		return nil, err
 	}
 
-	tracer := native.NewSSVTracer()
+	mailboxAddresses := b.GetMailboxAddresses()
+	tracer := native.NewSSVTracer(mailboxAddresses)
 
-	vmConfig := *b.eth.blockchain.GetVMConfig()
+	vmConfig := vm.Config{}
+	if b.eth.blockchain.GetVMConfig() != nil {
+		vmConfig = *b.eth.blockchain.GetVMConfig()
+	}
 	vmConfig.Tracer = tracer.Hooks()
 
 	blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
 	evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), vmConfig)
 
-	result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(msg.GasLimit))
+	result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(header.GasLimit))
 	if err != nil {
 		return nil, err
 	}
@@ -694,4 +699,9 @@ func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx 
 	traceResult.ExecutionResult = result
 
 	return traceResult, nil
+}
+
+// GetMailboxAddresses returns the list of mailbox contract addresses to watch.
+func (b *EthAPIBackend) GetMailboxAddresses() []common.Address {
+	return b.eth.mailboxAddresses
 }

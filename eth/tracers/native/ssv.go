@@ -2,12 +2,11 @@ package native
 
 import (
 	"encoding/json"
-	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/ssv"
 	"math/big"
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
@@ -15,46 +14,14 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
-//go:generate go run github.com/fjl/gencodec -type SSVOperation -field-override ssvOperationMarshaling -out gen_ssv_json.go
-
 func init() {
 	tracers.DefaultDirectory.Register("ssvTracer", newSSVTracer, false)
-}
-
-// SSVOperation represents a single operation tracked by SSVTracer
-type SSVOperation struct {
-	Type         vm.OpCode      `json:"-"`       // Operation type (CALL, SLOAD, SSTORE, etc.)
-	Address      common.Address `json:"address"` // Contract address
-	CallData     []byte         `json:"callData,omitempty" rlp:"optional"`
-	StorageKey   []byte         `json:"storageKey,omitempty" rlp:"optional"`
-	StorageValue []byte         `json:"storageValue,omitempty" rlp:"optional"`
-	From         common.Address `json:"from"` // Caller address
-	Gas          uint64         `json:"gas"`  // Gas available
-}
-
-func (op SSVOperation) TypeString() string {
-	return op.Type.String()
-}
-
-// ssvOperationMarshaling provides field overrides for JSON marshaling
-type ssvOperationMarshaling struct {
-	TypeString   string `json:"type"`
-	CallData     hexutil.Bytes
-	StorageKey   hexutil.Bytes
-	StorageValue hexutil.Bytes
-	Gas          hexutil.Uint64
-}
-
-// SSVTraceResult contains the simple flat list of operations
-type SSVTraceResult struct {
-	Operations      []SSVOperation        `json:"operations"`
-	ExecutionResult *core.ExecutionResult `json:"-"`
 }
 
 // SSVTracer is a minimal tracer for SSV sequencer needs
 type SSVTracer struct {
 	env              *tracing.VMContext // The VM environment
-	operations       []SSVOperation     // Flat list of operations
+	operations       []ssv.SSVOperation // Flat list of operations
 	interrupt        atomic.Bool        // Atomic flag to signal execution interruption
 	reason           error              // Textual reason for the interruption
 	watchedAddresses map[common.Address]bool
@@ -70,7 +37,7 @@ func newSSVTracer(ctx *tracers.Context, cfg json.RawMessage, chainConfig *params
 	mockAddr2 := common.HexToAddress("0xabcdefabcdefabcdefabcdefabcdefabcdefabcd")
 
 	t := &SSVTracer{
-		operations: make([]SSVOperation, 0),
+		operations: make([]ssv.SSVOperation, 0),
 		watchedAddresses: map[common.Address]bool{
 			mockAddr1: true,
 			mockAddr2: true,
@@ -112,7 +79,7 @@ func (t *SSVTracer) OnEnter(depth int, typ byte, from common.Address, to common.
 
 	// Only track calls to watched addresses
 	if t.watchedAddresses[to] {
-		op := SSVOperation{
+		op := ssv.SSVOperation{
 			Type:     vm.OpCode(typ),
 			Address:  to,
 			From:     from,
@@ -141,7 +108,7 @@ func (t *SSVTracer) OnStorageChange(addr common.Address, slot common.Hash, prev,
 		return
 	}
 
-	op := SSVOperation{
+	op := ssv.SSVOperation{
 		Type:         vm.SSTORE,
 		Address:      addr,
 		From:         t.currentFrom,
@@ -172,7 +139,7 @@ func (t *SSVTracer) OnOpcode(pc uint64, op byte, gas, cost uint64, scope tracing
 		keyHash := common.Hash(key.Bytes32())
 		value := t.env.StateDB.GetState(addr, keyHash)
 
-		operation := SSVOperation{
+		operation := ssv.SSVOperation{
 			Type:         vm.SLOAD,
 			Address:      addr,
 			From:         t.currentFrom,
@@ -193,7 +160,7 @@ func (t *SSVTracer) Stop(err error) {
 
 // GetResult returns the json-encoded flat list of operations
 func (t *SSVTracer) GetResult() (json.RawMessage, error) {
-	result := SSVTraceResult{
+	result := ssv.SSVTraceResult{
 		Operations: t.operations,
 	}
 
@@ -206,17 +173,15 @@ func (t *SSVTracer) GetResult() (json.RawMessage, error) {
 
 /////////// Public API for creating a new SSVTracer instance ///////////
 
-func NewSSVTracer() *SSVTracer {
-	// TODO: Replace with actual watched addresses
-	mockAddr1 := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	mockAddr2 := common.HexToAddress("0xabcdefabcdefabcdefabcdefabcdefabcdefabcd")
+func NewSSVTracer(mailboxAddresses []common.Address) *SSVTracer {
+	watchedAddresses := make(map[common.Address]bool)
+	for _, addr := range mailboxAddresses {
+		watchedAddresses[addr] = true
+	}
 
 	return &SSVTracer{
-		operations: make([]SSVOperation, 0),
-		watchedAddresses: map[common.Address]bool{
-			mockAddr1: true,
-			mockAddr2: true,
-		},
+		operations:       make([]ssv.SSVOperation, 0),
+		watchedAddresses: watchedAddresses,
 	}
 }
 
@@ -232,8 +197,8 @@ func (t *SSVTracer) Hooks() *tracing.Hooks {
 }
 
 // GetTraceResult returns the SSVTraceResult containing the operations
-func (t *SSVTracer) GetTraceResult() *SSVTraceResult {
-	return &SSVTraceResult{
+func (t *SSVTracer) GetTraceResult() *ssv.SSVTraceResult {
+	return &ssv.SSVTraceResult{
 		Operations:      t.operations,
 		ExecutionResult: nil, // Execution result is not used in this tracer
 	}
