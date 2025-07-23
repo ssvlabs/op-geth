@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"github.com/ethereum/go-ethereum/core/ssv"
 	"github.com/ethereum/go-ethereum/internal/xt"
+	"google.golang.org/protobuf/proto"
 	"math"
 	"math/big"
 	"os"
@@ -3929,4 +3930,218 @@ func TestCreateAccessListWithStateOverrides(t *testing.T) {
 		StorageKeys: []common.Hash{{}},
 	}}
 	require.Equal(t, expected, result.Accesslist)
+}
+
+func TestSendXTransaction(t *testing.T) {
+	t.Parallel()
+
+	var (
+		key, _   = crypto.GenerateKey()
+		addr     = crypto.PubkeyToAddress(key.PublicKey)
+		mailboxA = common.HexToAddress("0x1111111111111111111111111111111111111111")
+		mailboxB = common.HexToAddress("0x2222222222222222222222222222222222222222")
+		genesis  = &core.Genesis{
+			Config: params.MergedTestChainConfig,
+			Alloc: types.GenesisAlloc{
+				addr: {Balance: big.NewInt(params.Ether)},
+			},
+		}
+		signer = types.LatestSigner(params.MergedTestChainConfig)
+	)
+
+	backend := newTestBackend(t, 1, genesis, beacon.New(ethash.NewFaker()), func(i int, b *core.BlockGen) {
+		b.SetPoS()
+	})
+	defer backend.chain.Stop()
+
+	mockBackend := &mockSSVBackend{
+		testBackend:      backend,
+		mailboxAddresses: []common.Address{mailboxA, mailboxB},
+		simulateCalled:   false,
+		handleSPCalled:   false,
+	}
+
+	api := NewTransactionAPI(mockBackend, nil)
+	tx := types.NewTx(&types.LegacyTx{
+		Nonce:    0,
+		To:       &mailboxA,
+		Value:    big.NewInt(0),
+		Gas:      100000,
+		GasPrice: big.NewInt(10),
+		Data:     []byte{0x01, 0x02, 0x03},
+	})
+
+	signedTx, err := types.SignTx(tx, signer, key)
+	require.NoError(t, err)
+
+	txBytes, err := signedTx.MarshalBinary()
+	require.NoError(t, err)
+
+	msg := &xt.Message{
+		SenderId: "test-sender",
+		Payload: &xt.Message_XtRequest{
+			XtRequest: &xt.XTRequest{
+				Transactions: []*xt.TransactionRequest{
+					{
+						ChainId:     big.NewInt(1).Bytes(),
+						Transaction: [][]byte{txBytes},
+					},
+				},
+			},
+		},
+	}
+
+	msgBytes, err := proto.Marshal(msg)
+	require.NoError(t, err)
+
+	ctx := t.Context()
+	hashes, err := api.SendXTransaction(ctx, msgBytes)
+
+	require.NoError(t, err)
+	require.True(t, mockBackend.simulateCalled)
+	require.True(t, mockBackend.handleSPCalled)
+	require.Len(t, hashes, 1)
+	require.NotNil(t, mockBackend.capturedTx)
+	require.NotNil(t, mockBackend.capturedTx.To())
+	require.Equal(t, mailboxA, *mockBackend.capturedTx.To())
+	require.Len(t, mockBackend.capturedOps, 2)
+	require.Equal(t, vm.SSTORE, mockBackend.capturedOps[0].Type)
+}
+
+type mockSSVBackend struct {
+	*testBackend
+	mailboxAddresses []common.Address
+	simulateCalled   bool
+	handleSPCalled   bool
+	capturedTx       *types.Transaction
+	capturedOps      []ssv.SSVOperation
+	simulateErr      error
+}
+
+func (m *mockSSVBackend) GetMailboxAddresses() []common.Address {
+	return m.mailboxAddresses
+}
+
+func (m *mockSSVBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
+	m.simulateCalled = true
+	m.capturedTx = tx
+
+	if m.simulateErr != nil {
+		return nil, m.simulateErr
+	}
+
+	ops := []ssv.SSVOperation{
+		{
+			Type:         vm.SSTORE,
+			Address:      m.mailboxAddresses[0],
+			From:         common.HexToAddress("0x0"),
+			StorageKey:   common.Hash{0x01}.Bytes(),
+			StorageValue: common.Hash{0x02}.Bytes(),
+			Gas:          50000,
+		},
+		{
+			Type:         vm.SLOAD,
+			Address:      m.mailboxAddresses[0],
+			From:         common.HexToAddress("0x0"),
+			StorageKey:   common.Hash{0x01}.Bytes(),
+			StorageValue: common.Hash{0x02}.Bytes(),
+			Gas:          2000,
+		},
+	}
+	m.capturedOps = ops
+
+	return &ssv.SSVTraceResult{
+		Operations: ops,
+		ExecutionResult: &core.ExecutionResult{
+			UsedGas: 52000,
+			Err:     nil,
+		},
+	}, nil
+}
+
+func (m *mockSSVBackend) HandleSPMessage(ctx context.Context, from string, msg *xt.Message) ([]common.Hash, error) {
+	m.handleSPCalled = true
+	return []common.Hash{common.HexToHash("0x123")}, nil
+}
+
+func TestSendXTransaction_SimulationError(t *testing.T) {
+	t.Parallel()
+
+	var (
+		key, _  = crypto.GenerateKey()
+		addr    = crypto.PubkeyToAddress(key.PublicKey)
+		genesis = &core.Genesis{
+			Config: params.MergedTestChainConfig,
+			Alloc: types.GenesisAlloc{
+				addr: {Balance: big.NewInt(params.Ether)},
+			},
+		}
+		signer = types.LatestSigner(params.MergedTestChainConfig)
+	)
+
+	backend := newTestBackend(t, 1, genesis, beacon.New(ethash.NewFaker()), func(i int, b *core.BlockGen) {
+		b.SetPoS()
+	})
+	defer backend.chain.Stop()
+
+	mockBackend := &mockSSVBackend{
+		testBackend:      backend,
+		mailboxAddresses: []common.Address{addr},
+		simulateErr:      fmt.Errorf("simulation failed"),
+	}
+
+	api := NewTransactionAPI(mockBackend, nil)
+
+	tx := types.NewTx(&types.LegacyTx{
+		Nonce:    0,
+		To:       &addr,
+		Value:    big.NewInt(0),
+		Gas:      100000,
+		GasPrice: big.NewInt(10),
+		Data:     []byte{},
+	})
+
+	signedTx, _ := types.SignTx(tx, signer, key)
+	txBytes, _ := signedTx.MarshalBinary()
+
+	msg := &xt.Message{
+		SenderId: "test-sender",
+		Payload: &xt.Message_XtRequest{
+			XtRequest: &xt.XTRequest{
+				Transactions: []*xt.TransactionRequest{
+					{
+						ChainId:     big.NewInt(1).Bytes(),
+						Transaction: [][]byte{txBytes},
+					},
+				},
+			},
+		},
+	}
+
+	msgBytes, _ := proto.Marshal(msg)
+
+	_, err := api.SendXTransaction(t.Context(), msgBytes)
+	require.Error(t, err)
+}
+
+func TestSendXTransaction_InvalidProtobuf(t *testing.T) {
+	t.Parallel()
+
+	genesis := &core.Genesis{
+		Config: params.MergedTestChainConfig,
+		Alloc:  types.GenesisAlloc{},
+	}
+
+	backend := newTestBackend(t, 1, genesis, beacon.New(ethash.NewFaker()), func(i int, b *core.BlockGen) {
+		b.SetPoS()
+	})
+	defer backend.chain.Stop()
+
+	api := NewTransactionAPI(backend, nil)
+
+	invalidData := hexutil.Bytes("invalid protobuf data")
+
+	_, err := api.SendXTransaction(t.Context(), invalidData)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to unmarshal")
 }
