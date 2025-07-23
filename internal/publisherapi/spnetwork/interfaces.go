@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	xt "github.com/ethereum/go-ethereum/internal/xt"
+	sptypes "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
 )
 
 // Server interface defines the server contract
@@ -26,7 +26,7 @@ type Client interface {
 	// Disconnect closes the connection
 	Disconnect(ctx context.Context) error
 	// Send sends a message to the server
-	Send(ctx context.Context, msg *xt.Message) error
+	Send(ctx context.Context, msg *sptypes.Message) error
 	// SetHandler sets the message handler for received messages
 	SetHandler(handler MessageHandler)
 	// IsConnected returns connection status
@@ -38,7 +38,7 @@ type Client interface {
 }
 
 // MessageHandler processes incoming messages
-type MessageHandler func(ctx context.Context, from string, msg *xt.Message) ([]common.Hash, error)
+type MessageHandler func(ctx context.Context, msg *sptypes.Message) ([]common.Hash, error)
 
 // ConnectionInfo contains information about a connection
 type ConnectionInfo struct {

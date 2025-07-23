@@ -4,14 +4,16 @@ import (
 	"context"
 	"fmt"
 	"github.com/ethereum/go-ethereum/log"
+	spcodec "github.com/ssvlabs/rollup-shared-publisher/pkg/codec"
+	sperrors "github.com/ssvlabs/rollup-shared-publisher/pkg/errors"
 	"io"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/ethereum/go-ethereum/internal/xt"
 	"github.com/google/uuid"
+	sptypes "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
 )
 
 // ServerConfig contains server configuration.
@@ -28,7 +30,7 @@ type server struct {
 	cfg      ServerConfig
 	listener net.Listener
 	handler  MessageHandler
-	codec    *Codec
+	codec    *spcodec.Codec
 
 	connections sync.Map // map[string]Connection
 	writers     sync.Map // map[string]*StreamWriter
@@ -44,14 +46,14 @@ type server struct {
 func NewServer(cfg ServerConfig) Server {
 	return &server{
 		cfg:   cfg,
-		codec: NewCodec(cfg.MaxMessageSize),
+		codec: spcodec.NewCodec(cfg.MaxMessageSize),
 	}
 }
 
 // Start starts the server.
 func (s *server) Start(ctx context.Context) error {
 	if !s.running.CompareAndSwap(false, true) {
-		return ErrServerRunning
+		return sperrors.ErrServerRunning
 	}
 
 	listener, err := net.Listen("tcp", s.cfg.ListenAddr)
@@ -105,7 +107,7 @@ func (s *server) acceptLoop(ctx context.Context) {
 			})
 
 			if s.cfg.MaxConnections > 0 && connCount >= s.cfg.MaxConnections {
-				log.Warn("Max connection warning", "current", connCount, "max", s.cfg.MaxConnections, "err", ErrConnectionLimit.Error())
+				log.Warn("Max connection warning", "current", connCount, "max", s.cfg.MaxConnections, "err", sperrors.ErrConnectionLimit.Error())
 				netConn.Close()
 				continue
 			}
@@ -126,7 +128,7 @@ func (s *server) handleConnection(ctx context.Context, netConn net.Conn) {
 
 	// Store connection
 	s.connections.Store(connID, conn)
-	writer := NewStreamWriter(conn, s.codec)
+	writer := spcodec.NewStreamWriter(conn, s.codec)
 	s.writers.Store(connID, writer)
 
 	defer func() {
@@ -148,7 +150,7 @@ func (s *server) handleConnection(ctx context.Context, netConn net.Conn) {
 				_ = conn.SetReadDeadline(time.Now().Add(s.cfg.ReadTimeout))
 			}
 
-			var msg xt.Message
+			var msg sptypes.Message
 			if err := s.codec.Decode(conn, &msg); err != nil {
 				if err == io.EOF {
 					log.Debug("Client disconnected", "remote_addr", netConn.RemoteAddr().String(), "connID", connID)
@@ -174,7 +176,7 @@ func (s *server) handleConnection(ctx context.Context, netConn net.Conn) {
 // Stop forcefully stops the server.
 func (s *server) Stop(_ context.Context) error {
 	if !s.running.CompareAndSwap(true, false) {
-		return ErrServerNotRunning
+		return sperrors.ErrServerNotRunning
 	}
 
 	if s.spCtxCancel != nil {

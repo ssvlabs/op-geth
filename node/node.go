@@ -22,6 +22,8 @@ import (
 	"errors"
 	"fmt"
 	spnetwork "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
+	spconsensus "github.com/ssvlabs/rollup-shared-publisher/pkg/consensus"
+	sperrors "github.com/ssvlabs/rollup-shared-publisher/pkg/errors"
 	"hash/crc32"
 	"net/http"
 	"os"
@@ -71,6 +73,8 @@ type Node struct {
 
 	spServer spnetwork.Server
 	spClient spnetwork.Client
+
+	coordinator *spconsensus.Coordinator
 
 	databases map[*closeTrackingDB]struct{} // All open databases
 }
@@ -183,6 +187,9 @@ func New(conf *Config) (*Node, error) {
 		ServerAddr:     conf.SPAddr,
 	}
 	node.spClient = spnetwork.NewClient(clientCfg)
+
+	nodeID := fmt.Sprintf("sequencer-%d", time.Now().UnixNano())
+	node.coordinator = spconsensus.NewCoordinator(nodeID, false)
 
 	return node, nil
 }
@@ -341,9 +348,11 @@ func (n *Node) stopServices(running []Lifecycle) error {
 	}
 
 	err = n.spClient.Disconnect(context.Background())
-	if err != nil && !errors.Is(err, spnetwork.ErrNotConnected) {
+	if err != nil && !errors.Is(err, sperrors.ErrNotConnected) {
 		return err
 	}
+
+	n.coordinator.Shutdown()
 
 	if len(failure.Services) > 0 {
 		return failure
@@ -706,6 +715,13 @@ func (n *Node) SPClient() spnetwork.Client {
 	defer n.lock.Unlock()
 
 	return n.spClient
+}
+
+func (n *Node) Coordinator() *spconsensus.Coordinator {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+
+	return n.coordinator
 }
 
 // DataDir retrieves the current datadir used by the protocol stack.

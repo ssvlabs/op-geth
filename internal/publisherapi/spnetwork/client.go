@@ -3,7 +3,9 @@ package network
 import (
 	"context"
 	"fmt"
-	"github.com/ethereum/go-ethereum/internal/xt"
+	spcodec "github.com/ssvlabs/rollup-shared-publisher/pkg/codec"
+	sperrors "github.com/ssvlabs/rollup-shared-publisher/pkg/errors"
+	sptypes "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
 	"io"
 	"net"
 	"sync"
@@ -30,10 +32,10 @@ type client struct {
 	cfg     ClientConfig
 	id      string
 	handler MessageHandler
-	codec   *Codec
+	codec   *spcodec.Codec
 
 	conn      net.Conn
-	writer    *StreamWriter
+	writer    *spcodec.StreamWriter
 	connected atomic.Bool
 	mu        sync.RWMutex
 
@@ -47,7 +49,7 @@ func NewClient(cfg ClientConfig) Client {
 	return &client{
 		cfg:   cfg,
 		id:    uuid.New().String(),
-		codec: NewCodec(cfg.MaxMessageSize),
+		codec: spcodec.NewCodec(cfg.MaxMessageSize),
 	}
 }
 
@@ -57,7 +59,7 @@ func (c *client) Connect(ctx context.Context) error {
 	defer c.mu.Unlock()
 
 	if c.connected.Load() {
-		return ErrAlreadyConnected
+		return sperrors.ErrAlreadyConnected
 	}
 
 	connCtx, cancel := context.WithTimeout(ctx, c.cfg.ConnectTimeout)
@@ -74,7 +76,7 @@ func (c *client) Connect(ctx context.Context) error {
 	}
 
 	c.conn = conn
-	c.writer = NewStreamWriter(conn, c.codec)
+	c.writer = spcodec.NewStreamWriter(conn, c.codec)
 	c.connected.Store(true)
 
 	ctx, c.cancel = context.WithCancel(context.Background())
@@ -93,7 +95,7 @@ func (c *client) Disconnect(ctx context.Context) error {
 	defer c.mu.Unlock()
 
 	if !c.connected.Load() {
-		return ErrNotConnected
+		return sperrors.ErrNotConnected
 	}
 
 	log.Info("Disconnecting")
@@ -124,7 +126,7 @@ func (c *client) Disconnect(ctx context.Context) error {
 	return nil
 }
 
-func (c *client) Send(ctx context.Context, msg *xt.Message) error {
+func (c *client) Send(ctx context.Context, msg *sptypes.Message) error {
 	const maxRetries = 3
 	var lastErr error
 
@@ -193,7 +195,7 @@ func (c *client) receiveLoop(ctx context.Context) {
 				_ = c.conn.SetReadDeadline(time.Now().Add(c.cfg.ReadTimeout))
 			}
 
-			var msg xt.Message
+			var msg sptypes.Message
 			if err := c.codec.Decode(c.conn, &msg); err != nil {
 				if err == io.EOF {
 					log.Debug("Server closed connection")
@@ -206,7 +208,7 @@ func (c *client) receiveLoop(ctx context.Context) {
 			}
 
 			if c.handler != nil {
-				if _, err := c.handler(ctx, msg.SenderId, &msg); err != nil {
+				if _, err := c.handler(ctx, &msg); err != nil {
 					log.Error("Handler error", "err", err)
 				}
 			}

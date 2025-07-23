@@ -50,7 +50,8 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 
 	spnetwork "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
-	"github.com/ethereum/go-ethereum/internal/xt"
+	spconsensus "github.com/ssvlabs/rollup-shared-publisher/pkg/consensus"
+	sptypes "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
 )
 
 // EthAPIBackend implements ethapi.Backend and tracers.Backend for full nodes
@@ -62,6 +63,7 @@ type EthAPIBackend struct {
 	gpo                 *gasprice.Oracle
 	spServer            spnetwork.Server
 	spClient            spnetwork.Client
+	coordinator         *spconsensus.Coordinator
 }
 
 // ChainConfig returns the active chain configuration.
@@ -518,65 +520,106 @@ func (b *EthAPIBackend) Genesis() *types.Block {
 	return b.eth.blockchain.Genesis()
 }
 
-func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, from string, msg *xt.Message) ([]common.Hash, error) {
-	var hashes []common.Hash
-	var xTxs []*xt.TransactionRequest
-
-	var xtReq *xt.XTRequest
+// The message can originate either from an external user or a shared publisher
+// If it originates from an external user, it is forwarded to the shared publisher
+func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *sptypes.Message) ([]common.Hash, error) {
 	switch payload := msg.Payload.(type) {
-	case *xt.Message_XtRequest:
-		xtReq = payload.XtRequest
+	case *sptypes.Message_XtRequest:
+		hashes, err := b.handleXtRequest(ctx, msg.SenderId, payload.XtRequest)
+		if err != nil {
+			return nil, err
+		}
+
+		if shouldForward(ctx) {
+			spMsg := &sptypes.Message{
+				SenderId: b.ChainConfig().ChainID.String(),
+				Payload:  msg.Payload,
+			}
+			return hashes, b.spClient.Send(ctx, spMsg)
+		}
+
+		return hashes, err
+	case *sptypes.Message_Decided:
+		return nil, b.handleDecided(payload.Decided)
 	default:
 		return nil, fmt.Errorf("unknown message type: %T", payload)
 	}
+}
 
-	localTxCount := 0
+func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq *sptypes.XTRequest) ([]common.Hash, error) {
+	err := b.coordinator.StartTransaction(xtReq)
+	if err != nil {
+		return nil, err
+	}
+
+	// Process each transaction and simulate mailbox interactions
 	for _, txReq := range xtReq.Transactions {
 		txChainID := new(big.Int).SetBytes(txReq.ChainId)
 		if txChainID.Cmp(b.ChainConfig().ChainID) == 0 {
-			// Process transactions for this chain
-			for _, txBytes := range txReq.Transaction {
-				tx := new(types.Transaction)
-				if err := tx.UnmarshalBinary(txBytes); err != nil {
-					return nil, fmt.Errorf("failed to unmarshal this chain transaction: %v", err)
-				}
-
-				log.Info("Submit local transaction", "senderID", msg.SenderId)
-				localTxCount++
-				hash, err := SubmitTransaction(ctx, b, tx)
-				if err != nil {
-					return nil, err
-				}
-				hashes = append(hashes, hash)
-			}
+			log.Info("Received local transaction", "senderID", from, "chainID", txChainID, "txCount", len(txReq.Transaction))
 		} else {
-			// Collect cross-chain transactions
-			xTxs = append(xTxs, &xt.TransactionRequest{
-				ChainId:     txReq.ChainId,
-				Transaction: txReq.Transaction,
-			})
+			log.Info("Received cross-chain transaction", "chainID", txChainID, "senderID", from, "txCount", len(txReq.Transaction))
+		}
+
+		// We want to simulate transaction before execution
+		for _, txBytes := range txReq.Transaction {
+			tx := new(types.Transaction)
+			if err := tx.UnmarshalBinary(txBytes); err != nil {
+				log.Error("[SSV] Failed to unmarshal transaction", "error", err)
+				return nil, err
+			}
+
+			if err := b.simulateAndProcessMailbox(ctx, tx); err != nil {
+				log.Error("[SSV] Failed to simulate transaction", "error", err, "txHash", tx.Hash().Hex())
+				return nil, err
+			}
 		}
 	}
 
-	log.Info("Received transaction bundle", "senderID", msg.SenderId, "local", localTxCount, "external", len(xTxs))
+	return nil, nil
+}
 
-	if shouldForward(ctx) && len(xTxs) > 0 {
-		spMsg := &xt.Message{
-			SenderId: b.ChainConfig().ChainID.String(),
-			Payload: &xt.Message_XtRequest{
-				XtRequest: &xt.XTRequest{
-					Transactions: xTxs,
-				},
-			},
-		}
-		for _, xTx := range xTxs {
-			txChainID := new(big.Int).SetBytes(xTx.ChainId)
-			log.Info("Forward cross-chain transactions to SP", "chainID", txChainID, "senderID", msg.SenderId, "txCount", len(xTx.Transaction))
-		}
-		return hashes, b.spClient.Send(ctx, spMsg)
+// Add this method to TransactionAPI
+func (b *EthAPIBackend) simulateAndProcessMailbox(ctx context.Context, tx *types.Transaction) error {
+	blockNrOrHash := rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
+	log.Info("[SSV] Simulating transaction for mailbox operations", blockNrOrHash, "tx", tx.Hash().Hex())
+
+	traceResult, err := b.SimulateTransactionWithSSVTrace(ctx, tx, blockNrOrHash)
+	if err != nil {
+		return fmt.Errorf("simulation failed: %w", err)
 	}
 
-	return hashes, nil
+	log.Info("[SSV] Simulation completed", "txHash", tx.Hash().Hex(), "operations", len(traceResult.Operations))
+
+	// Process mailbox operations
+	for _, op := range traceResult.Operations {
+		switch op.Type {
+		case vm.SLOAD:
+			// Read operation - wait for data from other rollup
+			log.Info("Mailbox read detected",
+				"address", op.Address,
+				"key", hexutil.Encode(op.StorageKey))
+
+			// TODO: Implement waiting logic for cross-chain data
+		case vm.SSTORE:
+			log.Info("Mailbox write detected",
+				"address", op.Address,
+				"key", hexutil.Encode(op.StorageKey),
+				"value", hexutil.Encode(op.StorageValue))
+
+			// TODO: Create cross-chain message for this write
+		case vm.CALL, vm.STATICCALL, vm.DELEGATECALL, vm.CREATE, vm.CREATE2, vm.CALLCODE:
+			log.Info("Mailbox call detected",
+				"address", op.Address,
+				"calldata", hexutil.Encode(op.CallData))
+		}
+	}
+
+	return nil
+}
+
+func (b *EthAPIBackend) handleDecided(xtDecision *sptypes.Decided) error {
+	return b.coordinator.RecordDecision(xtDecision.XtId, xtDecision.GetDecision())
 }
 
 func shouldForward(ctx context.Context) bool {
