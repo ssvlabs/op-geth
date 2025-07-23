@@ -1772,17 +1772,20 @@ func (api *TransactionAPI) SendXTransaction(ctx context.Context, input hexutil.B
 		// Process each transaction and simulate mailbox interactions
 		for _, txReq := range payload.XtRequest.Transactions {
 			// We want to simulate transaction before execution
-			for _, txBytes := range txReq.Transaction {
-				tx := new(types.Transaction)
-				if err := tx.UnmarshalBinary(txBytes); err != nil {
-					log.Error("[SSV] Failed to unmarshal transaction", "error", err)
-					return nil, err
-				}
+			txChainID := new(big.Int).SetBytes(txReq.ChainId)
+			if txChainID.Cmp(api.b.ChainConfig().ChainID) == 0 {
+				for _, txBytes := range txReq.Transaction {
+					tx := new(types.Transaction)
+					if err := tx.UnmarshalBinary(txBytes); err != nil {
+						log.Error("[SSV] Failed to unmarshal transaction", "error", err)
+						return nil, err
+					}
 
-				// simulate
-				if err := api.simulateAndProcessMailbox(ctx, tx); err != nil {
-					log.Error("[SSV] Failed to simulate transaction", "error", err, "txHash", tx.Hash().Hex())
-					return nil, err
+					// simulate
+					if err := api.simulateAndProcessMailbox(ctx, tx); err != nil {
+						log.Error("[SSV] Failed to simulate transaction", "error", err, "txHash", tx.Hash().Hex())
+						return nil, err
+					}
 				}
 			}
 		}
