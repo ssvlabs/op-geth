@@ -686,6 +686,7 @@ func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx 
 		vmConfig = *b.eth.blockchain.GetVMConfig()
 	}
 	vmConfig.Tracer = tracer.Hooks()
+	vmConfig.EnablePreimageRecording = true
 
 	blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
 	evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), vmConfig)
