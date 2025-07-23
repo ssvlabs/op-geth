@@ -24,6 +24,7 @@ import (
 	"math/big"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/holiman/uint256"
@@ -112,7 +113,8 @@ type Ethereum struct {
 	seqRPCService        *rpc.Client
 	historicalRPCService *rpc.Client
 
-	interopRPC *interop.InteropClient
+	interopRPC         *interop.InteropClient
+	supervisorFailsafe atomic.Bool
 
 	nodeCloser func() error
 
