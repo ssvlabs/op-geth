@@ -1769,11 +1769,69 @@ func (api *TransactionAPI) SendXTransaction(ctx context.Context, input hexutil.B
 
 	switch payload := msg.Payload.(type) {
 	case *xt.Message_XtRequest:
+		// Process each transaction and simulate mailbox interactions
+		for _, txReq := range payload.XtRequest.Transactions {
+			// We want to simulate transaction before execution
+			for _, txBytes := range txReq.Transaction {
+				tx := new(types.Transaction)
+				if err := tx.UnmarshalBinary(txBytes); err != nil {
+					log.Error("[SSV] Failed to unmarshal transaction", "error", err)
+					return nil, err
+				}
+
+				// simulate
+				if err := api.simulateAndProcessMailbox(ctx, tx); err != nil {
+					log.Error("[SSV] Failed to simulate transaction", "error", err, "txHash", tx.Hash().Hex())
+					return nil, err
+				}
+			}
+		}
+
 		ctx = context.WithValue(ctx, "forward", true)
 		return api.b.HandleSPMessage(ctx, msg.SenderId, &msg)
 	default:
+		log.Error("[SSV] Unknown message type", "type", fmt.Sprintf("%T", payload))
 		return nil, fmt.Errorf("unknown message type: %T", payload)
 	}
+}
+
+// Add this method to TransactionAPI
+func (api *TransactionAPI) simulateAndProcessMailbox(ctx context.Context, tx *types.Transaction) error {
+	blockNrOrHash := rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
+	log.Info("[SSV] Simulating transaction for mailbox operations", blockNrOrHash, "tx", tx.Hash().Hex())
+
+	traceResult, err := api.b.SimulateTransactionWithSSVTrace(ctx, tx, blockNrOrHash)
+	if err != nil {
+		return fmt.Errorf("simulation failed: %w", err)
+	}
+
+	log.Info("[SSV] Simulation completed", "txHash", tx.Hash().Hex(), "operations", len(traceResult.Operations))
+
+	// Process mailbox operations
+	for _, op := range traceResult.Operations {
+		switch op.Type {
+		case vm.SLOAD:
+			// Read operation - wait for data from other rollup
+			log.Info("Mailbox read detected",
+				"address", op.Address,
+				"key", hexutil.Encode(op.StorageKey))
+
+			// TODO: Implement waiting logic for cross-chain data
+		case vm.SSTORE:
+			log.Info("Mailbox write detected",
+				"address", op.Address,
+				"key", hexutil.Encode(op.StorageKey),
+				"value", hexutil.Encode(op.StorageValue))
+
+			// TODO: Create cross-chain message for this write
+		case vm.CALL, vm.STATICCALL, vm.DELEGATECALL, vm.CREATE, vm.CREATE2, vm.CALLCODE:
+			log.Info("Mailbox call detected",
+				"address", op.Address,
+				"calldata", hexutil.Encode(op.CallData))
+		}
+	}
+
+	return nil
 }
 
 // FillTransaction fills the defaults (nonce, gas, gasPrice or 1559 fields)

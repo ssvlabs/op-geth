@@ -214,6 +214,8 @@ type Config struct {
 
 	SPListenAddr string `toml:",omitempty"`
 	SPAddr       string `toml:",omitempty"`
+
+	MailboxAddresses []common.Address `toml:",omitempty"`
 }
 
 // IPCEndpoint resolves an IPC endpoint based on a configured value, taking into

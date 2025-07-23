@@ -20,7 +20,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/core/ssv"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/eth/tracers/native"
 	"math/big"
 	"time"
 
@@ -631,4 +633,75 @@ func checkTxFee(gasPrice *big.Int, gas uint64, cap float64) error {
 		return fmt.Errorf("tx fee (%.2f ether) exceeds the configured cap (%.2f ether)", feeFloat, cap)
 	}
 	return nil
+}
+
+// SimulateTransaction simulates the execution of a transaction in the context of a specific block.
+func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*core.ExecutionResult, error) {
+	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
+	if err != nil {
+		return nil, err
+	}
+
+	snapshot := stateDB.Snapshot()
+	defer stateDB.RevertToSnapshot(snapshot)
+
+	signer := types.MakeSigner(b.ChainConfig(), header.Number, header.Time)
+	msg, err := core.TransactionToMessage(tx, signer, header.BaseFee)
+	if err != nil {
+		return nil, err
+	}
+
+	blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
+	evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), *b.eth.blockchain.GetVMConfig())
+
+	result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(msg.GasLimit))
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// SimulateTransactionWithSSVTrace simulates a transaction and returns SSV trace data.
+func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
+	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
+	if err != nil {
+		return nil, err
+	}
+
+	snapshot := stateDB.Snapshot()
+	defer stateDB.RevertToSnapshot(snapshot)
+
+	signer := types.MakeSigner(b.ChainConfig(), header.Number, header.Time)
+	msg, err := core.TransactionToMessage(tx, signer, header.BaseFee)
+	if err != nil {
+		return nil, err
+	}
+
+	mailboxAddresses := b.GetMailboxAddresses()
+	tracer := native.NewSSVTracer(mailboxAddresses)
+
+	vmConfig := vm.Config{}
+	if b.eth.blockchain.GetVMConfig() != nil {
+		vmConfig = *b.eth.blockchain.GetVMConfig()
+	}
+	vmConfig.Tracer = tracer.Hooks()
+
+	blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
+	evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), vmConfig)
+
+	result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(header.GasLimit))
+	if err != nil {
+		return nil, err
+	}
+
+	traceResult := tracer.GetTraceResult()
+	traceResult.ExecutionResult = result
+
+	return traceResult, nil
+}
+
+// GetMailboxAddresses returns the list of mailbox contract addresses to watch.
+func (b *EthAPIBackend) GetMailboxAddresses() []common.Address {
+	return b.eth.mailboxAddresses
 }
