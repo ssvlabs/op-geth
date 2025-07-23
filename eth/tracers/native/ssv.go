@@ -62,6 +62,7 @@ func newSSVTracer(ctx *tracers.Context, cfg json.RawMessage, chainConfig *params
 
 func (t *SSVTracer) OnTxStart(env *tracing.VMContext, tx *types.Transaction, from common.Address) {
 	log.Debug("[SSV] OnTxStart called", "txHash", tx.Hash().Hex(), "from", from.Hex())
+
 	t.env = env
 }
 
@@ -74,7 +75,8 @@ func (t *SSVTracer) OnTxEnd(_ *types.Receipt, err error) {
 }
 
 func (t *SSVTracer) OnEnter(depth int, typ byte, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
-	log.Debug("[SSV] OnEnter called", "depth", depth, "type", vm.OpCode(typ), "from", from.Hex(), "to", to.Hex())
+	log.Debug("[SSV] OnEnter called")
+
 	if t.interrupt.Load() {
 		return
 	}
@@ -91,13 +93,15 @@ func (t *SSVTracer) OnEnter(depth int, typ byte, from common.Address, to common.
 			From:     from,
 			CallData: common.CopyBytes(input),
 		}
-		log.Debug("[SSV] Operation recorded", "type", op.Type, "address", to.Hex(), "from", from.Hex(), "gas", gas, "depth", depth)
+
+		log.Debug("[SSV] Operation recorded")
 		t.operations = append(t.operations, op)
 	}
 }
 
 func (t *SSVTracer) OnExit(depth int, output []byte, gasUsed uint64, err error, reverted bool) {
 	log.Debug("[SSV] OnExit called")
+
 	if t.interrupt.Load() {
 		return
 	}
@@ -108,7 +112,7 @@ func (t *SSVTracer) OnExit(depth int, output []byte, gasUsed uint64, err error, 
 }
 
 func (t *SSVTracer) OnStorageChange(addr common.Address, slot common.Hash, prev, new common.Hash) {
-	log.Debug("[SSV] OnStorageChange called", "address", addr.Hex(), "slot", slot.Hex(), "prev", prev.Hex(), "new", new.Hex())
+	log.Debug("[SSV] OnStorageChange called", "address", addr.Hex())
 
 	// Only track storage changes for watched addresses
 	if !t.watchedAddresses[addr] {
@@ -123,12 +127,10 @@ func (t *SSVTracer) OnStorageChange(addr common.Address, slot common.Hash, prev,
 		StorageValue: new.Bytes(),
 	}
 
-	log.Debug("[SSV] Storage operation recorded", "type", op.Type, "address", addr.Hex(), "from", t.currentFrom.Hex(), "storageKey", slot.Hex(), "storageValue", new.Hex())
+	log.Debug("[SSV] Storage operation recorded")
 
 	t.operations = append(t.operations, op)
 }
-
-// Add this to the OnOpcode method in ssv.go to capture SSTORE operations
 
 func (t *SSVTracer) OnOpcode(pc uint64, op byte, gas, cost uint64, scope tracing.OpContext, rData []byte, depth int, err error) {
 	if t.interrupt.Load() {
@@ -138,7 +140,6 @@ func (t *SSVTracer) OnOpcode(pc uint64, op byte, gas, cost uint64, scope tracing
 	opcode := vm.OpCode(op)
 	addr := scope.Address()
 
-	// Only process operations for watched addresses
 	if !t.watchedAddresses[addr] {
 		return
 	}
@@ -158,7 +159,7 @@ func (t *SSVTracer) OnOpcode(pc uint64, op byte, gas, cost uint64, scope tracing
 				StorageValue: value.Bytes(),
 			}
 
-			log.Debug("[SSV] SLOAD operation recorded", "address", addr.Hex(), "storageKey", keyHash.Hex(), "storageValue", value.Hex(), "gas", gas)
+			log.Debug("[SSV] SLOAD operation recorded")
 			t.operations = append(t.operations, operation)
 		}
 
@@ -178,7 +179,7 @@ func (t *SSVTracer) OnOpcode(pc uint64, op byte, gas, cost uint64, scope tracing
 				StorageValue: valueHash.Bytes(),
 			}
 
-			log.Debug("[SSV] SSTORE operation recorded", "address", addr.Hex(), "storageKey", keyHash.Hex(), "storageValue", valueHash.Hex(), "gas", gas)
+			log.Debug("[SSV] SSTORE operation recorded")
 			t.operations = append(t.operations, operation)
 		}
 	}
