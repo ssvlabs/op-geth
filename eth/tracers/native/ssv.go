@@ -46,21 +46,23 @@ func newSSVTracer(ctx *tracers.Context, cfg json.RawMessage, chainConfig *params
 	}
 
 	return &tracers.Tracer{
-		Hooks: &tracing.Hooks{
-			OnEnter:         t.OnEnter,
-			OnExit:          t.OnExit,
-			OnTxStart:       t.OnTxStart,
-			OnTxEnd:         t.OnTxEnd,
-			OnStorageChange: t.OnStorageChange,
-			OnOpcode:        t.OnOpcode,
+			Hooks: &tracing.Hooks{
+				OnEnter:         t.OnEnter,
+				OnExit:          t.OnExit,
+				OnTxStart:       t.OnTxStart,
+				OnTxEnd:         t.OnTxEnd,
+				OnStorageChange: t.OnStorageChange,
+				OnOpcode:        t.OnOpcode,
+			},
+			GetResult: t.GetResult,
+			Stop:      t.Stop,
 		},
-		GetResult: t.GetResult,
-		Stop:      t.Stop,
-	}, nil
+		nil
 }
 
 func (t *SSVTracer) OnTxStart(env *tracing.VMContext, tx *types.Transaction, from common.Address) {
 	log.Debug("[SSV] OnTxStart called", "txHash", tx.Hash().Hex(), "from", from.Hex())
+
 	t.env = env
 }
 
@@ -74,6 +76,7 @@ func (t *SSVTracer) OnTxEnd(_ *types.Receipt, err error) {
 
 func (t *SSVTracer) OnEnter(depth int, typ byte, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
 	log.Debug("[SSV] OnEnter called")
+
 	if t.interrupt.Load() {
 		return
 	}
@@ -82,34 +85,34 @@ func (t *SSVTracer) OnEnter(depth int, typ byte, from common.Address, to common.
 	t.currentFrom = from
 	t.currentTo = to
 
-	// Only track calls to watched addresses
+	// Track calls to watched addresses, including internal calls
 	if t.watchedAddresses[to] {
 		op := ssv.SSVOperation{
 			Type:     vm.OpCode(typ),
 			Address:  to,
 			From:     from,
 			CallData: common.CopyBytes(input),
-			Gas:      gas,
 		}
-		log.Debug("[SSV] Operation recorded", "type", op.Type, "address", to.Hex(), "from", from.Hex(), "gas", gas)
+
+		log.Debug("[SSV] Operation recorded")
 		t.operations = append(t.operations, op)
 	}
 }
 
 func (t *SSVTracer) OnExit(depth int, output []byte, gasUsed uint64, err error, reverted bool) {
 	log.Debug("[SSV] OnExit called")
+
 	if t.interrupt.Load() {
 		return
 	}
-	// Reset current context when exiting
-	t.currentDepth = depth - 1
+
+	if depth > 0 {
+		t.currentDepth = depth - 1
+	}
 }
 
 func (t *SSVTracer) OnStorageChange(addr common.Address, slot common.Hash, prev, new common.Hash) {
-	log.Debug("[SSV] OnStorageChange called", "address", addr.Hex(), "slot", slot.Hex(), "prev", prev.Hex(), "new", new.Hex())
-	if t.interrupt.Load() {
-		return
-	}
+	log.Debug("[SSV] OnStorageChange called", "address", addr.Hex())
 
 	// Only track storage changes for watched addresses
 	if !t.watchedAddresses[addr] {
@@ -124,57 +127,72 @@ func (t *SSVTracer) OnStorageChange(addr common.Address, slot common.Hash, prev,
 		StorageValue: new.Bytes(),
 	}
 
-	log.Debug("[SSV] Storage operation recorded", "type", op.Type, "address", addr.Hex(), "from", t.currentFrom.Hex(), "storageKey", slot.Hex(), "storageValue", new.Hex())
+	log.Debug("[SSV] Storage operation recorded")
 
 	t.operations = append(t.operations, op)
 }
 
 func (t *SSVTracer) OnOpcode(pc uint64, op byte, gas, cost uint64, scope tracing.OpContext, rData []byte, depth int, err error) {
-	log.Debug("[SSV] OnOpcode called")
 	if t.interrupt.Load() {
 		return
 	}
 
 	opcode := vm.OpCode(op)
+	addr := scope.Address()
 
-	// Track SLOAD operations for watched addresses
-	if opcode == vm.SLOAD && len(scope.StackData()) > 0 {
-		addr := scope.Address()
+	if !t.watchedAddresses[addr] {
+		return
+	}
 
-		if !t.watchedAddresses[addr] {
-			return
+	switch opcode {
+	case vm.SLOAD:
+		if len(scope.StackData()) > 0 && t.env != nil && t.env.StateDB != nil {
+			key := scope.StackData()[len(scope.StackData())-1]
+			keyHash := common.Hash(key.Bytes32())
+			value := t.env.StateDB.GetState(addr, keyHash)
+
+			operation := ssv.SSVOperation{
+				Type:         vm.SLOAD,
+				Address:      addr,
+				From:         t.currentFrom,
+				StorageKey:   keyHash.Bytes(),
+				StorageValue: value.Bytes(),
+			}
+
+			log.Debug("[SSV] SLOAD operation recorded")
+			t.operations = append(t.operations, operation)
 		}
 
-		key := scope.StackData()[len(scope.StackData())-1]
-		keyHash := common.Hash(key.Bytes32())
-		value := t.env.StateDB.GetState(addr, keyHash)
+	case vm.SSTORE:
+		if len(scope.StackData()) >= 2 {
+			key := scope.StackData()[len(scope.StackData())-1]
+			value := scope.StackData()[len(scope.StackData())-2]
 
-		operation := ssv.SSVOperation{
-			Type:         vm.SLOAD,
-			Address:      addr,
-			From:         t.currentFrom,
-			StorageKey:   keyHash.Bytes(),
-			StorageValue: value.Bytes(),
-			Gas:          gas,
+			keyHash := common.Hash(key.Bytes32())
+			valueHash := common.Hash(value.Bytes32())
+
+			operation := ssv.SSVOperation{
+				Type:         vm.SSTORE,
+				Address:      addr,
+				From:         t.currentFrom,
+				StorageKey:   keyHash.Bytes(),
+				StorageValue: valueHash.Bytes(),
+			}
+
+			log.Debug("[SSV] SSTORE operation recorded")
+			t.operations = append(t.operations, operation)
 		}
-
-		log.Debug("[SSV] SLOAD operation recorded", "address", addr.Hex(), "storageKey", keyHash.Hex(), "storageValue", value.Hex(), "gas", gas)
-
-		t.operations = append(t.operations, operation)
 	}
 }
 
 // Stop terminates execution of the tracer at the first opportune moment.
 func (t *SSVTracer) Stop(err error) {
-	log.Warn("[SSV] Tracer stopped", "reason", err)
-
 	t.reason = err
 	t.interrupt.Store(true)
 }
 
 // GetResult returns the json-encoded flat list of operations
 func (t *SSVTracer) GetResult() (json.RawMessage, error) {
-	log.Debug("[SSV] GetResult called")
 	result := ssv.SSVTraceResult{
 		Operations: t.operations,
 	}
