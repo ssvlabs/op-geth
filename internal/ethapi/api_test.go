@@ -24,6 +24,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/core/ssv"
+	"github.com/ethereum/go-ethereum/internal/xt"
 	"math"
 	"math/big"
 	"os"
@@ -597,6 +599,21 @@ type testBackend struct {
 	pending *types.Block
 	accman  *accounts.Manager
 	acc     accounts.Account
+}
+
+func (b *testBackend) GetMailboxAddresses() []common.Address {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (b *testBackend) HandleSPMessage(ctx context.Context, from string, msg *xt.Message) ([]common.Hash, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (b *testBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
+	//TODO implement me
+	panic("implement me")
 }
 
 func newTestBackend(t *testing.T, n int, gspec *core.Genesis, engine consensus.Engine, generator func(i int, b *core.BlockGen)) *testBackend {
