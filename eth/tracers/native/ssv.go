@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/eth/tracers"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -59,16 +60,20 @@ func newSSVTracer(ctx *tracers.Context, cfg json.RawMessage, chainConfig *params
 }
 
 func (t *SSVTracer) OnTxStart(env *tracing.VMContext, tx *types.Transaction, from common.Address) {
+	log.Debug("[SSV] OnTxStart called", "txHash", tx.Hash().Hex(), "from", from.Hex())
 	t.env = env
 }
 
 func (t *SSVTracer) OnTxEnd(_ *types.Receipt, err error) {
+	log.Debug("[SSV] OnTxEnd called")
+
 	if err != nil {
 		return
 	}
 }
 
 func (t *SSVTracer) OnEnter(depth int, typ byte, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
+	log.Debug("[SSV] OnEnter called")
 	if t.interrupt.Load() {
 		return
 	}
@@ -86,11 +91,13 @@ func (t *SSVTracer) OnEnter(depth int, typ byte, from common.Address, to common.
 			CallData: common.CopyBytes(input),
 			Gas:      gas,
 		}
+		log.Debug("[SSV] Operation recorded", "type", op.Type, "address", to.Hex(), "from", from.Hex(), "gas", gas)
 		t.operations = append(t.operations, op)
 	}
 }
 
 func (t *SSVTracer) OnExit(depth int, output []byte, gasUsed uint64, err error, reverted bool) {
+	log.Debug("[SSV] OnExit called")
 	if t.interrupt.Load() {
 		return
 	}
@@ -99,6 +106,7 @@ func (t *SSVTracer) OnExit(depth int, output []byte, gasUsed uint64, err error, 
 }
 
 func (t *SSVTracer) OnStorageChange(addr common.Address, slot common.Hash, prev, new common.Hash) {
+	log.Debug("[SSV] OnStorageChange called", "address", addr.Hex(), "slot", slot.Hex(), "prev", prev.Hex(), "new", new.Hex())
 	if t.interrupt.Load() {
 		return
 	}
@@ -114,13 +122,15 @@ func (t *SSVTracer) OnStorageChange(addr common.Address, slot common.Hash, prev,
 		From:         t.currentFrom,
 		StorageKey:   slot.Bytes(),
 		StorageValue: new.Bytes(),
-		Gas:          0, // Gas not available in this context
 	}
+
+	log.Debug("[SSV] Storage operation recorded", "type", op.Type, "address", addr.Hex(), "from", t.currentFrom.Hex(), "storageKey", slot.Hex(), "storageValue", new.Hex())
 
 	t.operations = append(t.operations, op)
 }
 
 func (t *SSVTracer) OnOpcode(pc uint64, op byte, gas, cost uint64, scope tracing.OpContext, rData []byte, depth int, err error) {
+	log.Debug("[SSV] OnOpcode called")
 	if t.interrupt.Load() {
 		return
 	}
@@ -148,18 +158,23 @@ func (t *SSVTracer) OnOpcode(pc uint64, op byte, gas, cost uint64, scope tracing
 			Gas:          gas,
 		}
 
+		log.Debug("[SSV] SLOAD operation recorded", "address", addr.Hex(), "storageKey", keyHash.Hex(), "storageValue", value.Hex(), "gas", gas)
+
 		t.operations = append(t.operations, operation)
 	}
 }
 
 // Stop terminates execution of the tracer at the first opportune moment.
 func (t *SSVTracer) Stop(err error) {
+	log.Warn("[SSV] Tracer stopped", "reason", err)
+
 	t.reason = err
 	t.interrupt.Store(true)
 }
 
 // GetResult returns the json-encoded flat list of operations
 func (t *SSVTracer) GetResult() (json.RawMessage, error) {
+	log.Debug("[SSV] GetResult called")
 	result := ssv.SSVTraceResult{
 		Operations: t.operations,
 	}
@@ -178,6 +193,8 @@ func NewSSVTracer(mailboxAddresses []common.Address) *SSVTracer {
 	for _, addr := range mailboxAddresses {
 		watchedAddresses[addr] = true
 	}
+
+	log.Info("[SSV] Creating new SSVTracer with watched addresses", "addresses", watchedAddresses)
 
 	return &SSVTracer{
 		operations:       make([]ssv.SSVOperation, 0),
