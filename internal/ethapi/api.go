@@ -1771,19 +1771,18 @@ func (api *TransactionAPI) SendXTransaction(ctx context.Context, input hexutil.B
 	case *xt.Message_XtRequest:
 		// Process each transaction and simulate mailbox interactions
 		for _, txReq := range payload.XtRequest.Transactions {
-			txChainID := new(big.Int).SetBytes(txReq.ChainId)
-			if txChainID.Cmp(api.b.ChainConfig().ChainID) == 0 {
-				// We want to simulate transaction before execution
-				for _, txBytes := range txReq.Transaction {
-					tx := new(types.Transaction)
-					if err := tx.UnmarshalBinary(txBytes); err != nil {
-						return nil, err
-					}
+			// We want to simulate transaction before execution
+			for _, txBytes := range txReq.Transaction {
+				tx := new(types.Transaction)
+				if err := tx.UnmarshalBinary(txBytes); err != nil {
+					log.Error("[SSV] Failed to unmarshal transaction", "error", err)
+					return nil, err
+				}
 
-					// simulate
-					if err := api.simulateAndProcessMailbox(ctx, tx); err != nil {
-						return nil, err
-					}
+				// simulate
+				if err := api.simulateAndProcessMailbox(ctx, tx); err != nil {
+					log.Error("[SSV] Failed to simulate transaction", "error", err, "txHash", tx.Hash().Hex())
+					return nil, err
 				}
 			}
 		}
@@ -1791,6 +1790,7 @@ func (api *TransactionAPI) SendXTransaction(ctx context.Context, input hexutil.B
 		ctx = context.WithValue(ctx, "forward", true)
 		return api.b.HandleSPMessage(ctx, msg.SenderId, &msg)
 	default:
+		log.Error("[SSV] Unknown message type", "type", fmt.Sprintf("%T", payload))
 		return nil, fmt.Errorf("unknown message type: %T", payload)
 	}
 }
@@ -1798,11 +1798,14 @@ func (api *TransactionAPI) SendXTransaction(ctx context.Context, input hexutil.B
 // Add this method to TransactionAPI
 func (api *TransactionAPI) simulateAndProcessMailbox(ctx context.Context, tx *types.Transaction) error {
 	blockNrOrHash := rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
+	log.Info("[SSV] Simulating transaction for mailbox operations", blockNrOrHash, "tx", tx.Hash().Hex())
 
 	traceResult, err := api.b.SimulateTransactionWithSSVTrace(ctx, tx, blockNrOrHash)
 	if err != nil {
 		return fmt.Errorf("simulation failed: %w", err)
 	}
+
+	log.Info("[SSV] Simulation completed", "txHash", tx.Hash().Hex(), "operations", len(traceResult.Operations))
 
 	// Process mailbox operations
 	for _, op := range traceResult.Operations {
