@@ -189,7 +189,7 @@ func New(conf *Config) (*Node, error) {
 	node.spClient = spnetwork.NewClient(clientCfg)
 
 	nodeID := fmt.Sprintf("sequencer-%d", time.Now().UnixNano())
-	node.coordinator = spconsensus.NewCoordinator(nodeID, false)
+	node.coordinator = spconsensus.NewCoordinator(nodeID, false, 15*time.Second)
 
 	return node, nil
 }

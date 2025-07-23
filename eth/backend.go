@@ -519,6 +519,9 @@ func (s *Ethereum) Start() error {
 	s.APIBackend.spServer.SetHandler(s.APIBackend.HandleSPMessage)
 	s.APIBackend.spClient.SetHandler(s.APIBackend.HandleSPMessage)
 
+	s.APIBackend.coordinator.SetStartCallback(s.APIBackend.StartCallbackFn(s.blockchain.Config().ChainID))
+	s.APIBackend.coordinator.SetVoteCallback(s.APIBackend.VoteCallbackFn(s.blockchain.Config().ChainID))
+
 	return nil
 }
 

@@ -141,7 +141,7 @@ require (
 	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
-	github.com/ssvlabs/rollup-shared-publisher v0.0.0-20250722215311-33eeef3da641 // indirect
+	github.com/ssvlabs/rollup-shared-publisher v0.0.0-20250723214454-a6580e1b3857 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect

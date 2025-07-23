@@ -49,8 +49,9 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rpc"
 
-	spnetwork "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
+	network "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
 	spconsensus "github.com/ssvlabs/rollup-shared-publisher/pkg/consensus"
+	spnetwork "github.com/ssvlabs/rollup-shared-publisher/pkg/network"
 	sptypes "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
 )
 
@@ -61,8 +62,8 @@ type EthAPIBackend struct {
 	disableTxPool       bool
 	eth                 *Ethereum
 	gpo                 *gasprice.Oracle
-	spServer            spnetwork.Server
-	spClient            spnetwork.Client
+	spServer            network.Server
+	spClient            network.Client
 	coordinator         *spconsensus.Coordinator
 }
 
@@ -525,20 +526,7 @@ func (b *EthAPIBackend) Genesis() *types.Block {
 func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *sptypes.Message) ([]common.Hash, error) {
 	switch payload := msg.Payload.(type) {
 	case *sptypes.Message_XtRequest:
-		hashes, err := b.handleXtRequest(ctx, msg.SenderId, payload.XtRequest)
-		if err != nil {
-			return nil, err
-		}
-
-		if shouldForward(ctx) {
-			spMsg := &sptypes.Message{
-				SenderId: b.ChainConfig().ChainID.String(),
-				Payload:  msg.Payload,
-			}
-			return hashes, b.spClient.Send(ctx, spMsg)
-		}
-
-		return hashes, err
+		return b.handleXtRequest(ctx, msg.SenderId, payload.XtRequest)
 	case *sptypes.Message_Decided:
 		return nil, b.handleDecided(payload.Decided)
 	default:
@@ -547,36 +535,85 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *sptypes.Messag
 }
 
 func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq *sptypes.XTRequest) ([]common.Hash, error) {
-	err := b.coordinator.StartTransaction(xtReq)
+	err := b.coordinator.StartTransaction(from, xtReq)
 	if err != nil {
 		return nil, err
 	}
 
+	xtID, err := xtReq.XtID()
+	if err != nil {
+		return nil, err
+	}
+
+	chainID := b.ChainConfig().ChainID
+
 	// Process each transaction and simulate mailbox interactions
 	for _, txReq := range xtReq.Transactions {
 		txChainID := new(big.Int).SetBytes(txReq.ChainId)
-		if txChainID.Cmp(b.ChainConfig().ChainID) == 0 {
+		if txChainID.Cmp(chainID) == 0 {
 			log.Info("Received local transaction", "senderID", from, "chainID", txChainID, "txCount", len(txReq.Transaction))
+			// We want to simulate transaction before execution
+			for _, txBytes := range txReq.Transaction {
+				tx := new(types.Transaction)
+				if err := tx.UnmarshalBinary(txBytes); err != nil {
+					log.Error("[SSV] Failed to unmarshal transaction", "error", err)
+					return nil, err
+				}
+
+				if err = b.simulateAndProcessMailbox(ctx, tx); err != nil {
+					log.Error("[SSV] Failed to simulate transaction", "error", err, "txHash", tx.Hash().Hex())
+					_, cerr := b.coordinator.RecordVote(xtID, chainID.Text(16), false)
+					if cerr != nil {
+						log.Error("[Coordinator] Failed to record vote", "err", cerr)
+					}
+					return nil, err
+				}
+
+				_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), true)
+				return nil, err
+			}
 		} else {
 			log.Info("Received cross-chain transaction", "chainID", txChainID, "senderID", from, "txCount", len(txReq.Transaction))
-		}
-
-		// We want to simulate transaction before execution
-		for _, txBytes := range txReq.Transaction {
-			tx := new(types.Transaction)
-			if err := tx.UnmarshalBinary(txBytes); err != nil {
-				log.Error("[SSV] Failed to unmarshal transaction", "error", err)
-				return nil, err
-			}
-
-			if err := b.simulateAndProcessMailbox(ctx, tx); err != nil {
-				log.Error("[SSV] Failed to simulate transaction", "error", err, "txHash", tx.Hash().Hex())
-				return nil, err
-			}
 		}
 	}
 
 	return nil, nil
+}
+
+func (b *EthAPIBackend) StartCallbackFn(chainID *big.Int) spconsensus.StartFn {
+	return func(ctx context.Context, from string, xtReq *sptypes.XTRequest) error {
+		if from != spnetwork.SharedPublisherSenderID {
+			spMsg := &sptypes.Message{
+				SenderId: chainID.String(),
+				Payload: &sptypes.Message_XtRequest{
+					xtReq,
+				},
+			}
+			err := b.spClient.Send(ctx, spMsg)
+			if err != nil {
+				log.Error("Failed to send transaction bundle to shared publisher", "err", err)
+			}
+		}
+		return nil
+	}
+}
+
+func (b *EthAPIBackend) VoteCallbackFn(chainID *big.Int) spconsensus.VoteFn {
+	return func(ctx context.Context, xtID *sptypes.XtID, vote bool) error {
+		msgVote := &sptypes.Message_Vote{
+			Vote: &sptypes.Vote{
+				Vote:          vote,
+				XtId:          xtID,
+				SenderChainId: chainID.Bytes(),
+			},
+		}
+
+		spMsg := &sptypes.Message{
+			SenderId: chainID.String(),
+			Payload:  msgVote,
+		}
+		return b.spClient.Send(ctx, spMsg)
+	}
 }
 
 // Add this method to TransactionAPI
@@ -620,17 +657,6 @@ func (b *EthAPIBackend) simulateAndProcessMailbox(ctx context.Context, tx *types
 
 func (b *EthAPIBackend) handleDecided(xtDecision *sptypes.Decided) error {
 	return b.coordinator.RecordDecision(xtDecision.XtId, xtDecision.GetDecision())
-}
-
-func shouldForward(ctx context.Context) bool {
-	var forward bool
-	if value := ctx.Value("forward"); value != nil {
-		var ok bool
-		if forward, ok = value.(bool); !ok {
-			return false
-		}
-	}
-	return forward
 }
 
 // TODO: lets duplicate for PoC but should be extracted to separate package which can be reused by both api_backend.go and api.go

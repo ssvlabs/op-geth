@@ -59,4 +59,6 @@ cmd/workload/workload
 
 .env
 jwt.txt
-datadir
+datadir*
+genesis.json
+genesis-*.json
