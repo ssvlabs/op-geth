@@ -42,6 +42,8 @@ type client struct {
 	// Shutdown management
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	shouldReconnect atomic.Bool
 }
 
 // NewClient creates a new client instance.
@@ -78,6 +80,7 @@ func (c *client) Connect(ctx context.Context) error {
 	c.conn = conn
 	c.writer = spcodec.NewStreamWriter(conn, c.codec)
 	c.connected.Store(true)
+	c.shouldReconnect.Store(true)
 
 	ctx, c.cancel = context.WithCancel(context.Background())
 
@@ -99,6 +102,9 @@ func (c *client) Disconnect(ctx context.Context) error {
 	}
 
 	log.Info("Disconnecting")
+
+	// Stop auto-reconnection
+	c.shouldReconnect.Store(false)
 
 	if c.cancel != nil {
 		c.cancel()
@@ -184,6 +190,12 @@ func (c *client) receiveLoop(ctx context.Context) {
 	defer func() {
 		c.connected.Store(false)
 		log.Info("Connection to SP closed")
+
+		// Start auto-reconnection with exponential backoff
+		if c.shouldReconnect.Load() {
+			c.wg.Add(1)
+			go c.autoReconnectLoop(ctx)
+		}
 	}()
 
 	for {
@@ -211,6 +223,59 @@ func (c *client) receiveLoop(ctx context.Context) {
 				if _, err := c.handler(ctx, &msg); err != nil {
 					log.Error("Handler error", "err", err)
 				}
+			}
+		}
+	}
+}
+
+// autoReconnectLoop attempts to reconnect with exponential backoff
+func (c *client) autoReconnectLoop(ctx context.Context) {
+	defer c.wg.Done()
+
+	baseDelay := c.cfg.ReconnectDelay
+	if baseDelay == 0 {
+		baseDelay = 1 * time.Second
+	}
+
+	maxDelay := 30 * time.Second
+	currentDelay := baseDelay
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			if !c.shouldReconnect.Load() {
+				return
+			}
+
+			if c.IsConnected() {
+				return // Already connected, exit
+			}
+
+			log.Info("Attempting to reconnect", "delay", currentDelay)
+
+			// Wait before attempting reconnection
+			timer := time.NewTimer(currentDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+
+			// Attempt reconnection
+			if err := c.Reconnect(ctx); err != nil {
+				log.Warn("Reconnection failed", "err", err, "next_attempt_in", currentDelay*2)
+
+				// Exponential backoff
+				currentDelay *= 2
+				if currentDelay > maxDelay {
+					currentDelay = maxDelay
+				}
+			} else {
+				log.Info("Successfully reconnected")
+				return // Successfully reconnected, exit
 			}
 		}
 	}
