@@ -1121,13 +1121,6 @@ Please note that --` + MetricsHTTPFlag.Name + ` must be set to start the server.
 		Value:    ethconfig.Defaults.SPServerAddr,
 		Category: flags.SharedPublisherCategory,
 	}
-
-	MailboxAddressesString = &cli.StringFlag{
-		Name:     "sp.mailbox.addresses",
-		Usage:    "Comma-separated list of mailbox contract addresses (e.g., 0x123...,0x456...)",
-		Value:    "",
-		Category: flags.SharedPublisherCategory,
-	}
 )
 
 var (
@@ -1560,12 +1553,6 @@ func SetNodeConfig(ctx *cli.Context, cfg *node.Config) {
 		cfg.SPAddr = ethconfig.Defaults.SPServerAddr
 	}
 
-	if ctx.IsSet(MailboxAddressesString.Name) {
-		addresses := ctx.String(MailboxAddressesString.Name)
-		if addresses != "" {
-			cfg.MailboxAddresses = parseMailboxAddresses(addresses)
-		}
-	}
 	if ctx.IsSet(JWTSecretFlag.Name) {
 		cfg.JWTSecret = ctx.String(JWTSecretFlag.Name)
 	}
@@ -1665,27 +1652,6 @@ func setGPO(ctx *cli.Context, cfg *gasprice.Config) {
 	if ctx.IsSet(GpoMinSuggestedPriorityFeeFlag.Name) {
 		cfg.MinSuggestedPriorityFee = big.NewInt(ctx.Int64(GpoMinSuggestedPriorityFeeFlag.Name))
 	}
-}
-
-func parseMailboxAddresses(addresses string) []common.Address {
-	parts := strings.Split(addresses, ",")
-	result := make([]common.Address, 0, len(parts))
-
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed == "" {
-			continue
-		}
-
-		if !common.IsHexAddress(trimmed) {
-			log.Warn("Invalid mailbox address, skipping", "address", trimmed)
-			continue
-		}
-
-		result = append(result, common.HexToAddress(trimmed))
-	}
-
-	return result
 }
 
 func setTxPool(ctx *cli.Context, cfg *legacypool.Config) {

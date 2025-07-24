@@ -33,15 +33,12 @@ type SSVTracer struct {
 
 // newSSVTracer is the registered constructor.
 func newSSVTracer(ctx *tracers.Context, cfg json.RawMessage, chainConfig *params.ChainConfig) (*tracers.Tracer, error) {
-	// TODO: The watched addresses should be configurable via cfg
-	mockAddr1 := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	mockAddr2 := common.HexToAddress("0xabcdefabcdefabcdefabcdefabcdefabcdefabcd")
+	mailBoxAddr := common.HexToAddress("0xEd3afBc0af3B010815dd242f1aA20d493Ae3160d")
 
 	t := &SSVTracer{
 		operations: make([]ssv.SSVOperation, 0),
 		watchedAddresses: map[common.Address]bool{
-			mockAddr1: true,
-			mockAddr2: true,
+			mailBoxAddr: true,
 		},
 	}
 
