@@ -4037,7 +4037,6 @@ func (m *mockSSVBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx
 			From:         common.HexToAddress("0x0"),
 			StorageKey:   common.Hash{0x01}.Bytes(),
 			StorageValue: common.Hash{0x02}.Bytes(),
-			Gas:          50000,
 		},
 		{
 			Type:         vm.SLOAD,
@@ -4045,7 +4044,6 @@ func (m *mockSSVBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx
 			From:         common.HexToAddress("0x0"),
 			StorageKey:   common.Hash{0x01}.Bytes(),
 			StorageValue: common.Hash{0x02}.Bytes(),
-			Gas:          2000,
 		},
 	}
 	m.capturedOps = ops
