@@ -704,7 +704,7 @@ func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx 
 	return traceResult, nil
 }
 
-// GetMailboxAddresses returns the list of mailbox contract addresses to watch.
+// GetMailboxAddresses returns the list of mailbox contract addresses to watch.package ethapi
 func (b *EthAPIBackend) GetMailboxAddresses() []common.Address {
 	return []common.Address{
 		common.HexToAddress(mailBoxAddr),
