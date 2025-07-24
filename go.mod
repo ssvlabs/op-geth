@@ -61,7 +61,7 @@ require (
 	github.com/rs/cors v1.7.0
 	github.com/rs/zerolog v1.34.0
 	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible
-	github.com/ssvlabs/rollup-shared-publisher v1.0.1-0.20250724103421-09b6b09edeff
+	github.com/ssvlabs/rollup-shared-publisher v1.0.1-0.20250724163326-a1de8a533bf3
 	github.com/status-im/keycard-go v0.2.0
 	github.com/stretchr/testify v1.10.0
 	github.com/supranational/blst v0.3.14

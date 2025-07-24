@@ -166,7 +166,7 @@ func (s *server) handleConnection(ctx context.Context, netConn net.Conn) {
 
 			if s.handler != nil {
 				if _, err := s.handler(ctx, &msg); err != nil {
-					log.Error("Handler error", "remote_addr", netConn.RemoteAddr().String(), "connID", connID)
+					log.Error("Handler error", "remote_addr", netConn.RemoteAddr().String(), "connID", connID, "err", err)
 				}
 			}
 		}
