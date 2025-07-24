@@ -19,6 +19,7 @@ jobs:
           parameters: '["imageTag=${GITHUB_SHA}",
                       "dockerBuildExtraArgs="]'
 
+
       - name: deploy to stage ovh
         uses: ssvlabs/github-actions/actions/argo-workflow-submit@v0.2.0
         with:
