@@ -4059,7 +4059,37 @@ func (m *mockSSVBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx
 
 func (m *mockSSVBackend) HandleSPMessage(ctx context.Context, msg *xt.Message) ([]common.Hash, error) {
 	m.handleSPCalled = true
-	return []common.Hash{common.HexToHash("0x123")}, nil
+
+	// Extract XTRequest from message
+	switch payload := msg.Payload.(type) {
+	case *xt.Message_XtRequest:
+		xtReq := payload.XtRequest
+
+		// Process transactions (simulate the logic from real HandleSPMessage)
+		chainID := m.ChainConfig().ChainID
+		for _, txReq := range xtReq.Transactions {
+			txChainID := new(big.Int).SetBytes(txReq.ChainId)
+			if txChainID.Cmp(chainID) == 0 {
+				for _, txBytes := range txReq.Transaction {
+					tx := new(types.Transaction)
+					if err := tx.UnmarshalBinary(txBytes); err != nil {
+						return nil, fmt.Errorf("failed to unmarshal transaction: %v", err)
+					}
+
+					// Simulate the transaction (this will set simulateCalled flag)
+					_, err := m.SimulateTransactionWithSSVTrace(ctx, tx, rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber))
+					if err != nil {
+						return nil, fmt.Errorf("simulation failed: %w", err)
+					}
+				}
+			}
+		}
+
+		return []common.Hash{common.HexToHash("0x123")}, nil
+
+	default:
+		return nil, fmt.Errorf("unknown message type: %T", payload)
+	}
 }
 
 func TestSendXTransaction_SimulationError(t *testing.T) {
