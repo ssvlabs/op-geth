@@ -538,10 +538,12 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *sptypes.Messag
 }
 
 func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq *sptypes.XTRequest) ([]common.Hash, error) {
-	// TODO: maybe move to
-	err := b.coordinator.StartTransaction(from, xtReq)
-	if err != nil {
-		return nil, err
+	// Only start coordinator if this is actually a cross-chain transaction
+	if len(xtReq.Transactions) > 1 {
+		err := b.coordinator.StartTransaction(from, xtReq)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	xtID, err := xtReq.XtID()
@@ -622,7 +624,7 @@ func (b *EthAPIBackend) StartCallbackFn(chainID *big.Int) spconsensus.StartFn {
 			spMsg := &sptypes.Message{
 				SenderId: chainID.String(),
 				Payload: &sptypes.Message_XtRequest{
-					xtReq,
+					XtRequest: xtReq,
 				},
 			}
 			err := b.spClient.Send(ctx, spMsg)

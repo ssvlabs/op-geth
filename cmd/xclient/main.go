@@ -170,8 +170,15 @@ func main() {
 		log.Fatalf("RPC call failed: %v", err)
 	}
 
+	if len(resultHashes) != len(xtRequest.Transactions) {
+		log.Fatalf("Expected %d transaction hashes, got %d", len(xtRequest.Transactions), len(resultHashes))
+	}
+
 	fmt.Println("Successfully received hashes from custom RPC:")
 	for i, hash := range resultHashes {
+		if hash == (common.Hash{}) {
+			log.Fatalf("Received empty hash for transaction %d", i)
+		}
 		fmt.Printf("  Tx %d Hash: %s\n", i+1, hash.Hex())
 	}
 }
