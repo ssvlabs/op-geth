@@ -1,0 +1,28 @@
+name: Workflow main
+on:
+  push:
+    branches:
+      - "stage"
+      - "ci"
+jobs:
+  build-image-and-deploy:
+    container:
+      image: node:20
+    runs-on: self-hosted
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+      - name: build image
+        uses: ssvlabs/github-actions/actions/argo-workflow-submit@v0.2.0
+        with:
+          argo_workflow_file: .argo/build-image.yaml
+          parameters: '["imageTag=${GITHUB_SHA}",
+                      "dockerBuildExtraArgs="]'
+
+      - name: deploy to stage ovh
+        uses: ssvlabs/github-actions/actions/argo-workflow-submit@v0.2.0
+        with:
+          argo_workflow_file: .argo/deploy.yaml
+          parameters: '["gitopsRepo=gitops-stage",
+                      "imageTag=${GITHUB_SHA}",
+                      "filePath=environments/ovh/optimism/optimism-stack*"]'
