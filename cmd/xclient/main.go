@@ -16,7 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
 
-	"github.com/ethereum/go-ethereum/internal/xt"
+	spproto "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
 )
 
 const (
@@ -124,8 +124,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	xtRequest := &xt.XTRequest{
-		Transactions: []*xt.TransactionRequest{
+	xtRequest := &spproto.XTRequest{
+		Transactions: []*spproto.TransactionRequest{
 			{
 				ChainId: chainAId.Bytes(),
 				Transaction: [][]byte{
@@ -141,9 +141,9 @@ func main() {
 		},
 	}
 
-	spMsg := &xt.Message{
-		SenderId: "localhost1",
-		Payload: &xt.Message_XtRequest{
+	spMsg := &spproto.Message{
+		SenderId: "client",
+		Payload: &spproto.Message_XtRequest{
 			XtRequest: xtRequest,
 		},
 	}

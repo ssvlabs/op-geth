@@ -363,7 +363,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	eth.miner.SetExtra(makeExtraData(config.Miner.ExtraData))
 	eth.miner.SetPrioAddresses(config.TxPool.Locals)
 
-	eth.APIBackend = &EthAPIBackend{stack.Config().ExtRPCEnabled(), stack.Config().AllowUnprotectedTxs, config.RollupDisableTxPoolAdmission, eth, nil, nil, nil}
+	eth.APIBackend = &EthAPIBackend{stack.Config().ExtRPCEnabled(), stack.Config().AllowUnprotectedTxs, config.RollupDisableTxPoolAdmission, eth, nil, nil, nil, nil}
 	if eth.APIBackend.allowUnprotectedTxs {
 		log.Info("Unprotected transactions allowed")
 	}
@@ -406,6 +406,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 
 	eth.APIBackend.spServer = stack.SPServer()
 	eth.APIBackend.spClient = stack.SPClient()
+	eth.APIBackend.coordinator = stack.Coordinator()
 
 	return eth, nil
 }
@@ -512,6 +513,9 @@ func (s *Ethereum) Start() error {
 
 	s.APIBackend.spServer.SetHandler(s.APIBackend.HandleSPMessage)
 	s.APIBackend.spClient.SetHandler(s.APIBackend.HandleSPMessage)
+
+	s.APIBackend.coordinator.SetStartCallback(s.APIBackend.StartCallbackFn(s.blockchain.Config().ChainID))
+	s.APIBackend.coordinator.SetVoteCallback(s.APIBackend.VoteCallbackFn(s.blockchain.Config().ChainID))
 
 	return nil
 }
