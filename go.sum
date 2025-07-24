@@ -345,16 +345,6 @@ github.com/russross/blackfriday/v2 v2.1.0 h1:JIOH55/0cWyOuilr9/qlrm0BSXldqnqwMsf
 github.com/russross/blackfriday/v2 v2.1.0/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
 github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible h1:Bn1aCHHRnjv4Bl16T8rcaFjYSrGrIZvpiGO6P3Q4GpU=
 github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible/go.mod h1:5b4v6he4MtMOwMlS0TUMTu2PcXUg8+E1lC7eC3UO/RA=
-github.com/ssvlabs/rollup-shared-publisher v1.0.1-0.20250724103421-09b6b09edeff h1:m2oBjXOaL3iuKFVOYZIH3w2Cf1uVNrAslEj/tI3foZw=
-github.com/ssvlabs/rollup-shared-publisher v1.0.1-0.20250724103421-09b6b09edeff/go.mod h1:TcbQepMLe/yCv7xBu4Duz9FQb1kpozaC66JKTomlNag=
-github.com/ssvlabs/rollup-shared-publisher v1.0.1-0.20250724140913-974fa5e27413 h1:ivnZPbe2FrzB2j73ek1F4aNmJSh7MrRN9SzOrPVHKvE=
-github.com/ssvlabs/rollup-shared-publisher v1.0.1-0.20250724140913-974fa5e27413/go.mod h1:TcbQepMLe/yCv7xBu4Duz9FQb1kpozaC66JKTomlNag=
-github.com/ssvlabs/rollup-shared-publisher v1.0.1-0.20250724141953-f3d42ab0ac13 h1:Ds1t0rn0nUpVYSstEZRcG30ZRvRg1QUX3g9qTLWj8qg=
-github.com/ssvlabs/rollup-shared-publisher v1.0.1-0.20250724141953-f3d42ab0ac13/go.mod h1:TcbQepMLe/yCv7xBu4Duz9FQb1kpozaC66JKTomlNag=
-github.com/ssvlabs/rollup-shared-publisher v1.0.1-0.20250724162754-9d94eb3062e0 h1:CfQGbNsPUEi9HNdMVU8iGdcCitDRMVCJlxfsu1RrF1E=
-github.com/ssvlabs/rollup-shared-publisher v1.0.1-0.20250724162754-9d94eb3062e0/go.mod h1:TcbQepMLe/yCv7xBu4Duz9FQb1kpozaC66JKTomlNag=
-github.com/ssvlabs/rollup-shared-publisher v1.0.1-0.20250724163326-a1de8a533bf3 h1:8nqFQPuUgKKabc7QX1RlfhrvBZO4rLguan5K0O2+aZY=
-github.com/ssvlabs/rollup-shared-publisher v1.0.1-0.20250724163326-a1de8a533bf3/go.mod h1:TcbQepMLe/yCv7xBu4Duz9FQb1kpozaC66JKTomlNag=
 github.com/status-im/keycard-go v0.2.0 h1:QDLFswOQu1r5jsycloeQh3bVU8n/NatHHaZobtDnDzA=
 github.com/status-im/keycard-go v0.2.0/go.mod h1:wlp8ZLbsmrF6g6WjugPAx+IzoLrkdf9+mHxBEeo3Hbg=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
