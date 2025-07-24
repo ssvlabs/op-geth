@@ -25,7 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ethereum/go-ethereum/core/ssv"
-	"github.com/ethereum/go-ethereum/internal/xt"
+	xt "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
 	"google.golang.org/protobuf/proto"
 	"math"
 	"math/big"
@@ -607,7 +607,7 @@ func (b *testBackend) GetMailboxAddresses() []common.Address {
 	panic("implement me")
 }
 
-func (b *testBackend) HandleSPMessage(ctx context.Context, from string, msg *xt.Message) ([]common.Hash, error) {
+func (b *testBackend) HandleSPMessage(ctx context.Context, msg *xt.Message) ([]common.Hash, error) {
 	//TODO implement me
 	panic("implement me")
 }
@@ -4057,7 +4057,7 @@ func (m *mockSSVBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx
 	}, nil
 }
 
-func (m *mockSSVBackend) HandleSPMessage(ctx context.Context, from string, msg *xt.Message) ([]common.Hash, error) {
+func (m *mockSSVBackend) HandleSPMessage(ctx context.Context, msg *xt.Message) ([]common.Hash, error) {
 	m.handleSPCalled = true
 	return []common.Hash{common.HexToHash("0x123")}, nil
 }

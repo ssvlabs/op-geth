@@ -20,7 +20,7 @@ import (
 	"context"
 	"errors"
 	"github.com/ethereum/go-ethereum/core/ssv"
-	"github.com/ethereum/go-ethereum/internal/xt"
+	xt "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
 	"math/big"
 	"reflect"
 	"testing"
@@ -263,7 +263,7 @@ type backendMock struct {
 	config  *params.ChainConfig
 }
 
-func (b *backendMock) HandleSPMessage(ctx context.Context, from string, msg *xt.Message) ([]common.Hash, error) {
+func (b *backendMock) HandleSPMessage(ctx context.Context, msg *xt.Message) ([]common.Hash, error) {
 	//TODO implement me
 	panic("implement me")
 }

@@ -369,6 +369,8 @@ github.com/ssvlabs/rollup-shared-publisher v0.0.0-20250723194258-8e379d88aa36 h1
 github.com/ssvlabs/rollup-shared-publisher v0.0.0-20250723194258-8e379d88aa36/go.mod h1:TcbQepMLe/yCv7xBu4Duz9FQb1kpozaC66JKTomlNag=
 github.com/ssvlabs/rollup-shared-publisher v0.0.0-20250723214454-a6580e1b3857 h1:KalBgEgz8RRJ16neP+eWDjZzaC3ekbseRfnEwMfmJeA=
 github.com/ssvlabs/rollup-shared-publisher v0.0.0-20250723214454-a6580e1b3857/go.mod h1:TcbQepMLe/yCv7xBu4Duz9FQb1kpozaC66JKTomlNag=
+github.com/ssvlabs/rollup-shared-publisher v1.0.0 h1:ijVYXk4l1kpUCVDs057nP0Vtpf6QD4T95VIb48Y7ISo=
+github.com/ssvlabs/rollup-shared-publisher v1.0.0/go.mod h1:TcbQepMLe/yCv7xBu4Duz9FQb1kpozaC66JKTomlNag=
 github.com/status-im/keycard-go v0.2.0 h1:QDLFswOQu1r5jsycloeQh3bVU8n/NatHHaZobtDnDzA=
 github.com/status-im/keycard-go v0.2.0/go.mod h1:wlp8ZLbsmrF6g6WjugPAx+IzoLrkdf9+mHxBEeo3Hbg=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
