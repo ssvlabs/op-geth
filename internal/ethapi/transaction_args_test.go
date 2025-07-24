@@ -19,6 +19,8 @@ package ethapi
 import (
 	"context"
 	"errors"
+	"github.com/ethereum/go-ethereum/core/ssv"
+	xt "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
 	"math/big"
 	"reflect"
 	"testing"
@@ -259,6 +261,21 @@ func TestSetFeeDefaults(t *testing.T) {
 type backendMock struct {
 	current *types.Header
 	config  *params.ChainConfig
+}
+
+func (b *backendMock) HandleSPMessage(ctx context.Context, msg *xt.Message) ([]common.Hash, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (b *backendMock) SimulateTransactionWithSSVTrace(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (b *backendMock) GetMailboxAddresses() []common.Address {
+	//TODO implement me
+	panic("implement me")
 }
 
 func newBackendMock() *backendMock {

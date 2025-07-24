@@ -21,7 +21,6 @@ func (s SSVOperation) MarshalJSON() ([]byte, error) {
 		StorageKey   hexutil.Bytes  `json:"storageKey,omitempty" rlp:"optional"`
 		StorageValue hexutil.Bytes  `json:"storageValue,omitempty" rlp:"optional"`
 		From         common.Address `json:"from"`
-		Gas          hexutil.Uint64 `json:"gas"`
 		TypeString   string         `json:"type"`
 	}
 	var enc SSVOperation
@@ -31,7 +30,6 @@ func (s SSVOperation) MarshalJSON() ([]byte, error) {
 	enc.StorageKey = s.StorageKey
 	enc.StorageValue = s.StorageValue
 	enc.From = s.From
-	enc.Gas = hexutil.Uint64(s.Gas)
 	enc.TypeString = s.TypeString()
 	return json.Marshal(&enc)
 }
@@ -45,7 +43,6 @@ func (s *SSVOperation) UnmarshalJSON(input []byte) error {
 		StorageKey   *hexutil.Bytes  `json:"storageKey,omitempty" rlp:"optional"`
 		StorageValue *hexutil.Bytes  `json:"storageValue,omitempty" rlp:"optional"`
 		From         *common.Address `json:"from"`
-		Gas          *hexutil.Uint64 `json:"gas"`
 	}
 	var dec SSVOperation
 	if err := json.Unmarshal(input, &dec); err != nil {
@@ -68,9 +65,6 @@ func (s *SSVOperation) UnmarshalJSON(input []byte) error {
 	}
 	if dec.From != nil {
 		s.From = *dec.From
-	}
-	if dec.Gas != nil {
-		s.Gas = uint64(*dec.Gas)
 	}
 	return nil
 }

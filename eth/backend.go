@@ -112,13 +112,10 @@ type Ethereum struct {
 	// OP-Stack additions
 	seqRPCService        *rpc.Client
 	historicalRPCService *rpc.Client
-
-	interopRPC         *interop.InteropClient
-	supervisorFailsafe atomic.Bool
+	interopRPC           *interop.InteropClient
+	supervisorFailsafe   atomic.Bool
 
 	nodeCloser func() error
-
-	mailboxAddresses []common.Address
 }
 
 // New creates a new Ethereum object (including the initialisation of the common Ethereum object),
@@ -192,10 +189,8 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 
 		// OP-Stack addition
 		nodeCloser: stack.Close,
-
-		// SSV
-		mailboxAddresses: config.MailboxAddresses,
 	}
+
 	bcVersion := rawdb.ReadDatabaseVersion(chainDb)
 	dbVer := "<nil>"
 	if bcVersion != nil {
@@ -368,7 +363,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	eth.miner.SetExtra(makeExtraData(config.Miner.ExtraData))
 	eth.miner.SetPrioAddresses(config.TxPool.Locals)
 
-	eth.APIBackend = &EthAPIBackend{stack.Config().ExtRPCEnabled(), stack.Config().AllowUnprotectedTxs, config.RollupDisableTxPoolAdmission, eth, nil, nil, nil}
+	eth.APIBackend = &EthAPIBackend{stack.Config().ExtRPCEnabled(), stack.Config().AllowUnprotectedTxs, config.RollupDisableTxPoolAdmission, eth, nil, nil, nil, nil}
 	if eth.APIBackend.allowUnprotectedTxs {
 		log.Info("Unprotected transactions allowed")
 	}
@@ -411,6 +406,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 
 	eth.APIBackend.spServer = stack.SPServer()
 	eth.APIBackend.spClient = stack.SPClient()
+	eth.APIBackend.coordinator = stack.Coordinator()
 
 	return eth, nil
 }
@@ -517,6 +513,9 @@ func (s *Ethereum) Start() error {
 
 	s.APIBackend.spServer.SetHandler(s.APIBackend.HandleSPMessage)
 	s.APIBackend.spClient.SetHandler(s.APIBackend.HandleSPMessage)
+
+	s.APIBackend.coordinator.SetStartCallback(s.APIBackend.StartCallbackFn(s.blockchain.Config().ChainID))
+	s.APIBackend.coordinator.SetVoteCallback(s.APIBackend.VoteCallbackFn(s.blockchain.Config().ChainID))
 
 	return nil
 }
@@ -703,8 +702,4 @@ func (s *Ethereum) HandleRequiredProtocolVersion(required params.ProtocolVersion
 		return s.nodeCloser()
 	}
 	return nil
-}
-
-func (s *Ethereum) MailboxAddresses() []common.Address {
-	return s.mailboxAddresses
 }

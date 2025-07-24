@@ -73,8 +73,6 @@ var Defaults = Config{
 
 	SPListenAddr: ":9898",
 	SPServerAddr: "localhost:18080",
-
-	MailboxAddresses: []common.Address{},
 }
 
 //go:generate go run github.com/fjl/gencodec -type Config -formats toml -out gen_config.go
@@ -202,8 +200,6 @@ type Config struct {
 
 	SPListenAddr string
 	SPServerAddr string
-
-	MailboxAddresses []common.Address
 }
 
 // CreateConsensusEngine creates a consensus engine for the given chain config.

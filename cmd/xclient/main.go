@@ -11,18 +11,18 @@ import (
 	"os"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rpc"
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
 
-	"github.com/ethereum/go-ethereum/internal/xt"
+	spproto "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
 )
 
 const (
 	sendTxRPCMethod = "eth_sendXTransaction"
 	configFile      = "config.yml"
+	mailboxAddr     = "0xEd3afBc0af3B010815dd242f1aA20d493Ae3160d"
 )
 
 type Rollup struct {
@@ -52,8 +52,8 @@ func main() {
 		log.Fatal("Rollup 'B' not found in configuration")
 	}
 
-	chainA_ID := rollupA.GetChainID()
-	chainB_ID := rollupB.GetChainID()
+	chainAId := rollupA.GetChainID()
+	chainBId := rollupB.GetChainID()
 
 	privateKeyA := parsePrivateKey(rollupA.PrivateKey)
 	privateKeyB := parsePrivateKey(rollupB.PrivateKey)
@@ -76,62 +76,64 @@ func main() {
 		log.Fatal(err)
 	}
 
-	txDataA := &types.DynamicFeeTx{
-		ChainID:    chainA_ID,
-		Nonce:      nonceA,
-		GasTipCap:  big.NewInt(1000000000),
-		GasFeeCap:  big.NewInt(20000000000),
-		Gas:        21000,
-		To:         &addressB,
-		Value:      big.NewInt(1000000000000000),
-		Data:       nil,
-		AccessList: nil,
+	// Create ping-pong parameters
+	sessionId := big.NewInt(12345)
+	pingData := []byte("hello from rollup A")
+	pongData := []byte("hello from rollup B")
+	label := []byte("test-session")
+
+	// Create a ping transaction (A -> B)
+	pingParams := PingPongParams{
+		ChainSrc:  chainAId,
+		ChainDest: chainBId,
+		Sender:    addressA,
+		Receiver:  addressB,
+		SessionId: sessionId,
+		Data:      pingData,
+		Label:     label,
 	}
 
-	tx1 := types.NewTx(txDataA)
-
-	signedTx1, err := types.SignTx(tx1, types.NewLondonSigner(chainA_ID), privateKeyA)
+	signedTx1, err := createPingTransaction(pingParams, nonceA, privateKeyA)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Failed to create ping transaction:", err)
 	}
+
 	rlpSignedTx1, err := signedTx1.MarshalBinary()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	txDataB := &types.DynamicFeeTx{
-		ChainID:    chainB_ID,
-		Nonce:      nonceB,
-		GasTipCap:  big.NewInt(1000000000),
-		GasFeeCap:  big.NewInt(20000000000),
-		Gas:        21000,
-		To:         &addressA,
-		Value:      big.NewInt(1000000000000000),
-		Data:       nil,
-		AccessList: nil,
+	// Create a pong transaction (B -> A)
+	pongParams := PingPongParams{
+		ChainSrc:  chainBId,
+		ChainDest: chainAId,
+		Sender:    addressB,
+		Receiver:  addressA,
+		SessionId: sessionId,
+		Data:      pongData,
+		Label:     label,
 	}
 
-	tx2 := types.NewTx(txDataB)
-
-	signedTx2, err := types.SignTx(tx2, types.NewLondonSigner(chainB_ID), privateKeyB)
+	signedTx2, err := createPongTransaction(pongParams, nonceB, privateKeyB)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Failed to create pong transaction:", err)
 	}
+
 	rlpSignedTx2, err := signedTx2.MarshalBinary()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	xtRequest := &xt.XTRequest{
-		Transactions: []*xt.TransactionRequest{
+	xtRequest := &spproto.XTRequest{
+		Transactions: []*spproto.TransactionRequest{
 			{
-				ChainId: chainA_ID.Bytes(),
+				ChainId: chainAId.Bytes(),
 				Transaction: [][]byte{
 					rlpSignedTx1,
 				},
 			},
 			{
-				ChainId: chainB_ID.Bytes(),
+				ChainId: chainBId.Bytes(),
 				Transaction: [][]byte{
 					rlpSignedTx2,
 				},
@@ -139,9 +141,9 @@ func main() {
 		},
 	}
 
-	spMsg := &xt.Message{
-		SenderId: "localhost1",
-		Payload: &xt.Message_XtRequest{
+	spMsg := &spproto.Message{
+		SenderId: "client",
+		Payload: &spproto.Message_XtRequest{
 			XtRequest: xtRequest,
 		},
 	}
@@ -151,7 +153,10 @@ func main() {
 		log.Fatalf("Failed to marshal XTRequest: %v", err)
 	}
 
-	fmt.Printf("Successfully encoded payload. Size: %d bytes\n", len(encodedPayload))
+	fmt.Printf("Successfully encoded ping-pong payload. Size: %d bytes\n", len(encodedPayload))
+	fmt.Printf("Session ID: %d\n", sessionId.Int64())
+	fmt.Printf("Ping data: %s\n", string(pingData))
+	fmt.Printf("Pong data: %s\n", string(pongData))
 
 	l1Client, err := rpc.Dial(rollupA.RPC)
 	if err != nil {
@@ -191,7 +196,6 @@ func parsePrivateKey(privKeyHex string) *ecdsa.PrivateKey {
 		log.Fatal("Private key cannot be empty")
 	}
 
-	// Remove 0x prefix if present
 	if len(privKeyHex) >= 2 && privKeyHex[:2] == "0x" {
 		privKeyHex = privKeyHex[2:]
 	}
