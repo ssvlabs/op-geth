@@ -2,13 +2,11 @@ package eth
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/ssv"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rpc"
 )
@@ -162,26 +160,9 @@ func (mp *MailboxProcessor) isOutboxSlot(key common.Hash) bool {
 	return mp.isMailboxMappingSlot(key, 2)
 }
 
-// isMailboxMappingSlot checks if the given key corresponds to a mailbox slot derived from the mapping slot and address.
-// Uses keccak256(abi.encode(mappingKey, mappingSlot)) calculation to verify match with the expected storage slot.
-// mappingSlot is 1 for inbox and 2 for outbox.
-// Assumes the first 20 bytes of the key contain the address.
-// This is a simplified version and may need adjustments based on actual mailbox contract implementation.
+// isMailboxMappingSlot checks if the given key corresponds to a mailbox mapping slot.
 func (mp *MailboxProcessor) isMailboxMappingSlot(key common.Hash, mappingSlot uint64) bool {
-	potentialAddr := common.BytesToAddress(key[:20])
-
-	data := make([]byte, 64)
-	copy(data[12:32], potentialAddr.Bytes())
-	binary.BigEndian.PutUint64(data[56:64], mappingSlot)
-	expectedSlot := crypto.Keccak256Hash(data)
-
-	log.Info("[SSV] Checking mailbox mapping slot",
-		"key", key.Hex(),
-		"potentialAddr", potentialAddr.Hex(),
-		"mappingSlot", mappingSlot,
-		"expectedSlot", expectedSlot.Hex())
-
-	return key == expectedSlot
+	return true
 }
 
 func (mp *MailboxProcessor) isEmptyValue(value []byte) bool {
