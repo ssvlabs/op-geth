@@ -112,13 +112,10 @@ type Ethereum struct {
 	// OP-Stack additions
 	seqRPCService        *rpc.Client
 	historicalRPCService *rpc.Client
-
-	interopRPC         *interop.InteropClient
-	supervisorFailsafe atomic.Bool
+	interopRPC           *interop.InteropClient
+	supervisorFailsafe   atomic.Bool
 
 	nodeCloser func() error
-
-	mailboxAddresses []common.Address
 }
 
 // New creates a new Ethereum object (including the initialisation of the common Ethereum object),
@@ -192,10 +189,8 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 
 		// OP-Stack addition
 		nodeCloser: stack.Close,
-
-		// SSV
-		mailboxAddresses: config.MailboxAddresses,
 	}
+
 	bcVersion := rawdb.ReadDatabaseVersion(chainDb)
 	dbVer := "<nil>"
 	if bcVersion != nil {
@@ -707,8 +702,4 @@ func (s *Ethereum) HandleRequiredProtocolVersion(required params.ProtocolVersion
 		return s.nodeCloser()
 	}
 	return nil
-}
-
-func (s *Ethereum) MailboxAddresses() []common.Address {
-	return s.mailboxAddresses
 }

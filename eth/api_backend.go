@@ -55,6 +55,8 @@ import (
 	sptypes "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
 )
 
+const mailBoxAddr = "0xEd3afBc0af3B010815dd242f1aA20d493Ae3160d"
+
 // EthAPIBackend implements ethapi.Backend and tracers.Backend for full nodes
 type EthAPIBackend struct {
 	extRPCEnabled       bool
@@ -530,11 +532,13 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *sptypes.Messag
 	case *sptypes.Message_Decided:
 		return nil, b.handleDecided(payload.Decided)
 	default:
+		log.Error("[SSV] Unknown message type", "type", fmt.Sprintf("%T", payload))
 		return nil, fmt.Errorf("unknown message type: %T", payload)
 	}
 }
 
 func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq *sptypes.XTRequest) ([]common.Hash, error) {
+	// TODO: maybe move to
 	err := b.coordinator.StartTransaction(from, xtReq)
 	if err != nil {
 		return nil, err
@@ -547,7 +551,15 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 
 	chainID := b.ChainConfig().ChainID
 
-	// Process each transaction and simulate mailbox interactions
+	mailboxAddrs := b.GetMailboxAddresses()
+	processor := NewMailboxProcessor(b.ChainConfig().ChainID.Uint64(), mailboxAddrs)
+
+	// Generate unique ID for this xTRequest (for 2PC tracking)
+	xtRequestId := fmt.Sprintf("xt_%d_%s", time.Now().UnixNano(), from)
+	log.Info("[SSV] Processing xTRequest", "id", xtRequestId, "senderID", from)
+
+	// Process each transaction for cross-rollup coordination
+	var coordinationStates []*SimulationState
 	for _, txReq := range xtReq.Transactions {
 		txChainID := new(big.Int).SetBytes(txReq.ChainId)
 		if txChainID.Cmp(chainID) == 0 {
@@ -560,24 +572,48 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 					return nil, err
 				}
 
-				if err = b.simulateAndProcessMailbox(ctx, tx); err != nil {
-					log.Error("[SSV] Failed to simulate transaction", "error", err, "txHash", tx.Hash().Hex())
-					_, cerr := b.coordinator.RecordVote(xtID, chainID.Text(16), false)
-					if cerr != nil {
-						log.Error("[Coordinator] Failed to record vote", "err", cerr)
-					}
+				simState, err := processor.ProcessTransaction(ctx, b, tx, xtRequestId)
+				if err != nil {
+					log.Error("[SSV] Failed to process transaction", "error", err, "txHash", tx.Hash().Hex())
+					// TODO: voting usage example
+					_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), false)
 					return nil, err
 				}
+				coordinationStates = append(coordinationStates, simState)
 
-				_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), true)
-				return nil, err
+				log.Info("[SSV] Transaction processed",
+					"txHash", tx.Hash().Hex(),
+					"requiresCoordination", simState.RequiresCoordination,
+					"dependencies", len(simState.Dependencies),
+					"outbound", len(simState.OutboundMessages))
 			}
 		} else {
-			log.Info("Received cross-chain transaction", "chainID", txChainID, "senderID", from, "txCount", len(txReq.Transaction))
+			log.Info("[SSV] Received cross-chain transaction", "chainID", txChainID, "senderID", from, "txCount", len(txReq.Transaction))
 		}
 	}
 
+	totalDeps := 0
+	totalOutbound := 0
+	coordRequired := false
+	for _, state := range coordinationStates {
+		totalDeps += len(state.Dependencies)
+		totalOutbound += len(state.OutboundMessages)
+		if state.RequiresCoordination {
+			coordRequired = true
+		}
+	}
+
+	log.Info("[SSV] xTRequest coordination summary",
+		"id", xtRequestId,
+		"requiresCoordination", coordRequired,
+		"totalDependencies", totalDeps,
+		"totalOutbound", totalOutbound)
+
 	return nil, nil
+}
+
+func (b *EthAPIBackend) handleDecided(xtDecision *sptypes.Decided) error {
+	return b.coordinator.RecordDecision(xtDecision.XtId, xtDecision.GetDecision())
 }
 
 func (b *EthAPIBackend) StartCallbackFn(chainID *big.Int) spconsensus.StartFn {
@@ -614,49 +650,6 @@ func (b *EthAPIBackend) VoteCallbackFn(chainID *big.Int) spconsensus.VoteFn {
 		}
 		return b.spClient.Send(ctx, spMsg)
 	}
-}
-
-// Add this method to TransactionAPI
-func (b *EthAPIBackend) simulateAndProcessMailbox(ctx context.Context, tx *types.Transaction) error {
-	blockNrOrHash := rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
-	log.Info("[SSV] Simulating transaction for mailbox operations", blockNrOrHash, "tx", tx.Hash().Hex())
-
-	traceResult, err := b.SimulateTransactionWithSSVTrace(ctx, tx, blockNrOrHash)
-	if err != nil {
-		return fmt.Errorf("simulation failed: %w", err)
-	}
-
-	log.Info("[SSV] Simulation completed", "txHash", tx.Hash().Hex(), "operations", len(traceResult.Operations))
-
-	// Process mailbox operations
-	for _, op := range traceResult.Operations {
-		switch op.Type {
-		case vm.SLOAD:
-			// Read operation - wait for data from other rollup
-			log.Info("Mailbox read detected",
-				"address", op.Address,
-				"key", hexutil.Encode(op.StorageKey))
-
-			// TODO: Implement waiting logic for cross-chain data
-		case vm.SSTORE:
-			log.Info("Mailbox write detected",
-				"address", op.Address,
-				"key", hexutil.Encode(op.StorageKey),
-				"value", hexutil.Encode(op.StorageValue))
-
-			// TODO: Create cross-chain message for this write
-		case vm.CALL, vm.STATICCALL, vm.DELEGATECALL, vm.CREATE, vm.CREATE2, vm.CALLCODE:
-			log.Info("Mailbox call detected",
-				"address", op.Address,
-				"calldata", hexutil.Encode(op.CallData))
-		}
-	}
-
-	return nil
-}
-
-func (b *EthAPIBackend) handleDecided(xtDecision *sptypes.Decided) error {
-	return b.coordinator.RecordDecision(xtDecision.XtId, xtDecision.GetDecision())
 }
 
 // TODO: lets duplicate for PoC but should be extracted to separate package which can be reused by both api_backend.go and api.go
@@ -755,6 +748,7 @@ func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx 
 		vmConfig = *b.eth.blockchain.GetVMConfig()
 	}
 	vmConfig.Tracer = tracer.Hooks()
+	vmConfig.EnablePreimageRecording = true
 
 	blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
 	evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), vmConfig)
@@ -770,7 +764,9 @@ func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx 
 	return traceResult, nil
 }
 
-// GetMailboxAddresses returns the list of mailbox contract addresses to watch.
+// GetMailboxAddresses returns the list of mailbox contract addresses to watch.package ethapi
 func (b *EthAPIBackend) GetMailboxAddresses() []common.Address {
-	return b.eth.mailboxAddresses
+	return []common.Address{
+		common.HexToAddress(mailBoxAddr),
+	}
 }
