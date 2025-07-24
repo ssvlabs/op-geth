@@ -139,16 +139,16 @@ func (s *server) handleConnection(ctx context.Context, netConn net.Conn) {
 		log.Info("Connection closed", "remote_addr", netConn.RemoteAddr().String(), "connID", connID)
 	}()
 
-	log.Info("New connection", "remote_addr", netConn.RemoteAddr().String(), "connID", connID)
+	log.Info("[SPNetwork server] New incoming connection", "remote_addr", netConn.RemoteAddr().String(), "connID", connID)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
-			if s.cfg.ReadTimeout > 0 {
-				_ = conn.SetReadDeadline(time.Now().Add(s.cfg.ReadTimeout))
-			}
+			//if s.cfg.ReadTimeout > 0 {
+			//	_ = conn.SetReadDeadline(time.Now().Add(s.cfg.ReadTimeout))
+			//}
 
 			var msg sptypes.Message
 			if err := s.codec.Decode(conn, &msg); err != nil {

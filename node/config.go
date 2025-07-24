@@ -212,8 +212,9 @@ type Config struct {
 
 	DBEngine string `toml:",omitempty"`
 
-	SPListenAddr string `toml:",omitempty"`
-	SPAddr       string `toml:",omitempty"`
+	SPListenAddr   string `toml:",omitempty"`
+	SPAddr         string `toml:",omitempty"`
+	SequencerAddrs string `toml:",omitempty"`
 
 	MailboxAddresses []common.Address `toml:",omitempty"`
 }

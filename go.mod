@@ -61,6 +61,7 @@ require (
 	github.com/rs/cors v1.7.0
 	github.com/rs/zerolog v1.34.0
 	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible
+	github.com/ssvlabs/rollup-shared-publisher v1.0.1-0.20250724103421-09b6b09edeff
 	github.com/status-im/keycard-go v0.2.0
 	github.com/stretchr/testify v1.10.0
 	github.com/supranational/blst v0.3.14
@@ -141,7 +142,6 @@ require (
 	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
-	github.com/ssvlabs/rollup-shared-publisher v1.0.0 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
