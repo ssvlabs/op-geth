@@ -22,7 +22,7 @@ type Server interface {
 // Client interface defines the client contract
 type Client interface {
 	// Connect establishes connection to the server
-	Connect(ctx context.Context, mandatory bool) error
+	Connect(ctx context.Context) error
 	// Disconnect closes the connection
 	Disconnect(ctx context.Context) error
 	// Send sends a message to the server

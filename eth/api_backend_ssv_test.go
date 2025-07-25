@@ -84,8 +84,9 @@ func initSSVBackendWithContracts(t *testing.T, mailboxAddresses []common.Address
 	require.NoError(t, err)
 
 	eth := &Ethereum{
-		blockchain: chain,
-		chainDb:    db,
+		blockchain:       chain,
+		chainDb:          db,
+		mailboxAddresses: mailboxAddresses,
 	}
 
 	return &EthAPIBackend{eth: eth}, chain
@@ -176,8 +177,8 @@ func TestSimulateTransactionWithSSVTrace_MultipleMailboxes(t *testing.T) {
 	foundMailboxA := false
 	foundMailboxB := false
 	for _, op := range result.Operations {
-		t.Logf("Operation: type=%s, address=%s, from=%s",
-			op.Type.String(), op.Address.Hex(), op.From.Hex())
+		t.Logf("Operation: type=%s, address=%s, from=%s, gas=%d",
+			op.Type.String(), op.Address.Hex(), op.From.Hex(), op.Gas)
 		if op.Address == mailboxA {
 			foundMailboxA = true
 		}
@@ -229,8 +230,8 @@ func TestSimulateTransactionWithSSVTrace_ComplexInteractions(t *testing.T) {
 	for _, op := range result.Operations {
 		if op.Address == mailboxA {
 			hasMailboxOperation = true
-			t.Logf("Operation: type=%s, address=%s, from=%s",
-				op.Type.String(), op.Address.Hex(), op.From.Hex())
+			t.Logf("Operation: type=%s, address=%s, from=%s, gas=%d",
+				op.Type.String(), op.Address.Hex(), op.From.Hex(), op.Gas)
 		}
 	}
 

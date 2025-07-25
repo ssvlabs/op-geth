@@ -184,7 +184,6 @@ var (
 		utils.BeaconCheckpointFileFlag,
 		utils.SharedPublisherListenAddr,
 		utils.SharedPublisherServerAddr,
-		utils.SequencerAddrs,
 	}, utils.NetworkFlags, utils.DatabaseFlags)
 
 	rpcFlags = []cli.Flag{

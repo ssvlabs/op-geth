@@ -25,7 +25,6 @@ import (
 	spconsensus "github.com/ssvlabs/rollup-shared-publisher/pkg/consensus"
 	sperrors "github.com/ssvlabs/rollup-shared-publisher/pkg/errors"
 	"hash/crc32"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -72,9 +71,8 @@ type Node struct {
 	ipc           *ipcServer  // Stores information about the ipc http server
 	inprocHandler *rpc.Server // In-process RPC request handler to process the API requests
 
-	spServer         spnetwork.Server
-	spClient         spnetwork.Client
-	sequencerClients map[string]spnetwork.Client
+	spServer spnetwork.Server
+	spClient spnetwork.Client
 
 	coordinator *spconsensus.Coordinator
 
@@ -187,64 +185,13 @@ func New(conf *Config) (*Node, error) {
 		ReconnectDelay: 5 * time.Second,
 		MaxMessageSize: 10485760, // 10 MB
 		ServerAddr:     conf.SPAddr,
-		ChainID:        "shared-publisher",
 	}
 	node.spClient = spnetwork.NewClient(clientCfg)
-
-	node.sequencerClients = generateClients(conf.SequencerAddrs)
 
 	nodeID := fmt.Sprintf("sequencer-%d", time.Now().UnixNano())
 	node.coordinator = spconsensus.NewCoordinator(nodeID, false, 15*time.Second)
 
 	return node, nil
-}
-
-func generateClients(addrs string) map[string]spnetwork.Client {
-	clients := make(map[string]spnetwork.Client)
-
-	if addrs == "" {
-		return clients
-	}
-
-	entries := strings.Split(addrs, ",")
-	for _, entry := range entries {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-
-		// Parse id:host:port format
-		parts := strings.Split(entry, ":")
-		if len(parts) != 3 {
-			log.Error("Invalid sequencer address format, expected id:host:port", "entry", entry)
-			continue
-		}
-
-		chainID := strings.TrimSpace(parts[0])
-		host := strings.TrimSpace(parts[1])
-		port := strings.TrimSpace(parts[2])
-
-		if chainID == "" || host == "" || port == "" {
-			log.Error("Empty component in sequencer address", "entry", entry)
-			continue
-		}
-
-		serverAddr := net.JoinHostPort(host, port)
-
-		clientCfg := spnetwork.ClientConfig{
-			ConnectTimeout: 10 * time.Second,
-			ReadTimeout:    30 * time.Second,
-			WriteTimeout:   30 * time.Second,
-			ReconnectDelay: 5 * time.Second,
-			MaxMessageSize: 10485760, // 10 MB
-			ServerAddr:     serverAddr,
-			ChainID:        chainID,
-		}
-
-		clients[chainID] = spnetwork.NewClient(clientCfg)
-	}
-
-	return clients
 }
 
 // Start starts all registered lifecycles, RPC services and p2p networking.
@@ -365,13 +312,9 @@ func (n *Node) openEndpoints() error {
 		return err
 	}
 
-	err = n.spClient.Connect(context.Background(), true)
+	err = n.spClient.Connect(context.Background())
 	if err != nil {
 		return err
-	}
-
-	for _, c := range n.sequencerClients {
-		_ = c.Connect(context.Background(), false)
 	}
 
 	// start RPC endpoints
@@ -407,13 +350,6 @@ func (n *Node) stopServices(running []Lifecycle) error {
 	err = n.spClient.Disconnect(context.Background())
 	if err != nil && !errors.Is(err, sperrors.ErrNotConnected) {
 		return err
-	}
-
-	for _, c := range n.sequencerClients {
-		err = c.Disconnect(context.Background())
-		if err != nil && !errors.Is(err, sperrors.ErrNotConnected) {
-			return err
-		}
 	}
 
 	n.coordinator.Shutdown()
@@ -786,13 +722,6 @@ func (n *Node) Coordinator() *spconsensus.Coordinator {
 	defer n.lock.Unlock()
 
 	return n.coordinator
-}
-
-func (n *Node) SequencerClients() map[string]spnetwork.Client {
-	n.lock.Lock()
-	defer n.lock.Unlock()
-
-	return n.sequencerClients
 }
 
 // DataDir retrieves the current datadir used by the protocol stack.

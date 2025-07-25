@@ -25,7 +25,6 @@ type ClientConfig struct {
 	WriteTimeout   time.Duration
 	ReconnectDelay time.Duration
 	MaxMessageSize int
-	ChainID        string
 }
 
 // client implements the Client interface.
@@ -56,7 +55,8 @@ func NewClient(cfg ClientConfig) Client {
 	}
 }
 
-func (c *client) Connect(ctx context.Context, mandatory bool) error {
+// Connect establishes connection to the server.
+func (c *client) Connect(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -74,18 +74,7 @@ func (c *client) Connect(ctx context.Context, mandatory bool) error {
 
 	conn, err := dialer.DialContext(connCtx, "tcp", c.cfg.ServerAddr)
 	if err != nil {
-		if mandatory {
-			return fmt.Errorf("failed to connect to SP server: %w", err)
-		}
-
-		log.Warn("Initial connection failed, scheduling reconnects", "err", err, "server", c.cfg.ServerAddr, "chainID", c.cfg.ChainID)
-		c.shouldReconnect.Store(true)
-
-		ctx, c.cancel = context.WithCancel(context.Background())
-		c.wg.Add(1)
-		go c.autoReconnectLoop(ctx)
-
-		return nil
+		return fmt.Errorf("failed to connect to SP server: %w", err)
 	}
 
 	c.conn = conn
@@ -98,7 +87,7 @@ func (c *client) Connect(ctx context.Context, mandatory bool) error {
 	c.wg.Add(1)
 	go c.receiveLoop(ctx)
 
-	log.Info("Connected", "server", c.cfg.ServerAddr, "chainID", c.cfg.ChainID)
+	log.Info("Connected to SP server", "server", c.cfg.ServerAddr)
 
 	return nil
 }
@@ -112,7 +101,7 @@ func (c *client) Disconnect(ctx context.Context) error {
 		return sperrors.ErrNotConnected
 	}
 
-	log.Info("Disconnecting", "server", c.cfg.ServerAddr, "chainID", c.cfg.ChainID)
+	log.Info("Disconnecting")
 
 	// Stop auto-reconnection
 	c.shouldReconnect.Store(false)
@@ -133,9 +122,9 @@ func (c *client) Disconnect(ctx context.Context) error {
 
 	select {
 	case <-done:
-		log.Info("Disconnected", "server", c.cfg.ServerAddr, "chainID", c.cfg.ChainID)
+		log.Info("Disconnected")
 	case <-ctx.Done():
-		log.Warn("Disconnect timeout", "server", c.cfg.ServerAddr, "chainID", c.cfg.ChainID)
+		log.Warn("Disconnect timeout")
 		return ctx.Err()
 	}
 
@@ -264,7 +253,7 @@ func (c *client) autoReconnectLoop(ctx context.Context) {
 				return // Already connected, exit
 			}
 
-			log.Info("Attempting to reconnect", "delay", currentDelay, "to", c.cfg.ServerAddr, "chainID", c.cfg.ChainID)
+			log.Info("Attempting to reconnect", "delay", currentDelay)
 
 			// Wait before attempting reconnection
 			timer := time.NewTimer(currentDelay)
@@ -285,7 +274,7 @@ func (c *client) autoReconnectLoop(ctx context.Context) {
 					currentDelay = maxDelay
 				}
 			} else {
-				log.Info("Successfully reconnected", "to", c.cfg.ServerAddr, "chainID", c.cfg.ChainID)
+				log.Info("Successfully reconnected")
 				return // Successfully reconnected, exit
 			}
 		}
@@ -300,5 +289,5 @@ func (c *client) Reconnect(ctx context.Context) error {
 		}
 	}
 
-	return c.Connect(ctx, true)
+	return c.Connect(ctx)
 }
