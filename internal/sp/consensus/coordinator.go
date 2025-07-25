@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/log"
-	pb "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
+	pb "github.com/ethereum/go-ethereum/internal/sp/proto"
 )
 
 type Coordinator struct {

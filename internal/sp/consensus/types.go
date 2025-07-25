@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
+	pb "github.com/ethereum/go-ethereum/internal/sp/proto"
 )
 
 type StartFn func(ctx context.Context, from string, xtReq *pb.XTRequest) error

@@ -50,7 +50,7 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethereum/go-ethereum/trie"
 
-	sptypes "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
+	sptypes "github.com/ethereum/go-ethereum/internal/sp/proto"
 )
 
 // estimateGasErrorRatio is the amount of overestimation eth_estimateGas is

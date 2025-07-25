@@ -3,9 +3,9 @@ package network
 import (
 	"context"
 	"fmt"
-	spcodec "github.com/ssvlabs/rollup-shared-publisher/pkg/codec"
-	sperrors "github.com/ssvlabs/rollup-shared-publisher/pkg/errors"
-	sptypes "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
+	spcodec "github.com/ethereum/go-ethereum/internal/sp/codec"
+	sperrors "github.com/ethereum/go-ethereum/internal/sp/errors"
+	sptypes "github.com/ethereum/go-ethereum/internal/sp/proto"
 	"io"
 	"net"
 	"sync"

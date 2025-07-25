@@ -52,9 +52,9 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 
 	network "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
-	spconsensus "github.com/ssvlabs/rollup-shared-publisher/pkg/consensus"
-	spnetwork "github.com/ssvlabs/rollup-shared-publisher/pkg/network"
-	sptypes "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
+	spconsensus "github.com/ethereum/go-ethereum/internal/sp/consensus"
+	spnetwork "github.com/ethereum/go-ethereum/internal/sp/network"
+	sptypes "github.com/ethereum/go-ethereum/internal/sp/proto"
 )
 
 const mailBoxAddr = "0xEd3afBc0af3B010815dd242f1aA20d493Ae3160d"

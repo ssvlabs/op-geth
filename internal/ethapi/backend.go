@@ -37,7 +37,7 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rpc"
 
-	sptypes "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
+	sptypes "github.com/ethereum/go-ethereum/internal/sp/proto"
 )
 
 // Backend interface provides the common API services (that are provided by
