@@ -126,31 +126,135 @@ func (mp *MailboxProcessor) analyzeTransaction(ctx context.Context, backend inte
 		OutboundMessages: make([]CrossRollupMessage, 0),
 	}
 
-	for _, op := range traceResult.Operations {
+	log.Info("[SSV] Analyzing transaction trace",
+		"txHash", tx.Hash().Hex(),
+		"success", simState.OriginalSuccess,
+		"operations", len(traceResult.Operations))
+
+	for i, op := range traceResult.Operations {
+		// Only analyze calls to mailbox contracts
 		if !mp.isMailboxAddress(op.Address) {
 			continue
 		}
 
-		// For CALL operations, analyze the call data
-		if op.Type == vm.CALL && len(op.CallData) > 0 {
-			if dep := mp.analyzeMailboxRead(op); dep != nil {
-				simState.Dependencies = append(simState.Dependencies, *dep)
-				simState.RequiresCoordination = true
-				log.Info("[SSV] Detected cross-rollup dependency",
-					"sourceChain", dep.SourceChainID,
-					"destChain", dep.DestChainID,
-					"address", op.Address.Hex())
+		log.Debug("[SSV] Found mailbox operation",
+			"index", i,
+			"type", op.Type.String(),
+			"address", op.Address.Hex(),
+			"from", op.From.Hex(),
+			"callDataLen", len(op.CallData))
+
+		if op.Type == vm.CALL && len(op.CallData) >= 4 {
+			call, err := mp.parseMailboxCall(op.CallData)
+			if err != nil {
+				log.Debug("[SSV] Failed to parse mailbox call", "error", err)
+				continue
 			}
 
-			if msg := mp.analyzeMailboxWrite(op); msg != nil {
-				simState.OutboundMessages = append(simState.OutboundMessages, *msg)
-				simState.RequiresCoordination = true
-				log.Info("[SSV] Detected outbound message",
-					"sourceChain", msg.SourceChainID,
-					"destChain", msg.DestChainID,
-					"address", op.Address.Hex())
+			log.Info("[SSV] Parsed mailbox call",
+				"isRead", call.IsRead,
+				"isWrite", call.IsWrite,
+				"chainSrc", call.ChainSrc,
+				"chainDest", call.ChainDest,
+				"sender", call.Sender.Hex(),
+				"receiver", call.Receiver.Hex(),
+				"sessionId", call.SessionId)
+
+			// Check for cross-rollup read dependency
+			if call.IsRead {
+				// If we're reading from a different source chain, this is a dependency
+				if call.ChainSrc.Uint64() != mp.chainID {
+					dep := CrossRollupDependency{
+						SourceChainID: call.ChainSrc.Uint64(),
+						DestChainID:   call.ChainDest.Uint64(),
+						Sender:        call.Sender,
+						Receiver:      call.Receiver,
+						SessionID:     call.SessionId,
+						Label:         call.Label,
+						RequiredData:  true,
+						IsInboxRead:   true,
+					}
+
+					simState.Dependencies = append(simState.Dependencies, dep)
+					simState.RequiresCoordination = true
+
+					log.Info("[SSV] Detected cross-rollup read dependency",
+						"sourceChain", dep.SourceChainID,
+						"destChain", dep.DestChainID,
+						"sender", dep.Sender.Hex(),
+						"receiver", dep.Receiver.Hex(),
+						"sessionId", dep.SessionID)
+				} else {
+					log.Debug("[SSV] Local chain read, no dependency needed",
+						"chainSrc", call.ChainSrc.Uint64(),
+						"localChain", mp.chainID)
+				}
 			}
+
+			// Check for cross-rollup write (outbound message)
+			if call.IsWrite {
+				// If we're writing to a different destination chain, this is an outbound message
+				if call.ChainDest.Uint64() != mp.chainID {
+					msg := CrossRollupMessage{
+						SourceChainID: call.ChainSrc.Uint64(),
+						DestChainID:   call.ChainDest.Uint64(),
+						Sender:        op.From,
+						Receiver:      call.Receiver,
+						SessionID:     call.SessionId,
+						Data:          call.Data,
+						Label:         call.Label,
+						MessageType:   "mailbox_write",
+						IsOutboxWrite: true,
+					}
+
+					simState.OutboundMessages = append(simState.OutboundMessages, msg)
+					simState.RequiresCoordination = true
+
+					log.Info("[SSV] Detected cross-rollup write (outbound message)",
+						"sourceChain", msg.SourceChainID,
+						"destChain", msg.DestChainID,
+						"sender", msg.Sender.Hex(),
+						"receiver", msg.Receiver.Hex(),
+						"sessionId", msg.SessionID,
+						"dataLen", len(msg.Data))
+				} else {
+					log.Debug("[SSV] Local chain write, no cross-rollup message needed",
+						"chainDest", call.ChainDest.Uint64(),
+						"localChain", mp.chainID)
+				}
+			}
+		} else if op.Type != vm.CALL {
+			log.Debug("[SSV] Ignoring non-CALL operation to mailbox",
+				"type", op.Type.String(),
+				"address", op.Address.Hex())
 		}
+	}
+
+	log.Info("[SSV] Transaction analysis complete",
+		"txHash", tx.Hash().Hex(),
+		"requiresCoordination", simState.RequiresCoordination,
+		"dependencies", len(simState.Dependencies),
+		"outboundMessages", len(simState.OutboundMessages))
+
+	// Log detailed dependency information
+	for i, dep := range simState.Dependencies {
+		log.Info("[SSV] Dependency details",
+			"index", i,
+			"sourceChain", dep.SourceChainID,
+			"destChain", dep.DestChainID,
+			"sessionId", dep.SessionID,
+			"label", string(dep.Label))
+	}
+
+	// Log detailed outbound message information
+	for i, msg := range simState.OutboundMessages {
+		log.Info("[SSV] Outbound message details",
+			"index", i,
+			"sourceChain", msg.SourceChainID,
+			"destChain", msg.DestChainID,
+			"sessionId", msg.SessionID,
+			"dataLen", len(msg.Data),
+			"label", string(msg.Label))
 	}
 
 	return simState, nil
@@ -161,167 +265,68 @@ func (mp *MailboxProcessor) parseMailboxCall(callData []byte) (*MailboxCall, err
 		return nil, fmt.Errorf("invalid call data length")
 	}
 
+	methodSig := callData[:4]
+
+	// Parse using method signatures directly
 	parsedABI, err := abi.JSON(strings.NewReader(mailboxABI))
 	if err != nil {
 		return nil, err
 	}
 
-	methodSig := callData[:4]
-
-	// Check if it's a read call
+	// Check method by comparing signatures
 	if bytes.Equal(methodSig, parsedABI.Methods["read"].ID) {
-		values, err := parsedABI.Methods["read"].Inputs.Unpack(callData[4:])
+		call, err := mp.parseReadCall(callData[4:])
 		if err != nil {
 			return nil, err
 		}
-
-		if len(values) != 6 {
-			return nil, fmt.Errorf("expected 6 values for read call, got %d", len(values))
-		}
-
-		chainSrc, ok := values[0].(*big.Int)
-		if !ok {
-			return nil, fmt.Errorf("invalid chainSrc type")
-		}
-
-		chainDest, ok := values[1].(*big.Int)
-		if !ok {
-			return nil, fmt.Errorf("invalid chainDest type")
-		}
-
-		sender, ok := values[2].(common.Address)
-		if !ok {
-			return nil, fmt.Errorf("invalid sender type")
-		}
-
-		receiver, ok := values[3].(common.Address)
-		if !ok {
-			return nil, fmt.Errorf("invalid receiver type")
-		}
-
-		sessionId, ok := values[4].(*big.Int)
-		if !ok {
-			return nil, fmt.Errorf("invalid sessionId type")
-		}
-
-		label, ok := values[5].([]byte)
-		if !ok {
-			return nil, fmt.Errorf("invalid label type")
-		}
-
-		return &MailboxCall{
-			ChainSrc:  chainSrc,
-			ChainDest: chainDest,
-			Sender:    sender,
-			Receiver:  receiver,
-			SessionId: sessionId,
-			Label:     label,
-			IsRead:    true,
-		}, nil
+		call.IsRead = true
+		return call, nil
 	}
 
-	// Check if it's a write call
 	if bytes.Equal(methodSig, parsedABI.Methods["write"].ID) {
-		values, err := parsedABI.Methods["write"].Inputs.Unpack(callData[4:])
+		call, err := mp.parseWriteCall(callData[4:])
 		if err != nil {
 			return nil, err
 		}
-
-		if len(values) != 6 {
-			return nil, fmt.Errorf("expected 6 values for write call, got %d", len(values))
-		}
-
-		chainSrc, ok := values[0].(*big.Int)
-		if !ok {
-			return nil, fmt.Errorf("invalid chainSrc type")
-		}
-
-		chainDest, ok := values[1].(*big.Int)
-		if !ok {
-			return nil, fmt.Errorf("invalid chainDest type")
-		}
-
-		receiver, ok := values[2].(common.Address)
-		if !ok {
-			return nil, fmt.Errorf("invalid receiver type")
-		}
-
-		sessionId, ok := values[3].(*big.Int)
-		if !ok {
-			return nil, fmt.Errorf("invalid sessionId type")
-		}
-
-		data, ok := values[4].([]byte)
-		if !ok {
-			return nil, fmt.Errorf("invalid data type")
-		}
-
-		label, ok := values[5].([]byte)
-		if !ok {
-			return nil, fmt.Errorf("invalid label type")
-		}
-
-		return &MailboxCall{
-			ChainSrc:  chainSrc,
-			ChainDest: chainDest,
-			Sender:    common.Address{}, // msg.sender not in call data
-			Receiver:  receiver,
-			SessionId: sessionId,
-			Data:      data,
-			Label:     label,
-			IsWrite:   true,
-		}, nil
+		call.IsWrite = true
+		return call, nil
 	}
 
-	return nil, fmt.Errorf("unknown method signature")
+	return nil, fmt.Errorf("unknown mailbox method")
 }
 
-func (mp *MailboxProcessor) analyzeMailboxRead(op ssv.SSVOperation) *CrossRollupDependency {
-	call, err := mp.parseMailboxCall(op.CallData)
-	if err != nil || !call.IsRead {
-		return nil
+func (mp *MailboxProcessor) parseReadCall(data []byte) (*MailboxCall, error) {
+	parsedABI, _ := abi.JSON(strings.NewReader(mailboxABI))
+	values, err := parsedABI.Methods["read"].Inputs.Unpack(data)
+	if err != nil {
+		return nil, err
 	}
 
-	// If this is reading from a different chain, it's a dependency
-	if call.ChainSrc.Uint64() != mp.chainID {
-		return &CrossRollupDependency{
-			SourceChainID: call.ChainSrc.Uint64(),
-			DestChainID:   call.ChainDest.Uint64(),
-			Sender:        call.Sender,
-			Receiver:      call.Receiver,
-			SessionID:     call.SessionId,
-			Label:         call.Label,
-			RequiredData:  true,
-			IsInboxRead:   true,
-		}
-	}
-	return nil
+	return &MailboxCall{
+		ChainSrc:  values[0].(*big.Int),
+		ChainDest: values[1].(*big.Int),
+		Sender:    values[2].(common.Address),
+		Receiver:  values[3].(common.Address),
+		SessionId: values[4].(*big.Int),
+		Label:     values[5].([]byte),
+	}, nil
 }
 
-func (mp *MailboxProcessor) analyzeMailboxWrite(op ssv.SSVOperation) *CrossRollupMessage {
-	call, err := mp.parseMailboxCall(op.CallData)
-	if err != nil || !call.IsWrite {
-		return nil
+func (mp *MailboxProcessor) parseWriteCall(data []byte) (*MailboxCall, error) {
+	parsedABI, _ := abi.JSON(strings.NewReader(mailboxABI))
+	values, err := parsedABI.Methods["write"].Inputs.Unpack(data)
+	if err != nil {
+		return nil, err
 	}
 
-	// Use msg.sender from the operation for the actual sender
-	sender := op.From
-
-	// If this is writing to a different chain, it's an outbound message
-	if call.ChainDest.Uint64() != mp.chainID {
-		return &CrossRollupMessage{
-			SourceChainID: call.ChainSrc.Uint64(),
-			DestChainID:   call.ChainDest.Uint64(),
-			Sender:        sender,
-			Receiver:      call.Receiver,
-			SessionID:     call.SessionId,
-			Data:          call.Data,
-			Label:         call.Label,
-			MessageType:   "outbox_data",
-			IsOutboxWrite: true,
-		}
-	}
-	return nil
+	return &MailboxCall{
+		ChainSrc:  values[0].(*big.Int),
+		ChainDest: values[1].(*big.Int),
+		Receiver:  values[2].(common.Address),
+		SessionId: values[3].(*big.Int),
+		Data:      values[4].([]byte),
+		Label:     values[5].([]byte),
+	}, nil
 }
 
 func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, simState *SimulationState, xtID *sptypes.XtID) error {

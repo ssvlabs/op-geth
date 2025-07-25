@@ -21,13 +21,11 @@ import (
 
 // ssvOperation represents a single operation for test output
 type ssvOperation struct {
-	Type         string         `json:"type"`
-	Address      common.Address `json:"address"`
-	CallData     hexutil.Bytes  `json:"callData,omitempty"`
-	StorageKey   hexutil.Bytes  `json:"storageKey,omitempty"`
-	StorageValue hexutil.Bytes  `json:"storageValue,omitempty"`
-	From         common.Address `json:"from"`
-	Gas          hexutil.Uint64 `json:"gas"`
+	Type     string         `json:"type"`
+	Address  common.Address `json:"address"`
+	CallData hexutil.Bytes  `json:"callData,omitempty"`
+	From     common.Address `json:"from"`
+	Gas      hexutil.Uint64 `json:"gas"`
 }
 
 // ssvTraceResult contains the test result structure
