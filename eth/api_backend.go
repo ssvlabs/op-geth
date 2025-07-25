@@ -22,8 +22,10 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ethereum/go-ethereum/core/ssv"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth/tracers/native"
+	"github.com/holiman/uint256"
 	"math/big"
 	"strconv"
 	"time"
@@ -852,6 +854,11 @@ func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx 
 	if err != nil {
 		return nil, err
 	}
+
+	// TODO: This is a hack to fund the sender account with 1 ETH for simulation purposes.
+	from := msg.From
+	fundAmount := uint256.NewInt(1e18)
+	stateDB.SetBalance(from, fundAmount, tracing.BalanceChangeUnspecified)
 
 	mailboxAddresses := b.GetMailboxAddresses()
 	tracer := native.NewSSVTracer(mailboxAddresses)
