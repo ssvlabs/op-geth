@@ -18,14 +18,12 @@ package eth
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"github.com/ethereum/go-ethereum/core/ssv"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth/tracers/native"
 	"math/big"
-	"strconv"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
@@ -557,42 +555,6 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *sptypes.Messag
 	}
 }
 
-// TODO: remove
-func (b *EthAPIBackend) testCIRCMessageSend(ctx context.Context, xtID *sptypes.XtID) {
-	var destChainID uint16
-	if b.ChainConfig().ChainID.Int64() == 11111 {
-		destChainID = 22222
-	} else {
-		destChainID = 11111
-	}
-	destChainIDBytes := make([]byte, 2)
-	binary.BigEndian.PutUint16(destChainIDBytes, destChainID)
-	client, ok := b.sequencerClients[strconv.Itoa(int(destChainID))]
-	if !ok {
-		fmt.Println(len(b.sequencerClients))
-		log.Error("sequencer client not registered", "chainID", destChainID)
-		return
-	}
-
-	err := client.Send(ctx, &sptypes.Message{
-		SenderId: "123",
-		Payload: &sptypes.Message_CircMessage{
-			CircMessage: &sptypes.CIRCMessage{
-				SourceChain:      b.ChainConfig().ChainID.Bytes(),
-				DestinationChain: destChainIDBytes,
-				Source:           nil,
-				Receiver:         nil,
-				XtId:             xtID,
-				Label:            "123123",
-				Data:             nil,
-			},
-		},
-	})
-	if err != nil {
-		log.Error("Failed to send test CIRC message", "err", err)
-	}
-}
-
 func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq *sptypes.XTRequest) ([]common.Hash, error) {
 	// Only start coordinator if this is actually a cross-chain transaction
 	if len(xtReq.Transactions) > 1 {
@@ -628,6 +590,11 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 
 	for _, txReq := range xtReq.Transactions {
 		txChainID := new(big.Int).SetBytes(txReq.ChainId)
+		log.Info("[DEBUG] Transaction for chain",
+			"txChainID", txChainID,
+			"localChainID", chainID,
+			"match", txChainID.Cmp(chainID) == 0)
+
 		if txChainID.Cmp(chainID) == 0 {
 			hasLocalTx = true
 			log.Info("[SSV] Processing local transaction", "senderID", from, "chainID", txChainID, "txCount", len(txReq.Transaction))
