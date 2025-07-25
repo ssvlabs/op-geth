@@ -15,21 +15,19 @@ var _ = (*ssvOperationMarshaling)(nil)
 // MarshalJSON marshals as JSON.
 func (s SSVOperation) MarshalJSON() ([]byte, error) {
 	type SSVOperation struct {
-		Type         vm.OpCode      `json:"-"`
-		Address      common.Address `json:"address"`
-		CallData     hexutil.Bytes  `json:"callData,omitempty" rlp:"optional"`
-		StorageKey   hexutil.Bytes  `json:"storageKey,omitempty" rlp:"optional"`
-		StorageValue hexutil.Bytes  `json:"storageValue,omitempty" rlp:"optional"`
-		From         common.Address `json:"from"`
-		TypeString   string         `json:"type"`
+		Type       vm.OpCode      `json:"-"`
+		Address    common.Address `json:"address"`
+		CallData   hexutil.Bytes  `json:"callData,omitempty" rlp:"optional"`
+		From       common.Address `json:"from"`
+		Gas        hexutil.Uint64 `json:"gas"`
+		TypeString string         `json:"type"`
 	}
 	var enc SSVOperation
 	enc.Type = s.Type
 	enc.Address = s.Address
 	enc.CallData = s.CallData
-	enc.StorageKey = s.StorageKey
-	enc.StorageValue = s.StorageValue
 	enc.From = s.From
+	enc.Gas = hexutil.Uint64(s.Gas)
 	enc.TypeString = s.TypeString()
 	return json.Marshal(&enc)
 }
@@ -37,12 +35,11 @@ func (s SSVOperation) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON unmarshals from JSON.
 func (s *SSVOperation) UnmarshalJSON(input []byte) error {
 	type SSVOperation struct {
-		Type         *vm.OpCode      `json:"-"`
-		Address      *common.Address `json:"address"`
-		CallData     *hexutil.Bytes  `json:"callData,omitempty" rlp:"optional"`
-		StorageKey   *hexutil.Bytes  `json:"storageKey,omitempty" rlp:"optional"`
-		StorageValue *hexutil.Bytes  `json:"storageValue,omitempty" rlp:"optional"`
-		From         *common.Address `json:"from"`
+		Type     *vm.OpCode      `json:"-"`
+		Address  *common.Address `json:"address"`
+		CallData *hexutil.Bytes  `json:"callData,omitempty" rlp:"optional"`
+		From     *common.Address `json:"from"`
+		Gas      *hexutil.Uint64 `json:"gas"`
 	}
 	var dec SSVOperation
 	if err := json.Unmarshal(input, &dec); err != nil {
@@ -57,14 +54,11 @@ func (s *SSVOperation) UnmarshalJSON(input []byte) error {
 	if dec.CallData != nil {
 		s.CallData = *dec.CallData
 	}
-	if dec.StorageKey != nil {
-		s.StorageKey = *dec.StorageKey
-	}
-	if dec.StorageValue != nil {
-		s.StorageValue = *dec.StorageValue
-	}
 	if dec.From != nil {
 		s.From = *dec.From
+	}
+	if dec.Gas != nil {
+		s.Gas = uint64(*dec.Gas)
 	}
 	return nil
 }

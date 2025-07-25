@@ -607,25 +607,32 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 		return nil, err
 	}
 
-	// TODO: remove
-	b.testCIRCMessageSend(ctx, xtID)
-
 	chainID := b.ChainConfig().ChainID
-
 	mailboxAddrs := b.GetMailboxAddresses()
-	processor := NewMailboxProcessor(b.ChainConfig().ChainID.Uint64(), mailboxAddrs)
+
+	processor := NewMailboxProcessor(
+		b.ChainConfig().ChainID.Uint64(),
+		mailboxAddrs,
+		b.sequencerClients,
+		b.coordinator,
+		b,
+	)
 
 	// Generate unique ID for this xTRequest (for 2PC tracking)
 	xtRequestId := fmt.Sprintf("xt_%d_%s", time.Now().UnixNano(), from)
-	log.Info("[SSV] Processing xTRequest", "id", xtRequestId, "senderID", from)
+	log.Info("[SSV] Processing xTRequest", "id", xtRequestId, "senderID", from, "xtID", xtID.Hex())
 
 	// Process each transaction for cross-rollup coordination
 	var coordinationStates []*SimulationState
+	var hasLocalTx bool
+
 	for _, txReq := range xtReq.Transactions {
 		txChainID := new(big.Int).SetBytes(txReq.ChainId)
 		if txChainID.Cmp(chainID) == 0 {
-			log.Info("Received local transaction", "senderID", from, "chainID", txChainID, "txCount", len(txReq.Transaction))
-			// We want to simulate transaction before execution
+			hasLocalTx = true
+			log.Info("[SSV] Processing local transaction", "senderID", from, "chainID", txChainID, "txCount", len(txReq.Transaction))
+
+			// Process each transaction
 			for _, txBytes := range txReq.Transaction {
 				tx := new(types.Transaction)
 				if err := tx.UnmarshalBinary(txBytes); err != nil {
@@ -633,10 +640,11 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 					return nil, err
 				}
 
+				// Analyze transaction for cross-rollup dependencies
 				simState, err := processor.ProcessTransaction(ctx, b, tx, xtRequestId)
 				if err != nil {
 					log.Error("[SSV] Failed to process transaction", "error", err, "txHash", tx.Hash().Hex())
-					// TODO: voting usage example
+					// Vote abort if processing fails
 					_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), false)
 					return nil, err
 				}
@@ -653,9 +661,17 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 		}
 	}
 
+	// Only proceed with coordination if we have local transactions
+	if !hasLocalTx {
+		log.Info("[SSV] No local transactions to process", "xtID", xtID.Hex())
+		return nil, nil
+	}
+
+	// Check if any coordination is required
 	totalDeps := 0
 	totalOutbound := 0
 	coordRequired := false
+
 	for _, state := range coordinationStates {
 		totalDeps += len(state.Dependencies)
 		totalOutbound += len(state.OutboundMessages)
@@ -666,9 +682,41 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 
 	log.Info("[SSV] xTRequest coordination summary",
 		"id", xtRequestId,
+		"xtID", xtID.Hex(),
 		"requiresCoordination", coordRequired,
 		"totalDependencies", totalDeps,
 		"totalOutbound", totalOutbound)
+
+	if coordRequired {
+		// Handle cross-rollup coordination for each transaction that needs it
+		for _, state := range coordinationStates {
+			if state.RequiresCoordination {
+				if err := processor.handleCrossRollupCoordination(ctx, state, xtID); err != nil {
+					log.Error("[SSV] Cross-rollup coordination failed", "error", err, "xtID", xtID.Hex())
+					// Vote abort if coordination fails
+					_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), false)
+					return nil, err
+				}
+			}
+		}
+
+		// After successful coordination, re-simulate to verify everything works
+		// TODO: Re-simulate transactions after mailbox is populated
+
+		// Vote commit if coordination succeeded
+		log.Info("[SSV] Cross-rollup coordination completed successfully", "xtID", xtID.Hex())
+		_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), true)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		log.Info("[SSV] No coordination required, voting commit", "xtID", xtID.Hex())
+		// No coordination needed, vote commit
+		_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), true)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	return nil, nil
 }

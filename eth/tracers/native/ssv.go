@@ -44,12 +44,10 @@ func newSSVTracer(ctx *tracers.Context, cfg json.RawMessage, chainConfig *params
 
 	return &tracers.Tracer{
 			Hooks: &tracing.Hooks{
-				OnEnter:         t.OnEnter,
-				OnExit:          t.OnExit,
-				OnTxStart:       t.OnTxStart,
-				OnTxEnd:         t.OnTxEnd,
-				OnStorageChange: t.OnStorageChange,
-				OnOpcode:        t.OnOpcode,
+				OnEnter:   t.OnEnter,
+				OnExit:    t.OnExit,
+				OnTxStart: t.OnTxStart,
+				OnTxEnd:   t.OnTxEnd,
 			},
 			GetResult: t.GetResult,
 			Stop:      t.Stop,
@@ -89,6 +87,7 @@ func (t *SSVTracer) OnEnter(depth int, typ byte, from common.Address, to common.
 			Address:  to,
 			From:     from,
 			CallData: common.CopyBytes(input),
+			Gas:      gas,
 		}
 
 		log.Debug("[SSV] Operation recorded")
@@ -105,80 +104,6 @@ func (t *SSVTracer) OnExit(depth int, output []byte, gasUsed uint64, err error, 
 
 	if depth > 0 {
 		t.currentDepth = depth - 1
-	}
-}
-
-func (t *SSVTracer) OnStorageChange(addr common.Address, slot common.Hash, prev, new common.Hash) {
-	log.Debug("[SSV] OnStorageChange called", "address", addr.Hex())
-
-	// Only track storage changes for watched addresses
-	if !t.watchedAddresses[addr] {
-		return
-	}
-
-	op := ssv.SSVOperation{
-		Type:         vm.SSTORE,
-		Address:      addr,
-		From:         t.currentFrom,
-		StorageKey:   slot.Bytes(),
-		StorageValue: new.Bytes(),
-	}
-
-	log.Debug("[SSV] Storage operation recorded")
-
-	t.operations = append(t.operations, op)
-}
-
-func (t *SSVTracer) OnOpcode(pc uint64, op byte, gas, cost uint64, scope tracing.OpContext, rData []byte, depth int, err error) {
-	if t.interrupt.Load() {
-		return
-	}
-
-	opcode := vm.OpCode(op)
-	addr := scope.Address()
-
-	if !t.watchedAddresses[addr] {
-		return
-	}
-
-	switch opcode {
-	case vm.SLOAD:
-		if len(scope.StackData()) > 0 && t.env != nil && t.env.StateDB != nil {
-			key := scope.StackData()[len(scope.StackData())-1]
-			keyHash := common.Hash(key.Bytes32())
-			value := t.env.StateDB.GetState(addr, keyHash)
-
-			operation := ssv.SSVOperation{
-				Type:         vm.SLOAD,
-				Address:      addr,
-				From:         t.currentFrom,
-				StorageKey:   keyHash.Bytes(),
-				StorageValue: value.Bytes(),
-			}
-
-			log.Debug("[SSV] SLOAD operation recorded")
-			t.operations = append(t.operations, operation)
-		}
-
-	case vm.SSTORE:
-		if len(scope.StackData()) >= 2 {
-			key := scope.StackData()[len(scope.StackData())-1]
-			value := scope.StackData()[len(scope.StackData())-2]
-
-			keyHash := common.Hash(key.Bytes32())
-			valueHash := common.Hash(value.Bytes32())
-
-			operation := ssv.SSVOperation{
-				Type:         vm.SSTORE,
-				Address:      addr,
-				From:         t.currentFrom,
-				StorageKey:   keyHash.Bytes(),
-				StorageValue: valueHash.Bytes(),
-			}
-
-			log.Debug("[SSV] SSTORE operation recorded")
-			t.operations = append(t.operations, operation)
-		}
 	}
 }
 
@@ -219,12 +144,10 @@ func NewSSVTracer(mailboxAddresses []common.Address) *SSVTracer {
 
 func (t *SSVTracer) Hooks() *tracing.Hooks {
 	return &tracing.Hooks{
-		OnEnter:         t.OnEnter,
-		OnTxStart:       t.OnTxStart,
-		OnTxEnd:         t.OnTxEnd,
-		OnExit:          t.OnExit,
-		OnStorageChange: t.OnStorageChange,
-		OnOpcode:        t.OnOpcode,
+		OnEnter:   t.OnEnter,
+		OnTxStart: t.OnTxStart,
+		OnTxEnd:   t.OnTxEnd,
+		OnExit:    t.OnExit,
 	}
 }
 

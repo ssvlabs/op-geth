@@ -10,12 +10,11 @@ import (
 //go:generate go run github.com/fjl/gencodec -type SSVOperation -field-override ssvOperationMarshaling -out gen_ssv_json.go
 
 type SSVOperation struct {
-	Type         vm.OpCode      `json:"-"`       // Operation type (CALL, SLOAD, SSTORE, etc.)
-	Address      common.Address `json:"address"` // Contract address
-	CallData     []byte         `json:"callData,omitempty" rlp:"optional"`
-	StorageKey   []byte         `json:"storageKey,omitempty" rlp:"optional"`
-	StorageValue []byte         `json:"storageValue,omitempty" rlp:"optional"`
-	From         common.Address `json:"from"`  // Caller address
+	Type     vm.OpCode      `json:"-"`       // Operation type (CALL, SLOAD, SSTORE, etc.)
+	Address  common.Address `json:"address"` // Contract address
+	CallData []byte         `json:"callData,omitempty" rlp:"optional"`
+	From     common.Address `json:"from"` // Caller address
+	Gas      uint64         `json:"gas"`  // Gas available
 }
 
 func (op SSVOperation) TypeString() string {
@@ -31,6 +30,5 @@ type SSVTraceResult struct {
 type ssvOperationMarshaling struct {
 	TypeString   string `json:"type"`
 	CallData     hexutil.Bytes
-	StorageKey   hexutil.Bytes
-	StorageValue hexutil.Bytes
+	Gas          hexutil.Uint64
 }
