@@ -18,12 +18,14 @@ package eth
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"github.com/ethereum/go-ethereum/core/ssv"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth/tracers/native"
 	"math/big"
+	"strconv"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
@@ -67,6 +69,7 @@ type EthAPIBackend struct {
 	spServer            network.Server
 	spClient            network.Client
 	coordinator         *spconsensus.Coordinator
+	sequencerClients    map[string]network.Client
 }
 
 // ChainConfig returns the active chain configuration.
@@ -528,26 +531,84 @@ func (b *EthAPIBackend) Genesis() *types.Block {
 func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *sptypes.Message) ([]common.Hash, error) {
 	switch payload := msg.Payload.(type) {
 	case *sptypes.Message_XtRequest:
-		return b.handleXtRequest(ctx, msg.SenderId, payload.XtRequest)
+		hashes, err := b.handleXtRequest(ctx, msg.SenderId, payload.XtRequest)
+		if err != nil {
+			return nil, fmt.Errorf("failed to handle xt request: %v", err)
+		}
+
+		return hashes, nil
 	case *sptypes.Message_Decided:
-		return nil, b.handleDecided(payload.Decided)
+		err := b.handleDecided(payload.Decided)
+		if err != nil {
+			return nil, fmt.Errorf("failed to handle decide: %v", err)
+		}
+
+		return nil, nil
+	case *sptypes.Message_CircMessage:
+		err := b.handleCIRCMessage(payload.CircMessage)
+		if err != nil {
+			return nil, fmt.Errorf("failed to handle circ message: %v", err)
+		}
+
+		return nil, nil
 	default:
 		log.Error("[SSV] Unknown message type", "type", fmt.Sprintf("%T", payload))
 		return nil, fmt.Errorf("unknown message type: %T", payload)
 	}
 }
 
-func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq *sptypes.XTRequest) ([]common.Hash, error) {
-	// TODO: maybe move to
-	err := b.coordinator.StartTransaction(from, xtReq)
+// TODO: remove
+func (b *EthAPIBackend) testCIRCMessageSend(ctx context.Context, xtID *sptypes.XtID) {
+	var destChainID uint16
+	if b.ChainConfig().ChainID.Int64() == 11111 {
+		destChainID = 22222
+	} else {
+		destChainID = 11111
+	}
+	destChainIDBytes := make([]byte, 2)
+	binary.BigEndian.PutUint16(destChainIDBytes, destChainID)
+	client, ok := b.sequencerClients[strconv.Itoa(int(destChainID))]
+	if !ok {
+		fmt.Println(len(b.sequencerClients))
+		log.Error("sequencer client not registered", "chainID", destChainID)
+		return
+	}
+
+	err := client.Send(ctx, &sptypes.Message{
+		SenderId: "123",
+		Payload: &sptypes.Message_CircMessage{
+			CircMessage: &sptypes.CIRCMessage{
+				SourceChain:      b.ChainConfig().ChainID.Bytes(),
+				DestinationChain: destChainIDBytes,
+				Source:           nil,
+				Receiver:         nil,
+				XtId:             xtID,
+				Label:            "123123",
+				Data:             nil,
+			},
+		},
+	})
 	if err != nil {
-		return nil, err
+		log.Error("Failed to send test CIRC message", "err", err)
+	}
+}
+
+func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq *sptypes.XTRequest) ([]common.Hash, error) {
+	// Only start coordinator if this is actually a cross-chain transaction
+	if len(xtReq.Transactions) > 1 {
+		err := b.coordinator.StartTransaction(from, xtReq)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	xtID, err := xtReq.XtID()
 	if err != nil {
 		return nil, err
 	}
+
+	// TODO: remove
+	b.testCIRCMessageSend(ctx, xtID)
 
 	chainID := b.ChainConfig().ChainID
 
@@ -616,13 +677,17 @@ func (b *EthAPIBackend) handleDecided(xtDecision *sptypes.Decided) error {
 	return b.coordinator.RecordDecision(xtDecision.XtId, xtDecision.GetDecision())
 }
 
+func (b *EthAPIBackend) handleCIRCMessage(circMessage *sptypes.CIRCMessage) error {
+	return b.coordinator.RecordCIRCMessage(circMessage)
+}
+
 func (b *EthAPIBackend) StartCallbackFn(chainID *big.Int) spconsensus.StartFn {
 	return func(ctx context.Context, from string, xtReq *sptypes.XTRequest) error {
 		if from != spnetwork.SharedPublisherSenderID {
 			spMsg := &sptypes.Message{
 				SenderId: chainID.String(),
 				Payload: &sptypes.Message_XtRequest{
-					xtReq,
+					XtRequest: xtReq,
 				},
 			}
 			err := b.spClient.Send(ctx, spMsg)

@@ -160,6 +160,7 @@ func (mp *MailboxProcessor) isOutboxSlot(key common.Hash) bool {
 	return mp.isMailboxMappingSlot(key, 2)
 }
 
+// isMailboxMappingSlot checks if the given key corresponds to a mailbox mapping slot.
 func (mp *MailboxProcessor) isMailboxMappingSlot(key common.Hash, mappingSlot uint64) bool {
 	return true
 }

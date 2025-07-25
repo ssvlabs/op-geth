@@ -1121,6 +1121,12 @@ Please note that --` + MetricsHTTPFlag.Name + ` must be set to start the server.
 		Value:    ethconfig.Defaults.SPServerAddr,
 		Category: flags.SharedPublisherCategory,
 	}
+	SequencerAddrs = &cli.StringFlag{
+		Name:     "sequencer.addrs",
+		Usage:    `Sequencers comma and colon separated map (chainID:host:port,...)`,
+		Value:    ethconfig.Defaults.SequencerAddrs,
+		Category: flags.SharedPublisherCategory,
+	}
 )
 
 var (
@@ -1551,6 +1557,12 @@ func SetNodeConfig(ctx *cli.Context, cfg *node.Config) {
 		cfg.SPAddr = ctx.String(SharedPublisherServerAddr.Name)
 	} else {
 		cfg.SPAddr = ethconfig.Defaults.SPServerAddr
+	}
+
+	if ctx.IsSet(SequencerAddrs.Name) {
+		cfg.SequencerAddrs = ctx.String(SequencerAddrs.Name)
+	} else {
+		cfg.SequencerAddrs = ethconfig.Defaults.SequencerAddrs
 	}
 
 	if ctx.IsSet(JWTSecretFlag.Name) {
