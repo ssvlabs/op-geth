@@ -611,7 +611,7 @@ const file_messages_sp_proto_rawDesc = "" +
 	"\x05block\x18\x05 \x01(\v2\n" +
 	".poc.BlockH\x00R\x05block\x125\n" +
 	"\fcirc_message\x18\x06 \x01(\v2\x10.poc.CIRCMessageH\x00R\vcircMessageB\t\n" +
-	"\apayloadB6Z4github.com/ethereum/go-ethereum/internal/sp/protob\x06proto3"
+	"\apayloadB6Z4github.com/ssvlabs/rollup-shared-publisher/pkg/protob\x06proto3"
 
 var (
 	file_messages_sp_proto_rawDescOnce sync.Once

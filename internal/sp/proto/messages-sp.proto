@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package poc;
+
+option go_package = "github.com/ssvlabs/rollup-shared-publisher/pkg/proto";
+
+// Transaction ID (SHA256 hash)
+message XtID {
+  bytes hash = 1; // 32-byte SHA256 hash
+}
+
+// Cross-chain transaction request
+message XTRequest {
+  repeated TransactionRequest transactions = 1;
+}
+
+message TransactionRequest {
+  bytes chain_id = 1;
+  repeated bytes transaction = 2; // RLP encoded Ethereum transactions
+}
+
+// 2PC Vote message from a sequencer to the SP
+message Vote {
+  bytes sender_chain_id = 1;  // Which chain is voting
+  XtID xt_id = 2;             // Transaction ID
+  bool vote = 3;              // true = Commit, false = Abort
+}
+
+// 2PC Decision message from the SP to sequencers
+message Decided {
+  XtID xt_id = 1;             // Transaction ID
+  bool decision = 2;          // true = Commit, false = Abort
+}
+
+// Block submission from a sequencer to the SP
+message Block {
+  bytes chain_id = 1;         // Which chain's block
+  bytes block_data = 2;       // The actual block data
+  repeated XtID included_xt_ids = 3; // Which xTs are included
+}
+
+// Direct CIRC message exchange between sequencers (without SP involvement)
+message CIRCMessage {
+  bytes source_chain = 1;
+  bytes destination_chain = 2;
+  repeated bytes source = 3;
+  repeated bytes receiver = 4;
+  XtID xt_id = 5;
+  string label = 6;
+  repeated bytes data = 7; // ABI encoded data
+}
+
+
+// Wrapper for all messages
+message Message {
+  string sender_id = 1; // Identifier of the sender
+  oneof payload {
+    XTRequest xt_request = 2;
+    Vote vote = 3;
+    Decided decided = 4;
+    Block block = 5;
+    CIRCMessage circ_message = 6;
+  }
+}
