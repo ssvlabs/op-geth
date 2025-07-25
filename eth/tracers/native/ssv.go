@@ -70,7 +70,7 @@ func (t *SSVTracer) OnTxEnd(_ *types.Receipt, err error) {
 }
 
 func (t *SSVTracer) OnEnter(depth int, typ byte, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
-	log.Info("[SSV] OnEnter called")
+	log.Info("[SSV] OnEnter called", "depth", depth, "type", vm.OpCode(typ).String(), "from", from.Hex(), "to", to.Hex(), "gas", gas, "value", value)
 
 	if t.interrupt.Load() {
 		return
@@ -96,7 +96,7 @@ func (t *SSVTracer) OnEnter(depth int, typ byte, from common.Address, to common.
 }
 
 func (t *SSVTracer) OnExit(depth int, output []byte, gasUsed uint64, err error, reverted bool) {
-	log.Info("[SSV] OnExit called")
+	log.Info("[SSV] OnExit called", "depth", depth, "output", common.Bytes2Hex(output), "gasUsed", gasUsed, "err", err, "reverted", reverted)
 
 	if t.interrupt.Load() {
 		return

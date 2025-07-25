@@ -357,6 +357,11 @@ func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollu
 		return fmt.Errorf("no client for destination chain %d", msg.DestChainID)
 	}
 
+	log.Info("[SSV] Attempting to send CIRC",
+		"destChainStr", destChainStr,
+		"availableClients", len(mp.sequencerClients),
+		"clientExists", exists)
+
 	circMsg := &sptypes.CIRCMessage{
 		SourceChain:      new(big.Int).SetUint64(msg.SourceChainID).Bytes(),
 		DestinationChain: new(big.Int).SetUint64(msg.DestChainID).Bytes(),
@@ -387,7 +392,7 @@ func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *sptype
 	sourceChainStr := strconv.FormatUint(dep.SourceChainID, 10)
 
 	// Wait for CIRC message with timeout
-	timeout := time.NewTimer(30 * time.Second)
+	timeout := time.NewTimer(2 * time.Minute)
 	defer timeout.Stop()
 
 	ticker := time.NewTicker(100 * time.Millisecond)
