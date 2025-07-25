@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ethereum/go-ethereum/log"
 	pb "github.com/ethereum/go-ethereum/internal/sp/proto"
+	"github.com/ethereum/go-ethereum/log"
 )
 
 type Coordinator struct {
@@ -60,6 +60,9 @@ func (c *Coordinator) StartTransaction(from string, xtReq *pb.XTRequest) error {
 	}
 
 	chains := xtReq.ChainIDs()
+	for chainIDStr := range chains {
+		log.Info("[SSV] Participating chain", "chainID", chainIDStr, "bytes", chainIDStr)
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -165,6 +168,7 @@ func (c *Coordinator) ConsumeCIRCMessage(xtID *pb.XtID, sourceChainID string) (*
 
 func (c *Coordinator) RecordVote(xtID *pb.XtID, chainID string, vote bool) (DecisionState, error) {
 	c.mu.Lock()
+	log.Info("Recording vote", "chainID", chainID, "vote", vote)
 	xtIDStr := xtID.Hex()
 	state, exists := c.states[xtIDStr]
 	if !exists {
