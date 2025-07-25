@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	sptypes "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
+	sptypes "github.com/ethereum/go-ethereum/internal/sp/proto"
 )
 
 // Server interface defines the server contract

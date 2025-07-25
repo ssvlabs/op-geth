@@ -16,7 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
 
-	spproto "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
+	spproto "github.com/ethereum/go-ethereum/internal/sp/proto"
 )
 
 const (

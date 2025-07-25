@@ -25,7 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ethereum/go-ethereum/core/ssv"
-	xt "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
+	xt "github.com/ethereum/go-ethereum/internal/sp/proto"
 	"google.golang.org/protobuf/proto"
 	"math"
 	"math/big"

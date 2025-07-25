@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/ssvlabs/rollup-shared-publisher/pkg/metrics"
+	"github.com/ethereum/go-ethereum/internal/sp/metrics"
 )
 
 // Metrics holds all consensus-level metrics.

@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"fmt"
-	"github.com/ssvlabs/rollup-shared-publisher/pkg/errors"
+	"github.com/ethereum/go-ethereum/internal/sp/errors"
 	"io"
 	"sync"
 

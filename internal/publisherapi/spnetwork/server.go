@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"github.com/ethereum/go-ethereum/log"
-	spcodec "github.com/ssvlabs/rollup-shared-publisher/pkg/codec"
-	sperrors "github.com/ssvlabs/rollup-shared-publisher/pkg/errors"
+	spcodec "github.com/ethereum/go-ethereum/internal/sp/codec"
+	sperrors "github.com/ethereum/go-ethereum/internal/sp/errors"
 	"io"
 	"net"
 	"sync"
@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	sptypes "github.com/ssvlabs/rollup-shared-publisher/pkg/proto"
+	sptypes "github.com/ethereum/go-ethereum/internal/sp/proto"
 )
 
 // ServerConfig contains server configuration.
