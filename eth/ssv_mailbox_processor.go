@@ -144,7 +144,8 @@ func (mp *MailboxProcessor) analyzeTransaction(ctx context.Context, backend inte
 			"from", op.From.Hex(),
 			"callDataLen", len(op.CallData))
 
-		if op.Type == vm.CALL && len(op.CallData) >= 4 {
+		// Handle both CALL (write) and STATICCALL (read) operations
+		if (op.Type == vm.CALL || op.Type == vm.STATICCALL) && len(op.CallData) >= 4 {
 			call, err := mp.parseMailboxCall(op.CallData)
 			if err != nil {
 				log.Debug("[SSV] Failed to parse mailbox call", "error", err)
@@ -223,8 +224,8 @@ func (mp *MailboxProcessor) analyzeTransaction(ctx context.Context, backend inte
 						"localChain", mp.chainID)
 				}
 			}
-		} else if op.Type != vm.CALL {
-			log.Debug("[SSV] Ignoring non-CALL operation to mailbox",
+		} else if op.Type != vm.CALL && op.Type != vm.STATICCALL {
+			log.Debug("[SSV] Ignoring non-CALL/STATICCALL operation to mailbox",
 				"type", op.Type.String(),
 				"address", op.Address.Hex())
 		}
