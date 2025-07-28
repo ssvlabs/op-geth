@@ -1454,23 +1454,23 @@ func (b *EthAPIBackend) waitForPutInboxTransactionsToBeProcessed(ctx context.Con
 	for _, tx := range putInboxTxs {
 		timeout := time.After(5 * time.Second)
 		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
 
-		for {
-			select {
-			case <-timeout:
-				return fmt.Errorf("timeout waiting for tx %s", tx.Hash().Hex())
-			case <-ticker.C:
-				if poolTx := b.GetPoolTransaction(tx.Hash()); poolTx != nil {
-					log.Info("[SSV] putInbox transaction in pool", "hash", tx.Hash().Hex())
-					break
+		func() {
+			defer ticker.Stop() // Now properly scoped to this transaction
+			for {
+				select {
+				case <-timeout:
+					return // This will trigger the defer and stop the ticker
+				case <-ticker.C:
+					if poolTx := b.GetPoolTransaction(tx.Hash()); poolTx != nil {
+						log.Info("[SSV] putInbox transaction in pool", "hash", tx.Hash().Hex())
+						return // This will trigger the defer and stop the ticker
+					}
 				}
 			}
-		}
+		}()
 	}
 
-	// Force a pending block update to include these transactions
-	// This ensures they're in the pending state for re-simulation
 	return nil
 }
 
