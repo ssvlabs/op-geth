@@ -18,9 +18,13 @@ package eth
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/crypto"
 	"math/big"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,6 +75,8 @@ type EthAPIBackend struct {
 	spClient         network.Client
 	coordinator      *spconsensus.Coordinator
 	sequencerClients map[string]network.Client
+	sequencerKey     *ecdsa.PrivateKey
+	sequencerAddress common.Address
 
 	// SSV: Sequencer transaction management
 	pendingClearTx     *types.Transaction
@@ -582,11 +588,14 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 	chainID := b.ChainConfig().ChainID
 	mailboxAddrs := b.GetMailboxAddresses()
 
+	sequencerAddr := crypto.PubkeyToAddress(b.sequencerKey.PublicKey)
 	processor := NewMailboxProcessor(
 		b.ChainConfig().ChainID.Uint64(),
 		mailboxAddrs,
 		b.sequencerClients,
 		b.coordinator,
+		b.sequencerKey,
+		sequencerAddr,
 		b,
 	)
 
@@ -668,7 +677,14 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 		// Handle cross-rollup coordination for each transaction that needs it
 		for _, state := range coordinationStates {
 			if state.RequiresCoordination {
-				if err := processor.handleCrossRollupCoordination(ctx, state, xtID); err != nil {
+				startNonce, err := b.GetPoolNonce(ctx, sequencerAddr)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get nonce: %v", err)
+				}
+
+				// !!! preserving "startNonce" value for "clear" transaction
+
+				if err := processor.handleCrossRollupCoordination(ctx, state, xtID, startNonce+1); err != nil {
 					log.Error("[SSV] Cross-rollup coordination failed", "error", err, "xtID", xtID.Hex())
 					// Vote abort if coordination fails
 					_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), false)
@@ -939,13 +955,14 @@ func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context
 		}
 
 		b.SetPendingClearTx(clearTx)
-		log.Info("[SSV] Created clear transaction", "txHash", clearTx.Hash().Hex())
+		log.Info("[SSV] Created clear transaction", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce(), "pendingPutInboxTxs", len(b.GetPendingPutInboxTxs()), "shouldCreate", b.shouldCreateClearTx())
 	}
 
 	return nil
 }
 
 // shouldCreateClearTx determines if we need a clear transaction
+// TODO: should we rely on this? txs are cleared from state in 5 minutes after "decided=true" only
 // SSV
 func (b *EthAPIBackend) shouldCreateClearTx() bool {
 	// Check if there are any active cross-chain transactions
@@ -959,10 +976,38 @@ func (b *EthAPIBackend) shouldCreateClearTx() bool {
 
 // createClearTransaction creates a transaction to clear the mailbox
 // SSV
-// TODO: Implement this function to create a clear transaction
 func (b *EthAPIBackend) createClearTransaction(ctx context.Context) (*types.Transaction, error) {
-	log.Warn("[SSV] createClearTransaction not implemented - waiting")
-	return nil, fmt.Errorf("createClearTransaction not implemented")
+	nonce, err := b.GetPoolNonce(ctx, b.sequencerAddress)
+
+	parsedABI, err := abi.JSON(strings.NewReader(mailboxABI))
+	if err != nil {
+		return nil, err
+	}
+
+	callData, err := parsedABI.Pack("clear")
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare calldata for \"clear\" method: %v", err)
+	}
+
+	txData := &types.DynamicFeeTx{
+		ChainID:    b.ChainConfig().ChainID,
+		Nonce:      nonce,
+		GasTipCap:  big.NewInt(1000000000),
+		GasFeeCap:  big.NewInt(20000000000),
+		Gas:        300000,
+		To:         &b.GetMailboxAddresses()[0],
+		Value:      big.NewInt(0),
+		Data:       callData,
+		AccessList: nil,
+	}
+
+	tx := types.NewTx(txData)
+	signedTx, err := types.SignTx(tx, types.NewLondonSigner(b.ChainConfig().ChainID), b.sequencerKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign tx %v", err)
+	}
+
+	return signedTx, nil
 }
 
 // GetOrderedTransactionsForBlock returns transactions in the correct order for block inclusion
@@ -1018,6 +1063,7 @@ func (b *EthAPIBackend) GetOrderedTransactionsForBlock(ctx context.Context, norm
 func (b *EthAPIBackend) filterOutSequencerTransactions(txs types.Transactions) types.Transactions {
 	// TODO: Get sequencer address (will be implemented)
 	// sequencerAddr := b.getSequencerAddress()
+	// TODO: use b.sequencerAddress
 
 	var filtered types.Transactions
 	sequencerTxHashes := make(map[common.Hash]bool)
@@ -1176,8 +1222,7 @@ func (b *EthAPIBackend) OnBlockBuildingStart(ctx context.Context) error {
 // SSV
 func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, blockHash common.Hash, success bool) error {
 	if success {
-		log.Info("[SSV] Block building completed successfully",
-			"blockHash", blockHash.Hex())
+		log.Info("[SSV] Block building completed successfully", "blockHash", blockHash.Hex())
 
 		// Clear sequencer transactions now that block is built
 		b.ClearSequencerTransactionsAfterBlock()

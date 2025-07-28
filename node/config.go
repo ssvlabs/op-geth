@@ -215,6 +215,7 @@ type Config struct {
 	SPListenAddr   string `toml:",omitempty"`
 	SPAddr         string `toml:",omitempty"`
 	SequencerAddrs string `toml:",omitempty"`
+	SequencerKey   string `toml:",omitempty"`
 
 	MailboxAddresses []common.Address `toml:",omitempty"`
 }

@@ -185,6 +185,7 @@ var (
 		utils.SharedPublisherListenAddr,
 		utils.SharedPublisherServerAddr,
 		utils.SequencerAddrs,
+		utils.SequencerKeyHex,
 	}, utils.NetworkFlags, utils.DatabaseFlags)
 
 	rpcFlags = []cli.Flag{

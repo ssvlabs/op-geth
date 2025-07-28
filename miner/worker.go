@@ -149,14 +149,14 @@ func (miner *Miner) generateWork(params *generateParams, witness bool) *newPaylo
 	misc.EnsureCreate2Deployer(miner.chainConfig, work.header.Time, work.state)
 
 	// SSV: Notify backend that block building is starting
-	if backend, ok := miner.backend.(BackendWithSequencerTransactions); ok {
+	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
 		if err := backend.OnBlockBuildingStart(work.rpcCtx); err != nil {
 			log.Error("[SSV] Failed to notify block building start", "err", err)
 		}
 	}
 
 	// SSV: Prepare sequencer transactions for this block
-	if backend, ok := miner.backend.(BackendWithSequencerTransactions); ok {
+	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
 		if err := backend.PrepareSequencerTransactionsForBlock(work.rpcCtx); err != nil {
 			log.Error("[SSV] Failed to prepare sequencer transactions", "err", err)
 		}
@@ -230,14 +230,14 @@ func (miner *Miner) generateWork(params *generateParams, witness bool) *newPaylo
 	block, err := miner.engine.FinalizeAndAssemble(miner.chain, work.header, work.state, &body, work.receipts)
 	if err != nil {
 		// SSV: Notify backend that block building failed
-		if backend, ok := miner.backend.(BackendWithSequencerTransactions); ok {
+		if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
 			backend.OnBlockBuildingComplete(work.rpcCtx, common.Hash{}, false)
 		}
 		return &newPayloadResult{err: err}
 	}
 
 	// SSV: Notify backend that block building completed successfully
-	if backend, ok := miner.backend.(BackendWithSequencerTransactions); ok {
+	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
 		backend.OnBlockBuildingComplete(work.rpcCtx, block.Hash(), true)
 	}
 
@@ -723,7 +723,7 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 	}
 
 	// SSV: Get ordered transactions from backend if available
-	if backend, ok := miner.backend.(BackendWithSequencerTransactions); ok {
+	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
 		log.Info("[SSV] Using sequencer transaction ordering")
 
 		// PHASE 1: Process sequencer transactions first (clear + putInbox)
@@ -771,7 +771,7 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 
 	} else {
 		// Fall back to normal transaction filling if backend doesn't support sequencer ordering
-		log.Debug("[SSV] Backend doesn't support sequencer ordering, falling back to normal")
+		log.Info("[SSV] Backend doesn't support sequencer ordering, falling back to normal")
 		return miner.fillTransactions(interrupt, env)
 	}
 
@@ -786,7 +786,7 @@ func (miner *Miner) getSequencerTransactions(backend BackendWithSequencerTransac
 	// First: clear transaction
 	if clearTx := backend.GetPendingClearTx(); clearTx != nil {
 		sequencerTxs = append(sequencerTxs, clearTx)
-		log.Debug("[SSV] Added clear transaction", "hash", clearTx.Hash().Hex())
+		log.Info("[SSV] Added clear transaction", "hash", clearTx.Hash().Hex())
 	}
 
 	// Second: putInbox transactions
@@ -794,7 +794,7 @@ func (miner *Miner) getSequencerTransactions(backend BackendWithSequencerTransac
 	sequencerTxs = append(sequencerTxs, putInboxTxs...)
 
 	if len(putInboxTxs) > 0 {
-		log.Debug("[SSV] Added putInbox transactions", "count", len(putInboxTxs))
+		log.Info("[SSV] Added putInbox transactions", "count", len(putInboxTxs))
 	}
 
 	return sequencerTxs
