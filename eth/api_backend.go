@@ -806,6 +806,11 @@ func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Trans
 
 // SimulateTransactionWithSSVTrace simulates a transaction and returns SSV trace data.
 func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
+	timer := time.Now()
+	defer func() {
+		log.Info("[SSV] Simulated transaction with SSV trace", "txHash", tx.Hash().Hex(), "duration", time.Since(timer))
+	}()
+
 	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
 	if err != nil {
 		return nil, err
