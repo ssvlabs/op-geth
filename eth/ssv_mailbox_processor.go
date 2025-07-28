@@ -163,11 +163,17 @@ func (mp *MailboxProcessor) analyzeTransaction(ctx context.Context, backend inte
 
 			// Check for cross-rollup read dependency
 			if call.IsRead {
+				log.Info("[SSV] Processing read operation",
+					"chainSrc", call.ChainSrc.Uint64(),
+					"chainDest", call.ChainDest.Uint64(),
+					"localChainID", mp.chainID,
+					"shouldCreateDep", call.ChainDest.Uint64() != mp.chainID)
+
 				// If we're reading from a different source chain, this is a dependency
-				if call.ChainSrc.Uint64() != mp.chainID {
+				if call.ChainDest.Uint64() != mp.chainID {
 					dep := CrossRollupDependency{
 						SourceChainID: call.ChainSrc.Uint64(),
-						DestChainID:   call.ChainDest.Uint64(),
+						DestChainID:   mp.chainID,
 						Sender:        call.Sender,
 						Receiver:      call.Receiver,
 						SessionID:     call.SessionId,
