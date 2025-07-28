@@ -473,7 +473,7 @@ func (mp *MailboxProcessor) createAndSubmitPutInboxTx(ctx context.Context, dep *
 			mailboxAddr,
 			big.NewInt(0),
 			300000,
-			big.NewInt(1000000000),
+			big.NewInt(30000000000),
 			callData,
 		)
 
