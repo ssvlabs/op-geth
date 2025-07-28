@@ -3,6 +3,7 @@ package eth
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -172,7 +173,7 @@ func (mp *MailboxProcessor) analyzeTransaction(ctx context.Context, backend inte
 				// If we're reading from a different source chain, this is a dependency
 				if call.ChainDest.Uint64() != mp.chainID {
 					dep := CrossRollupDependency{
-						SourceChainID: call.ChainSrc.Uint64(),
+						SourceChainID: call.ChainDest.Uint64(),
 						DestChainID:   mp.chainID,
 						Sender:        call.Sender,
 						Receiver:      call.Receiver,
@@ -396,7 +397,7 @@ func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollu
 }
 
 func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *sptypes.XtID, dep *CrossRollupDependency) error {
-	sourceChainStr := strconv.FormatUint(dep.SourceChainID, 10)
+	sourceChainStr := hex.EncodeToString(new(big.Int).SetUint64(dep.SourceChainID).Bytes())
 
 	// Wait for CIRC message with timeout
 	timeout := time.NewTimer(2 * time.Minute)
