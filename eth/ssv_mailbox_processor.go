@@ -464,8 +464,30 @@ func (mp *MailboxProcessor) createAndSubmitPutInboxTx(ctx context.Context, dep *
 		"dataLen", len(callData),
 	)
 
-	// TODO: Submit to txpool - this should create an actual transaction and submit it
-	// For now just log that it would be submitted
+	// TODO / TEMPORARY: Waiting, it will be implemented
+	if backend, ok := mp.backend.(*EthAPIBackend); ok {
+
+		// mock
+		mockTx := types.NewTransaction(
+			0,
+			mailboxAddr,
+			big.NewInt(0),
+			300000,
+			big.NewInt(1000000000),
+			callData,
+		)
+
+		// Submitmock
+		err = backend.SubmitSequencerTransaction(ctx, mockTx, true)
+		if err != nil {
+			return fmt.Errorf("failed to submit mock putInbox transaction: %w", err)
+		}
+
+		log.Warn("[SSV] Submitted MOCK putInbox transaction",
+			"txHash", mockTx.Hash().Hex(),
+			"mailbox", mailboxAddr.Hex())
+	}
+
 	return nil
 }
 

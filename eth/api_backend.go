@@ -677,18 +677,32 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 			}
 		}
 
-		// After successful coordination, re-simulate to verify everything works
-		// TODO: Re-simulate transactions after mailbox is populated
+		// Re-simulate after mailbox population
+		log.Info("[SSV] Cross-rollup coordination completed, starting re-simulation", "xtID", xtID.Hex())
 
-		// Vote commit if coordination succeeded
-		log.Info("[SSV] Cross-rollup coordination completed successfully", "xtID", xtID.Hex())
-		_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), true)
+		success, err := b.reSimulateAfterMailboxPopulation(ctx, xtReq, xtID, coordinationStates)
+		if err != nil {
+			log.Error("[SSV] Re-simulation failed with error", "error", err, "xtID", xtID.Hex())
+			_, voteErr := b.coordinator.RecordVote(xtID, chainID.Text(16), false)
+			if voteErr != nil {
+				log.Error("[SSV] Failed to record abort vote", "error", voteErr)
+			}
+			return nil, err
+		}
+
+		if success {
+			log.Info("[SSV] Re-simulation successful, voting commit", "xtID", xtID.Hex())
+			_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), true)
+		} else {
+			log.Warn("[SSV] Re-simulation failed, voting abort", "xtID", xtID.Hex())
+			_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), false)
+		}
+
 		if err != nil {
 			return nil, err
 		}
 	} else {
 		log.Info("[SSV] No coordination required, voting commit", "xtID", xtID.Hex())
-		// No coordination needed, vote commit
 		_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), true)
 		if err != nil {
 			return nil, err
@@ -1210,20 +1224,251 @@ func (b *EthAPIBackend) GetPendingTransactionsForMining(ctx context.Context) (ty
 	return orderedTxs, nil
 }
 
-// GetAllPendingTransactions gets all pending transactions from the pool for mining
+// GetAllPendingTransactions returns all pending transactions, including sequencer transactions
 // SSV
 func (b *EthAPIBackend) GetAllPendingTransactions() (types.Transactions, error) {
-	pending := b.eth.txPool.Pending(txpool.PendingFilter{})
+	log.Debug("[SSV] Getting all pending transactions")
+
+	// Get normal transactions from pool
+	normalTxs, err := b.GetPoolTransactions()
+	if err != nil {
+		log.Error("[SSV] Failed to get pool transactions", "err", err)
+		return nil, err
+	}
+
+	// Get sequencer transactions
 	var allTxs types.Transactions
 
-	for _, batch := range pending {
-		for _, lazy := range batch {
-			if tx := lazy.Resolve(); tx != nil {
-				allTxs = append(allTxs, tx)
+	// Add clear transaction first if exists
+	if clearTx := b.GetPendingClearTx(); clearTx != nil {
+		allTxs = append(allTxs, clearTx)
+		log.Debug("[SSV] Added clear transaction to all pending", "txHash", clearTx.Hash().Hex())
+	}
+
+	// Add putInbox transactions
+	putInboxTxs := b.GetPendingPutInboxTxs()
+	allTxs = append(allTxs, putInboxTxs...)
+	if len(putInboxTxs) > 0 {
+		log.Debug("[SSV] Added putInbox transactions to all pending", "count", len(putInboxTxs))
+	}
+
+	// Add normal transactions
+	allTxs = append(allTxs, normalTxs...)
+
+	log.Debug("[SSV] All pending transactions retrieved",
+		"clearTxs", func() int {
+			if b.GetPendingClearTx() != nil {
+				return 1
+			}
+			return 0
+		}(),
+		"putInboxTxs", len(putInboxTxs),
+		"normalTxs", len(normalTxs),
+		"total", len(allTxs))
+
+	return allTxs, nil
+}
+
+// reSimulateAfterMailboxPopulation re-simulates transactions after mailbox has been populated
+// SSV
+// In api_backend.go, update reSimulateAfterMailboxPopulation:
+func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(ctx context.Context, xtReq *sptypes.XTRequest, xtID *sptypes.XtID, coordinationStates []*SimulationState) (bool, error) {
+	chainID := b.ChainConfig().ChainID
+
+	log.Info("[SSV] Starting re-simulation after mailbox population",
+		"xtID", xtID.Hex(),
+		"chainID", chainID,
+		"transactions", len(xtReq.Transactions))
+
+	// Wait for putInbox transactions to be processed
+	if err := b.waitForPutInboxTransactionsToBeProcessed(ctx, xtID); err != nil {
+		log.Error("[SSV] Failed waiting for putInbox transactions", "error", err, "xtID", xtID.Hex())
+		return false, err
+	}
+
+	// Re-simulate each local transaction against PENDING state
+	// TODO: confirm? (pending instead of latest block)
+	allSuccessful := true
+	blockNrOrHash := rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber)
+
+	for _, txReq := range xtReq.Transactions {
+		txChainID := new(big.Int).SetBytes(txReq.ChainId)
+
+		// Only re-simulate transactions for our local chain
+		if txChainID.Cmp(chainID) != 0 {
+			continue
+		}
+
+		log.Info("[SSV] Re-simulating local transactions against pending state",
+			"chainID", txChainID,
+			"txCount", len(txReq.Transaction))
+
+		for i, txBytes := range txReq.Transaction {
+			tx := new(types.Transaction)
+			if err := tx.UnmarshalBinary(txBytes); err != nil {
+				log.Error("[SSV] Failed to unmarshal transaction for re-simulation",
+					"error", err,
+					"index", i,
+					"xtID", xtID.Hex())
+				allSuccessful = false
+				continue
+			}
+
+			// Re-simulate the transaction
+			success, err := b.reSimulateTransaction(ctx, tx, blockNrOrHash, xtID)
+			if err != nil {
+				log.Error("[SSV] Re-simulation error",
+					"txHash", tx.Hash().Hex(),
+					"error", err,
+					"xtID", xtID.Hex())
+				allSuccessful = false
+				continue
+			}
+
+			if !success {
+				log.Warn("[SSV] Re-simulation failed for transaction",
+					"txHash", tx.Hash().Hex(),
+					"xtID", xtID.Hex())
+				allSuccessful = false
+			} else {
+				log.Info("[SSV] Re-simulation successful for transaction",
+					"txHash", tx.Hash().Hex(),
+					"xtID", xtID.Hex())
 			}
 		}
 	}
 
-	log.Debug("[SSV] Retrieved all pending transactions", "count", len(allTxs))
-	return allTxs, nil
+	log.Info("[SSV] Re-simulation completed",
+		"xtID", xtID.Hex(),
+		"allSuccessful", allSuccessful)
+
+	return allSuccessful, nil
+}
+
+// reSimulateTransaction re-simulates a single transaction and checks for success
+// SSV
+func (b *EthAPIBackend) reSimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash, xtID *sptypes.XtID) (bool, error) {
+	log.Debug("[SSV] Re-simulating transaction",
+		"txHash", tx.Hash().Hex(),
+		"xtID", xtID.Hex())
+
+	// Simulate with SSV tracing to detect mailbox interactions
+	traceResult, err := b.SimulateTransactionWithSSVTrace(ctx, tx, blockNrOrHash)
+	if err != nil {
+		log.Error("[SSV] Transaction simulation with trace failed",
+			"txHash", tx.Hash().Hex(),
+			"error", err,
+			"xtID", xtID.Hex())
+		return false, err
+	}
+
+	// Check if execution was successful
+	if traceResult.ExecutionResult.Err != nil {
+		log.Warn("[SSV] Transaction execution failed in re-simulation",
+			"txHash", tx.Hash().Hex(),
+			"executionError", traceResult.ExecutionResult.Err,
+			"xtID", xtID.Hex())
+		return false, nil
+	}
+
+	// Validate that the transaction used reasonable gas (not failed silently)
+	if traceResult.ExecutionResult.UsedGas == 0 {
+		log.Warn("[SSV] Transaction used no gas, likely failed silently",
+			"txHash", tx.Hash().Hex(),
+			"xtID", xtID.Hex())
+		return false, nil
+	}
+
+	// Check that mailbox operations were traced (indicating they succeeded)
+	if len(traceResult.Operations) == 0 {
+		log.Warn("[SSV] No mailbox operations detected in re-simulation",
+			"txHash", tx.Hash().Hex(),
+			"xtID", xtID.Hex())
+		return false, nil
+	}
+
+	log.Debug("[SSV] Transaction re-simulation successful",
+		"txHash", tx.Hash().Hex(),
+		"gasUsed", traceResult.ExecutionResult.UsedGas,
+		"mailboxOps", len(traceResult.Operations),
+		"xtID", xtID.Hex())
+
+	return true, nil
+}
+
+// waitForPutInboxTransactionsToBeProcessed waits for putInbox transactions to be included
+// SSV
+func (b *EthAPIBackend) waitForPutInboxTransactionsToBeProcessed(ctx context.Context, xtID *sptypes.XtID) error {
+	log.Info("[SSV] Waiting for putInbox transactions to be processed", "xtID", xtID.Hex())
+
+	// Check if we have any pending putInbox transactions
+	putInboxTxs := b.GetPendingPutInboxTxs()
+	if len(putInboxTxs) == 0 {
+		log.Debug("[SSV] No putInbox transactions to wait for", "xtID", xtID.Hex())
+		return nil
+	}
+
+	log.Info("[SSV] Waiting for putInbox transactions",
+		"count", len(putInboxTxs),
+		"xtID", xtID.Hex())
+
+	// TODO: Implement a more robust waiting mechanism, this should wait for actual blockchain inclusion
+	waitTime := 2 * time.Second
+	log.Info("[SSV] Waiting for putInbox transactions to be processed",
+		"waitTime", waitTime,
+		"xtID", xtID.Hex())
+
+	timer := time.NewTimer(waitTime)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		log.Info("[SSV] Proceeding with re-simulation after wait period",
+			"count", len(putInboxTxs),
+			"xtID", xtID.Hex())
+		return nil
+	}
+}
+
+// isTransactionProcessed checks if a transaction has been processed (in pending state or mined)
+// SSV
+func (b *EthAPIBackend) isTransactionProcessed(ctx context.Context, tx *types.Transaction) bool {
+	// Check if transaction is in the pool (pending state)
+	if poolTx := b.GetPoolTransaction(tx.Hash()); poolTx != nil {
+		log.Debug("[SSV] Transaction found in pool", "txHash", tx.Hash().Hex())
+		return true
+	}
+
+	// Check if transaction has been mined
+	found, _, _, _, _ := b.GetTransaction(tx.Hash())
+	if found {
+		log.Debug("[SSV] Transaction found in blockchain", "txHash", tx.Hash().Hex())
+		return true
+	}
+
+	return false
+}
+
+// validateMailboxStateAfterPutInbox validates that the mailbox state has been updated correctly
+// SSV
+func (b *EthAPIBackend) validateMailboxStateAfterPutInbox(ctx context.Context, xtID *sptypes.XtID) (bool, error) {
+	log.Debug("[SSV] Validating mailbox state after putInbox", "xtID", xtID.Hex())
+
+	// Get the current state to check mailbox contents
+	_, header, err := b.StateAndHeaderByNumber(ctx, rpc.LatestBlockNumber)
+	if err != nil {
+		log.Error("[SSV] Failed to get current state", "error", err, "xtID", xtID.Hex())
+		return false, err
+	}
+
+	// Check mailbox contract state - this would require ABI calls to verify
+	// For now, we assume if putInbox transactions were processed, state is valid
+
+	log.Debug("[SSV] Mailbox state validation completed",
+		"blockNumber", header.Number,
+		"xtID", xtID.Hex())
+
+	return true, nil
 }
