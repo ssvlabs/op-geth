@@ -148,6 +148,13 @@ func (miner *Miner) generateWork(params *generateParams, witness bool) *newPaylo
 
 	misc.EnsureCreate2Deployer(miner.chainConfig, work.header.Time, work.state)
 
+	// SSV: Prepare sequencer transactions for this block
+	if backend, ok := miner.backend.(BackendWithSequencerTransactions); ok {
+		if err := backend.PrepareSequencerTransactionsForBlock(work.rpcCtx); err != nil {
+			log.Error("[SSV] Failed to prepare sequencer transactions", "err", err)
+		}
+	}
+
 	for _, tx := range params.txs {
 		from, _ := types.Sender(work.signer, tx)
 		work.state.SetTxContext(tx.Hash(), work.tcount)
@@ -166,7 +173,7 @@ func (miner *Miner) generateWork(params *generateParams, witness bool) *newPaylo
 			interrupt.Store(commitInterruptTimeout)
 		})
 
-		err := miner.fillTransactions(interrupt, work)
+		err := miner.fillTransactionsWithSequencerOrdering(interrupt, work)
 		timer.Stop() // don't need timeout interruption any more
 		if errors.Is(err, errBlockInterruptedByTimeout) {
 			log.Warn("Block building is interrupted", "allowance", common.PrettyDuration(miner.config.Recommit))
@@ -217,6 +224,12 @@ func (miner *Miner) generateWork(params *generateParams, witness bool) *newPaylo
 	if err != nil {
 		return &newPayloadResult{err: err}
 	}
+
+	// SSV: Clear sequencer transactions after successful block creation
+	if backend, ok := miner.backend.(BackendWithSequencerTransactions); ok {
+		backend.ClearSequencerTransactionsAfterBlock()
+	}
+
 	return &newPayloadResult{
 		block:    block,
 		fees:     totalFees(block, work.receipts),
@@ -654,6 +667,118 @@ func (miner *Miner) fillTransactions(interrupt *atomic.Int32, env *environment) 
 			return err
 		}
 	}
+	return nil
+}
+
+// fillTransactionsWithSequencerOrdering retrieves the pending transactions from the txpool and fills them
+// into the given sealing block with sequencer transaction ordering.
+// SSV
+func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int32, env *environment) error {
+	miner.confMu.RLock()
+	tip := miner.config.GasPrice
+	prio := miner.prio
+	miner.confMu.RUnlock()
+
+	// Retrieve the pending transactions pre-filtered by the 1559/4844 dynamic fees
+	filter := txpool.PendingFilter{
+		MinTip:      uint256.MustFromBig(tip),
+		MaxDATxSize: miner.config.MaxDATxSize,
+	}
+	if env.header.BaseFee != nil {
+		filter.BaseFee = uint256.MustFromBig(env.header.BaseFee)
+	}
+	if env.header.ExcessBlobGas != nil {
+		filter.BlobFee = uint256.MustFromBig(eip4844.CalcBlobFee(miner.chainConfig, env.header))
+	}
+	filter.OnlyPlainTxs, filter.OnlyBlobTxs = true, false
+	pendingPlainTxs := miner.txpool.Pending(filter)
+
+	filter.OnlyPlainTxs, filter.OnlyBlobTxs = false, true
+	pendingBlobTxs := miner.txpool.Pending(filter)
+
+	// Split the pending transactions into locals and remotes.
+	prioPlainTxs, normalPlainTxs := make(map[common.Address][]*txpool.LazyTransaction), pendingPlainTxs
+	prioBlobTxs, normalBlobTxs := make(map[common.Address][]*txpool.LazyTransaction), pendingBlobTxs
+
+	for _, account := range prio {
+		if txs := normalPlainTxs[account]; len(txs) > 0 {
+			delete(normalPlainTxs, account)
+			prioPlainTxs[account] = txs
+		}
+		if txs := normalBlobTxs[account]; len(txs) > 0 {
+			delete(normalBlobTxs, account)
+			prioBlobTxs[account] = txs
+		}
+	}
+
+	// SSV: Get ordered transactions from backend if available
+	var orderedTxs types.Transactions
+	if backend, ok := miner.backend.(BackendWithSequencerTransactions); ok {
+		// Convert LazyTransactions to regular Transactions for ordering
+		var normalTxs types.Transactions
+		for _, batch := range normalPlainTxs {
+			for _, lazy := range batch {
+				if tx := lazy.Resolve(); tx != nil {
+					normalTxs = append(normalTxs, tx)
+				}
+			}
+		}
+		for _, batch := range normalBlobTxs {
+			for _, lazy := range batch {
+				if tx := lazy.Resolve(); tx != nil {
+					normalTxs = append(normalTxs, tx)
+				}
+			}
+		}
+
+		var err error
+		orderedTxs, err = backend.GetOrderedTransactionsForBlock(env.rpcCtx, normalTxs)
+		if err != nil {
+			log.Error("[SSV] Failed to get ordered transactions", "err", err)
+			// Fall back to normal transaction filling
+			return miner.fillTransactions(interrupt, env)
+		}
+
+		// Process ordered transactions
+		if len(orderedTxs) > 0 {
+			log.Info("[SSV] Processing ordered transactions", "count", len(orderedTxs))
+			for _, tx := range orderedTxs {
+				// Check interruption signal
+				if interrupt != nil {
+					if signal := interrupt.Load(); signal != commitInterruptNone {
+						return signalToErr(signal)
+					}
+				}
+
+				// Check gas limit
+				if env.gasPool.Gas() < params.TxGas {
+					log.Trace("Not enough gas for further transactions", "have", env.gasPool, "want", params.TxGas)
+					break
+				}
+
+				// Check blob gas limit for blob transactions
+				if tx.Type() == types.BlobTxType {
+					sc := tx.BlobTxSidecar()
+					if sc != nil && env.blobs+len(sc.Blobs) > eip4844.MaxBlobsPerBlock(miner.chainConfig, env.header.Time) {
+						log.Trace("Not enough blob space for further blob transactions")
+						break
+					}
+				}
+
+				// Apply the transaction
+				env.state.SetTxContext(tx.Hash(), env.tcount)
+				err := miner.commitTransaction(env, tx)
+				if err != nil {
+					log.Debug("Transaction failed, skipping", "hash", tx.Hash(), "err", err)
+					continue
+				}
+			}
+		}
+	} else {
+		// Fall back to normal transaction filling if backend doesn't support sequencer ordering
+		return miner.fillTransactions(interrupt, env)
+	}
+
 	return nil
 }
 

@@ -64,6 +64,22 @@ type BackendWithInterop interface {
 	QueryFailsafe(ctx context.Context) (bool, error)
 }
 
+// BackendWithSequencerTransactions defines the interface for sequencer transaction handling
+// SSV
+type BackendWithSequencerTransactions interface {
+	// PrepareSequencerTransactionsForBlock prepares sequencer transactions for inclusion in a new block
+	// SSV
+	PrepareSequencerTransactionsForBlock(ctx context.Context) error
+
+	// GetOrderedTransactionsForBlock returns transactions in the correct order for block inclusion
+	// SSV
+	GetOrderedTransactionsForBlock(ctx context.Context, normalTxs types.Transactions) (types.Transactions, error)
+
+	// ClearSequencerTransactionsAfterBlock clears all pending sequencer transactions after block creation
+	// SSV
+	ClearSequencerTransactionsAfterBlock()
+}
+
 // Config is the configuration parameters of mining.
 type Config struct {
 	Etherbase           common.Address `toml:"-"`          // Deprecated

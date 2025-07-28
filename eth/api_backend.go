@@ -20,11 +20,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/ethereum/go-ethereum/core/ssv"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/eth/tracers/native"
 	"math/big"
+	"sync"
 	"time"
+
+	"github.com/ethereum/go-ethereum/core/ssv"
+	"github.com/ethereum/go-ethereum/eth/tracers/native"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts"
@@ -64,10 +65,17 @@ type EthAPIBackend struct {
 	disableTxPool       bool
 	eth                 *Ethereum
 	gpo                 *gasprice.Oracle
-	spServer            network.Server
-	spClient            network.Client
-	coordinator         *spconsensus.Coordinator
-	sequencerClients    map[string]network.Client
+
+	// SSV: Shared publisher and coordinator
+	spServer         network.Server
+	spClient         network.Client
+	coordinator      *spconsensus.Coordinator
+	sequencerClients map[string]network.Client
+
+	// SSV: Sequencer transaction management
+	pendingClearTx     *types.Transaction
+	pendingPutInboxTxs []*types.Transaction
+	sequencerTxMutex   sync.RWMutex
 }
 
 // ChainConfig returns the active chain configuration.
@@ -524,8 +532,8 @@ func (b *EthAPIBackend) Genesis() *types.Block {
 	return b.eth.blockchain.Genesis()
 }
 
-// The message can originate either from an external user or a shared publisher
-// If it originates from an external user, it is forwarded to the shared publisher
+// HandleSPMessage processes messages received from the shared publisher.
+// SSV
 func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *sptypes.Message) ([]common.Hash, error) {
 	switch payload := msg.Payload.(type) {
 	case *sptypes.Message_XtRequest:
@@ -555,6 +563,8 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *sptypes.Messag
 	}
 }
 
+// handleXtRequest processes a cross-chain transaction request.
+// SSV
 func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq *sptypes.XTRequest) ([]common.Hash, error) {
 	// Only start coordinator if this is actually a cross-chain transaction
 	if len(xtReq.Transactions) > 1 {
@@ -688,14 +698,20 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 	return nil, nil
 }
 
+// handleDecided processes a Decided message received from the shared publisher.
+// SSV
 func (b *EthAPIBackend) handleDecided(xtDecision *sptypes.Decided) error {
 	return b.coordinator.RecordDecision(xtDecision.XtId, xtDecision.GetDecision())
 }
 
+// handleCIRCMessage processes a CIRC message received from the shared publisher.
+// SSV
 func (b *EthAPIBackend) handleCIRCMessage(circMessage *sptypes.CIRCMessage) error {
 	return b.coordinator.RecordCIRCMessage(circMessage)
 }
 
+// StartCallbackFn returns a function that can be used to send transaction bundles to the shared publisher.
+// SSV
 func (b *EthAPIBackend) StartCallbackFn(chainID *big.Int) spconsensus.StartFn {
 	return func(ctx context.Context, from string, xtReq *sptypes.XTRequest) error {
 		if from != spnetwork.SharedPublisherSenderID {
@@ -714,6 +730,8 @@ func (b *EthAPIBackend) StartCallbackFn(chainID *big.Int) spconsensus.StartFn {
 	}
 }
 
+// VoteCallbackFn returns a function that can be used to send votes for cross-chain transactions.
+// SSV
 func (b *EthAPIBackend) VoteCallbackFn(chainID *big.Int) spconsensus.VoteFn {
 	return func(ctx context.Context, xtID *sptypes.XtID, vote bool) error {
 		msgVote := &sptypes.Message_Vote{
@@ -732,52 +750,8 @@ func (b *EthAPIBackend) VoteCallbackFn(chainID *big.Int) spconsensus.VoteFn {
 	}
 }
 
-// TODO: lets duplicate for PoC but should be extracted to separate package which can be reused by both api_backend.go and api.go
-// SubmitTransaction is a helper function that submits tx to txPool and logs a message.
-func SubmitTransaction(ctx context.Context, b *EthAPIBackend, tx *types.Transaction) (common.Hash, error) {
-	// If the transaction fee cap is already specified, ensure the
-	// fee of the given transaction is _reasonable_.
-	if err := checkTxFee(tx.GasPrice(), tx.Gas(), b.RPCTxFeeCap()); err != nil {
-		return common.Hash{}, err
-	}
-	if !b.UnprotectedAllowed() && !tx.Protected() {
-		// Ensure only eip155 signed transactions are submitted if EIP155Required is set.
-		return common.Hash{}, errors.New("only replay-protected (EIP-155) transactions allowed over RPC")
-	}
-	if err := b.SendTx(ctx, tx); err != nil {
-		return common.Hash{}, err
-	}
-	// Print a log with full tx details for manual investigations and interventions
-	head := b.CurrentBlock()
-	signer := types.MakeSigner(b.ChainConfig(), head.Number, head.Time)
-	from, err := types.Sender(signer, tx)
-	if err != nil {
-		return common.Hash{}, err
-	}
-
-	if tx.To() == nil {
-		addr := crypto.CreateAddress(from, tx.Nonce())
-		log.Info("Submitted contract creation", "hash", tx.Hash().Hex(), "from", from, "nonce", tx.Nonce(), "contract", addr.Hex(), "value", tx.Value())
-	} else {
-		log.Info("Submitted transaction", "hash", tx.Hash().Hex(), "from", from, "nonce", tx.Nonce(), "recipient", tx.To(), "value", tx.Value())
-	}
-	return tx.Hash(), nil
-}
-
-func checkTxFee(gasPrice *big.Int, gas uint64, cap float64) error {
-	// Short circuit if there is no cap for transaction fee at all.
-	if cap == 0 {
-		return nil
-	}
-	feeEth := new(big.Float).Quo(new(big.Float).SetInt(new(big.Int).Mul(gasPrice, new(big.Int).SetUint64(gas))), new(big.Float).SetInt(big.NewInt(params.Ether)))
-	feeFloat, _ := feeEth.Float64()
-	if feeFloat > cap {
-		return fmt.Errorf("tx fee (%.2f ether) exceeds the configured cap (%.2f ether)", feeFloat, cap)
-	}
-	return nil
-}
-
 // SimulateTransaction simulates the execution of a transaction in the context of a specific block.
+// SSV
 func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*core.ExecutionResult, error) {
 	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
 	if err != nil {
@@ -805,6 +779,7 @@ func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Trans
 }
 
 // SimulateTransactionWithSSVTrace simulates a transaction and returns SSV trace data.
+// SSV
 func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
 	timer := time.Now()
 	defer func() {
@@ -850,8 +825,198 @@ func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx 
 }
 
 // GetMailboxAddresses returns the list of mailbox contract addresses to watch.package ethapi
+// SSV
 func (b *EthAPIBackend) GetMailboxAddresses() []common.Address {
 	return []common.Address{
 		common.HexToAddress(mailBoxAddr),
 	}
+}
+
+// GetPendingClearTx returns the pending clear transaction for the current block.
+// SSV
+func (b *EthAPIBackend) GetPendingClearTx() *types.Transaction {
+	b.sequencerTxMutex.RLock()
+	defer b.sequencerTxMutex.RUnlock()
+	return b.pendingClearTx
+}
+
+// SetPendingClearTx sets the clear transaction for the current block.
+// SSV
+func (b *EthAPIBackend) SetPendingClearTx(tx *types.Transaction) {
+	b.sequencerTxMutex.Lock()
+	defer b.sequencerTxMutex.Unlock()
+	b.pendingClearTx = tx
+}
+
+// GetPendingPutInboxTxs returns all pending putInbox transactions.
+// SSV
+func (b *EthAPIBackend) GetPendingPutInboxTxs() []*types.Transaction {
+	b.sequencerTxMutex.RLock()
+	defer b.sequencerTxMutex.RUnlock()
+
+	result := make([]*types.Transaction, len(b.pendingPutInboxTxs))
+	copy(result, b.pendingPutInboxTxs)
+	return result
+}
+
+// AddPendingPutInboxTx adds a putInbox transaction to the pending list.
+// SSV
+func (b *EthAPIBackend) AddPendingPutInboxTx(tx *types.Transaction) {
+	b.sequencerTxMutex.Lock()
+	defer b.sequencerTxMutex.Unlock()
+
+	b.pendingPutInboxTxs = append(b.pendingPutInboxTxs, tx)
+
+	log.Info("[SSV] Added pending putInbox transaction",
+		"txHash", tx.Hash().Hex(),
+		"totalPending", len(b.pendingPutInboxTxs))
+}
+
+// ClearSequencerTransactions clears all pending sequencer transactions (called after block creation).
+// SSV
+func (b *EthAPIBackend) ClearSequencerTransactions() {
+	b.sequencerTxMutex.Lock()
+	defer b.sequencerTxMutex.Unlock()
+
+	b.pendingClearTx = nil
+	b.pendingPutInboxTxs = b.pendingPutInboxTxs[:0] // Clear slice but keep capacity
+
+	log.Debug("[SSV] Cleared pending sequencer transactions")
+}
+
+// ClearSequencerTransactionsAfterBlock clears all pending sequencer transactions after block creation
+// SSV
+func (b *EthAPIBackend) ClearSequencerTransactionsAfterBlock() {
+	b.ClearSequencerTransactions()
+	log.Info("[SSV] Cleared sequencer transactions after block creation")
+}
+
+// SubmitSequencerTransaction submits a transaction with a priority flag.
+// SSV
+func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *types.Transaction, isPutInbox bool) error {
+	if isPutInbox {
+		b.AddPendingPutInboxTx(tx)
+	} else {
+		b.SetPendingClearTx(tx)
+	}
+
+	log.Info("[SSV] Submitted sequencer transaction",
+		"txHash", tx.Hash().Hex(),
+		"isPutInbox", isPutInbox)
+
+	return nil
+}
+
+// PrepareSequencerTransactionsForBlock prepares sequencer transactions for inclusion in a new block
+// SSV
+func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context) error {
+	log.Info("[SSV] Preparing sequencer transactions for new block")
+
+	// 1. Create clear transaction if we have any cross-chain activity
+	if len(b.GetPendingPutInboxTxs()) > 0 || b.shouldCreateClearTx() {
+		clearTx, err := b.createClearTransaction(ctx)
+		if err != nil {
+			log.Error("[SSV] Failed to create clear transaction", "err", err)
+			return err
+		}
+
+		b.SetPendingClearTx(clearTx)
+		log.Info("[SSV] Created clear transaction", "txHash", clearTx.Hash().Hex())
+	}
+
+	return nil
+}
+
+// shouldCreateClearTx determines if we need a clear transaction
+// SSV
+func (b *EthAPIBackend) shouldCreateClearTx() bool {
+	// Check if there are any active cross-chain transactions
+	// For now, always create it if we're handling cross-chain txs
+	if b.coordinator != nil {
+		activeXTs := b.coordinator.GetActiveTransactions()
+		return len(activeXTs) > 0
+	}
+	return false
+}
+
+// createClearTransaction creates a transaction to clear the mailbox
+// SSV
+// TODO: Implement this function to create a clear transaction
+func (b *EthAPIBackend) createClearTransaction(ctx context.Context) (*types.Transaction, error) {
+	log.Warn("[SSV] createClearTransaction not implemented - waiting")
+	return nil, fmt.Errorf("createClearTransaction not implemented")
+}
+
+// GetOrderedTransactionsForBlock returns transactions in the correct order for block inclusion
+// SSV
+func (b *EthAPIBackend) GetOrderedTransactionsForBlock(ctx context.Context, normalTxs types.Transactions) (types.Transactions, error) {
+	var orderedTxs types.Transactions
+
+	// 1. First: Clear transaction
+	if clearTx := b.GetPendingClearTx(); clearTx != nil {
+		orderedTxs = append(orderedTxs, clearTx)
+		log.Info("[SSV] Added clear transaction to block", "txHash", clearTx.Hash().Hex())
+	}
+
+	// 2. Second: All putInbox transactions
+	putInboxTxs := b.GetPendingPutInboxTxs()
+	if len(putInboxTxs) > 0 {
+		orderedTxs = append(orderedTxs, putInboxTxs...)
+		log.Info("[SSV] Added putInbox transactions to block", "count", len(putInboxTxs))
+
+		for i, tx := range putInboxTxs {
+			log.Info("[SSV] PutInbox transaction", "index", i, "txHash", tx.Hash().Hex())
+		}
+	}
+
+	// 3. Third: Normal user transactions (excluding any sequencer txs that might be in pool)
+	filteredNormalTxs := b.filterOutSequencerTransactions(normalTxs)
+	orderedTxs = append(orderedTxs, filteredNormalTxs...)
+
+	log.Info("[SSV] Block transaction order prepared",
+		"clearTxs", func() int {
+			if clearTx := b.GetPendingClearTx(); clearTx != nil {
+				return 1
+			}
+			return 0
+		}(),
+		"putInboxTxs", len(putInboxTxs),
+		"normalTxs", len(filteredNormalTxs),
+		"total", len(orderedTxs))
+
+	return orderedTxs, nil
+}
+
+// filterOutSequencerTransactions removes sequencer transactions from normal transaction list
+// SSV
+func (b *EthAPIBackend) filterOutSequencerTransactions(txs types.Transactions) types.Transactions {
+	// TODO: Get sequencer address (will be implemented)
+	// sequencerAddr := b.getSequencerAddress()
+
+	var filtered types.Transactions
+	sequencerTxHashes := make(map[common.Hash]bool)
+
+	// Build map of sequencer transaction hashes
+	if clearTx := b.GetPendingClearTx(); clearTx != nil {
+		sequencerTxHashes[clearTx.Hash()] = true
+	}
+
+	for _, putInboxTx := range b.GetPendingPutInboxTxs() {
+		sequencerTxHashes[putInboxTx.Hash()] = true
+	}
+
+	// Filter out sequencer transactions
+	for _, tx := range txs {
+		if !sequencerTxHashes[tx.Hash()] {
+			filtered = append(filtered, tx)
+		}
+	}
+
+	if len(filtered) != len(txs) {
+		log.Debug("[SSV] Filtered out sequencer transactions",
+			"original", len(txs),
+			"filtered", len(filtered))
+	}
+
+	return filtered
 }
