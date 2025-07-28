@@ -148,6 +148,13 @@ func (miner *Miner) generateWork(params *generateParams, witness bool) *newPaylo
 
 	misc.EnsureCreate2Deployer(miner.chainConfig, work.header.Time, work.state)
 
+	// SSV: Notify backend that block building is starting
+	if backend, ok := miner.backend.(BackendWithSequencerTransactions); ok {
+		if err := backend.OnBlockBuildingStart(work.rpcCtx); err != nil {
+			log.Error("[SSV] Failed to notify block building start", "err", err)
+		}
+	}
+
 	// SSV: Prepare sequencer transactions for this block
 	if backend, ok := miner.backend.(BackendWithSequencerTransactions); ok {
 		if err := backend.PrepareSequencerTransactionsForBlock(work.rpcCtx); err != nil {
@@ -222,12 +229,16 @@ func (miner *Miner) generateWork(params *generateParams, witness bool) *newPaylo
 
 	block, err := miner.engine.FinalizeAndAssemble(miner.chain, work.header, work.state, &body, work.receipts)
 	if err != nil {
+		// SSV: Notify backend that block building failed
+		if backend, ok := miner.backend.(BackendWithSequencerTransactions); ok {
+			backend.OnBlockBuildingComplete(work.rpcCtx, common.Hash{}, false)
+		}
 		return &newPayloadResult{err: err}
 	}
 
-	// SSV: Clear sequencer transactions after successful block creation
+	// SSV: Notify backend that block building completed successfully
 	if backend, ok := miner.backend.(BackendWithSequencerTransactions); ok {
-		backend.ClearSequencerTransactionsAfterBlock()
+		backend.OnBlockBuildingComplete(work.rpcCtx, block.Hash(), true)
 	}
 
 	return &newPayloadResult{
@@ -712,74 +723,129 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 	}
 
 	// SSV: Get ordered transactions from backend if available
-	var orderedTxs types.Transactions
 	if backend, ok := miner.backend.(BackendWithSequencerTransactions); ok {
-		// Convert LazyTransactions to regular Transactions for ordering
-		var normalTxs types.Transactions
-		for _, batch := range normalPlainTxs {
-			for _, lazy := range batch {
-				if tx := lazy.Resolve(); tx != nil {
-					normalTxs = append(normalTxs, tx)
+		log.Info("[SSV] Using sequencer transaction ordering")
+
+		// PHASE 1: Process sequencer transactions first (clear + putInbox)
+		sequencerTxs := miner.getSequencerTransactions(backend)
+		sequencerCount := 0
+
+		for _, tx := range sequencerTxs {
+			if interrupt != nil {
+				if signal := interrupt.Load(); signal != commitInterruptNone {
+					return signalToErr(signal)
 				}
 			}
-		}
-		for _, batch := range normalBlobTxs {
-			for _, lazy := range batch {
-				if tx := lazy.Resolve(); tx != nil {
-					normalTxs = append(normalTxs, tx)
-				}
+
+			if env.gasPool.Gas() < params.TxGas {
+				log.Trace("[SSV] Not enough gas for sequencer transactions", "have", env.gasPool.Gas(), "want", params.TxGas)
+				break
 			}
-		}
 
-		var err error
-		orderedTxs, err = backend.GetOrderedTransactionsForBlock(env.rpcCtx, normalTxs)
-		if err != nil {
-			log.Error("[SSV] Failed to get ordered transactions", "err", err)
-			// Fall back to normal transaction filling
-			return miner.fillTransactions(interrupt, env)
-		}
-
-		// Process ordered transactions
-		if len(orderedTxs) > 0 {
-			log.Info("[SSV] Processing ordered transactions", "count", len(orderedTxs))
-			for _, tx := range orderedTxs {
-				// Check interruption signal
-				if interrupt != nil {
-					if signal := interrupt.Load(); signal != commitInterruptNone {
-						return signalToErr(signal)
-					}
-				}
-
-				// Check gas limit
-				if env.gasPool.Gas() < params.TxGas {
-					log.Trace("Not enough gas for further transactions", "have", env.gasPool, "want", params.TxGas)
-					break
-				}
-
-				// Check blob gas limit for blob transactions
-				if tx.Type() == types.BlobTxType {
-					sc := tx.BlobTxSidecar()
-					if sc != nil && env.blobs+len(sc.Blobs) > eip4844.MaxBlobsPerBlock(miner.chainConfig, env.header.Time) {
-						log.Trace("Not enough blob space for further blob transactions")
-						break
-					}
-				}
-
-				// Apply the transaction
-				env.state.SetTxContext(tx.Hash(), env.tcount)
-				err := miner.commitTransaction(env, tx)
-				if err != nil {
-					log.Debug("Transaction failed, skipping", "hash", tx.Hash(), "err", err)
-					continue
-				}
+			env.state.SetTxContext(tx.Hash(), env.tcount)
+			if err := miner.commitTransaction(env, tx); err != nil {
+				log.Warn("[SSV] Failed to commit sequencer transaction", "hash", tx.Hash(), "err", err)
+				continue
 			}
+			sequencerCount++
 		}
+
+		log.Info("[SSV] Committed sequencer transactions", "count", sequencerCount)
+
+		// PHASE 2: Process priority transactions (maintain account-based ordering)
+		prioCount := miner.commitAccountBasedTransactions(interrupt, env, prioPlainTxs)
+		prioCount += miner.commitAccountBasedTransactions(interrupt, env, prioBlobTxs)
+
+		log.Info("[SSV] Committed priority transactions", "count", prioCount)
+
+		// PHASE 3: Process normal transactions (maintain account-based ordering)
+		normalCount := miner.commitAccountBasedTransactions(interrupt, env, normalPlainTxs)
+		normalCount += miner.commitAccountBasedTransactions(interrupt, env, normalBlobTxs)
+
+		log.Info("[SSV] Committed normal transactions", "count", normalCount)
+		log.Info("[SSV] Total transactions committed",
+			"sequencer", sequencerCount,
+			"priority", prioCount,
+			"normal", normalCount,
+			"total", sequencerCount+prioCount+normalCount)
+
 	} else {
 		// Fall back to normal transaction filling if backend doesn't support sequencer ordering
+		log.Debug("[SSV] Backend doesn't support sequencer ordering, falling back to normal")
 		return miner.fillTransactions(interrupt, env)
 	}
 
 	return nil
+}
+
+// getSequencerTransactions retrieves sequencer transactions in correct order
+// SSV
+func (miner *Miner) getSequencerTransactions(backend BackendWithSequencerTransactions) types.Transactions {
+	var sequencerTxs types.Transactions
+
+	// First: clear transaction
+	if clearTx := backend.GetPendingClearTx(); clearTx != nil {
+		sequencerTxs = append(sequencerTxs, clearTx)
+		log.Debug("[SSV] Added clear transaction", "hash", clearTx.Hash().Hex())
+	}
+
+	// Second: putInbox transactions
+	putInboxTxs := backend.GetPendingPutInboxTxs()
+	sequencerTxs = append(sequencerTxs, putInboxTxs...)
+
+	if len(putInboxTxs) > 0 {
+		log.Debug("[SSV] Added putInbox transactions", "count", len(putInboxTxs))
+	}
+
+	return sequencerTxs
+}
+
+// commitAccountBasedTransactions commits transactions while maintaining per-account nonce ordering
+// SSV
+func (miner *Miner) commitAccountBasedTransactions(interrupt *atomic.Int32, env *environment, accountTxs map[common.Address][]*txpool.LazyTransaction) int {
+	committed := 0
+
+	for account, txs := range accountTxs {
+		log.Debug("[SSV] Processing account transactions", "account", account.Hex(), "count", len(txs))
+
+		for _, lazy := range txs {
+			if interrupt != nil {
+				if signal := interrupt.Load(); signal != commitInterruptNone {
+					return committed
+				}
+			}
+
+			if env.gasPool.Gas() < params.TxGas {
+				log.Trace("[SSV] Not enough gas for more transactions", "have", env.gasPool.Gas())
+				return committed
+			}
+
+			// Resolve transaction lazily (only when needed)
+			tx := lazy.Resolve()
+			if tx == nil {
+				continue
+			}
+
+			// Check blob gas limit for blob transactions
+			if tx.Type() == types.BlobTxType {
+				sc := tx.BlobTxSidecar()
+				if sc != nil && env.blobs+len(sc.Blobs) > eip4844.MaxBlobsPerBlock(miner.chainConfig, env.header.Time) {
+					log.Trace("[SSV] Not enough blob space for transaction", "hash", tx.Hash())
+					continue
+				}
+			}
+
+			env.state.SetTxContext(tx.Hash(), env.tcount)
+			if err := miner.commitTransaction(env, tx); err != nil {
+				log.Debug("[SSV] Transaction failed, skipping", "hash", tx.Hash(), "account", account.Hex(), "err", err)
+				continue
+			}
+
+			committed++
+		}
+	}
+
+	return committed
 }
 
 // totalFees computes total consumed miner fees in Wei. Block transactions and receipts have to have the same order.
