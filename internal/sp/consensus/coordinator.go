@@ -61,7 +61,7 @@ func (c *Coordinator) StartTransaction(from string, xtReq *pb.XTRequest) error {
 
 	chains := xtReq.ChainIDs()
 	for chainIDStr := range chains {
-		log.Info("[SSV] Participating chain", "chainID", chainIDStr, "bytes", chainIDStr)
+		log.Info("[SSV] Participating chain", "chainID", chainIDStr)
 	}
 
 	c.mu.Lock()

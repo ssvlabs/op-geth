@@ -3,6 +3,7 @@ package eth
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -144,7 +145,8 @@ func (mp *MailboxProcessor) analyzeTransaction(ctx context.Context, backend inte
 			"from", op.From.Hex(),
 			"callDataLen", len(op.CallData))
 
-		if op.Type == vm.CALL && len(op.CallData) >= 4 {
+		// Handle both CALL (write) and STATICCALL (read) operations
+		if (op.Type == vm.CALL || op.Type == vm.STATICCALL) && len(op.CallData) >= 4 {
 			call, err := mp.parseMailboxCall(op.CallData)
 			if err != nil {
 				log.Debug("[SSV] Failed to parse mailbox call", "error", err)
@@ -162,11 +164,17 @@ func (mp *MailboxProcessor) analyzeTransaction(ctx context.Context, backend inte
 
 			// Check for cross-rollup read dependency
 			if call.IsRead {
+				log.Info("[SSV] Processing read operation",
+					"chainSrc", call.ChainSrc.Uint64(),
+					"chainDest", call.ChainDest.Uint64(),
+					"localChainID", mp.chainID,
+					"shouldCreateDep", call.ChainDest.Uint64() != mp.chainID)
+
 				// If we're reading from a different source chain, this is a dependency
-				if call.ChainSrc.Uint64() != mp.chainID {
+				if call.ChainDest.Uint64() != mp.chainID {
 					dep := CrossRollupDependency{
-						SourceChainID: call.ChainSrc.Uint64(),
-						DestChainID:   call.ChainDest.Uint64(),
+						SourceChainID: call.ChainDest.Uint64(),
+						DestChainID:   mp.chainID,
 						Sender:        call.Sender,
 						Receiver:      call.Receiver,
 						SessionID:     call.SessionId,
@@ -223,8 +231,8 @@ func (mp *MailboxProcessor) analyzeTransaction(ctx context.Context, backend inte
 						"localChain", mp.chainID)
 				}
 			}
-		} else if op.Type != vm.CALL {
-			log.Debug("[SSV] Ignoring non-CALL operation to mailbox",
+		} else if op.Type != vm.CALL && op.Type != vm.STATICCALL {
+			log.Debug("[SSV] Ignoring non-CALL/STATICCALL operation to mailbox",
 				"type", op.Type.String(),
 				"address", op.Address.Hex())
 		}
@@ -389,7 +397,7 @@ func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollu
 }
 
 func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *sptypes.XtID, dep *CrossRollupDependency) error {
-	sourceChainStr := strconv.FormatUint(dep.SourceChainID, 10)
+	sourceChainStr := hex.EncodeToString(new(big.Int).SetUint64(dep.SourceChainID).Bytes())
 
 	// Wait for CIRC message with timeout
 	timeout := time.NewTimer(2 * time.Minute)
