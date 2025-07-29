@@ -22,7 +22,6 @@ import (
 const (
 	sendTxRPCMethod = "eth_sendXTransaction"
 	configFile      = "config.yml"
-	mailboxAddr     = "0xEd3afBc0af3B010815dd242f1aA20d493Ae3160d"
 )
 
 type Rollup struct {
@@ -70,7 +69,6 @@ func main() {
 	sessionId := big.NewInt(12345)
 	pingData := []byte("hello from rollup A")
 	pongData := []byte("hello from rollup B")
-	label := []byte("test-session")
 
 	// Create a ping transaction (A -> B)
 	pingParams := PingPongParams{
@@ -80,7 +78,6 @@ func main() {
 		Receiver:  addressB,
 		SessionId: sessionId,
 		Data:      pingData,
-		Label:     label,
 	}
 
 	nonceA, err := getNonceFor(rollupA.RPC, addressA)
@@ -106,7 +103,6 @@ func main() {
 		Receiver:  addressA,
 		SessionId: sessionId,
 		Data:      pongData,
-		Label:     label,
 	}
 
 	nonceB, err := getNonceFor(rollupB.RPC, addressB)

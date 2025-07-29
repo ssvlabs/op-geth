@@ -12,7 +12,7 @@ import (
 
 const (
 	pingPongAddr = "0xC870117aC68BCc0D85A0C9ED1B06b29f5E834011"
-	pingPongABI  = `[{"inputs":[{"internalType":"address","name":"_mailbox","type":"address"}],"stateMutability":"nonpayable","type":"constructor"},{"inputs":[],"name":"mailbox","outputs":[{"internalType":"contract IMailbox","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"chainSrc","type":"uint256"},{"internalType":"uint256","name":"chainDest","type":"uint256"},{"internalType":"address","name":"sender","type":"address"},{"internalType":"address","name":"receiver","type":"address"},{"internalType":"uint256","name":"sessionId","type":"uint256"},{"internalType":"bytes","name":"data","type":"bytes"},{"internalType":"bytes","name":"label","type":"bytes"}],"name":"ping","outputs":[{"internalType":"bytes","name":"pongMessage","type":"bytes"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint256","name":"chainSrc","type":"uint256"},{"internalType":"uint256","name":"chainDest","type":"uint256"},{"internalType":"address","name":"sender","type":"address"},{"internalType":"address","name":"receiver","type":"address"},{"internalType":"uint256","name":"sessionId","type":"uint256"},{"internalType":"bytes","name":"data","type":"bytes"},{"internalType":"bytes","name":"label","type":"bytes"}],"name":"pong","outputs":[{"internalType":"bytes","name":"pingMessage","type":"bytes"}],"stateMutability":"nonpayable","type":"function"}]`
+	pingPongABI  = `[{"type":"constructor","inputs":[{"name":"_mailbox","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"mailbox","inputs":[],"outputs":[{"name":"","type":"address","internalType":"contract IMailbox"}],"stateMutability":"view"},{"type":"function","name":"ping","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"pongMessage","type":"bytes","internalType":"bytes"}],"stateMutability":"nonpayable"},{"type":"function","name":"pong","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"pingMessage","type":"bytes","internalType":"bytes"}],"stateMutability":"nonpayable"}]`
 )
 
 type PingPongParams struct {
@@ -22,7 +22,6 @@ type PingPongParams struct {
 	Receiver  common.Address
 	SessionId *big.Int
 	Data      []byte
-	Label     []byte
 }
 
 func createPingTransaction(params PingPongParams, nonce uint64, privateKey *ecdsa.PrivateKey) (*types.Transaction, error) {
@@ -38,7 +37,6 @@ func createPingTransaction(params PingPongParams, nonce uint64, privateKey *ecds
 		params.Receiver,
 		params.SessionId,
 		params.Data,
-		params.Label,
 	)
 	if err != nil {
 		return nil, err
@@ -74,7 +72,6 @@ func createPongTransaction(params PingPongParams, nonce uint64, privateKey *ecds
 		params.Receiver,
 		params.SessionId,
 		params.Data,
-		params.Label,
 	)
 	if err != nil {
 		return nil, err
