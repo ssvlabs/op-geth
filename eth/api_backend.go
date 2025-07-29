@@ -61,7 +61,8 @@ import (
 	sptypes "github.com/ethereum/go-ethereum/internal/sp/proto"
 )
 
-const mailBoxAddr = "0xEd3afBc0af3B010815dd242f1aA20d493Ae3160d"
+// const mailBoxAddr = "0xEd3afBc0af3B010815dd242f1aA20d493Ae3160d"
+const mailBoxAddr = "0xaCfc748C73630F3a6E4fEEc8cF7695Eeb4836088"
 
 // EthAPIBackend implements ethapi.Backend and tracers.Backend for full nodes
 type EthAPIBackend struct {

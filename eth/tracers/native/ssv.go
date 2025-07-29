@@ -33,7 +33,7 @@ type SSVTracer struct {
 
 // newSSVTracer is the registered constructor.
 func newSSVTracer(ctx *tracers.Context, cfg json.RawMessage, chainConfig *params.ChainConfig) (*tracers.Tracer, error) {
-	mailBoxAddr := common.HexToAddress("0xEd3afBc0af3B010815dd242f1aA20d493Ae3160d")
+	mailBoxAddr := common.HexToAddress("0xaCfc748C73630F3a6E4fEEc8cF7695Eeb4836088")
 
 	t := &SSVTracer{
 		operations: make([]ssv.SSVOperation, 0),
