@@ -97,7 +97,7 @@ type BackendWithSequencerTransactions interface {
 
 	// OnBlockBuildingComplete is called when block building completes
 	// SSV
-	OnBlockBuildingComplete(ctx context.Context, blockHash common.Hash, success bool) error
+	OnBlockBuildingComplete(ctx context.Context, block *types.Block, success bool) error
 }
 
 // Config is the configuration parameters of mining.

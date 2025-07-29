@@ -231,14 +231,14 @@ func (miner *Miner) generateWork(params *generateParams, witness bool) *newPaylo
 	if err != nil {
 		// SSV: Notify backend that block building failed
 		if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
-			backend.OnBlockBuildingComplete(work.rpcCtx, common.Hash{}, false)
+			backend.OnBlockBuildingComplete(work.rpcCtx, nil, false)
 		}
 		return &newPayloadResult{err: err}
 	}
 
 	// SSV: Notify backend that block building completed successfully
 	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
-		backend.OnBlockBuildingComplete(work.rpcCtx, block.Hash(), true)
+		backend.OnBlockBuildingComplete(work.rpcCtx, block, true)
 	}
 
 	return &newPayloadResult{

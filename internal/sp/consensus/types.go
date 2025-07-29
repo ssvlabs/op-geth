@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"context"
+	"github.com/ethereum/go-ethereum/core/types"
 	"sync"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 type StartFn func(ctx context.Context, from string, xtReq *pb.XTRequest) error
 type VoteFn func(ctx context.Context, xtID *pb.XtID, vote bool) error
 type DecisionFn func(ctx context.Context, xtID *pb.XtID, decision bool) error
+
+type BlockFn func(ctx context.Context, block *types.Block, xtIDs []*pb.XtID) error
 
 // Role represents the role of a coordinator in the consensus system
 type Role int
@@ -64,6 +67,8 @@ type TwoPCState struct {
 	StartTime           time.Time
 	XTRequest           *pb.XTRequest
 	CIRCMessages        map[string][]*pb.CIRCMessage
+
+	BlockSent bool
 }
 
 // NewTwoPCState creates a new 2PC state.

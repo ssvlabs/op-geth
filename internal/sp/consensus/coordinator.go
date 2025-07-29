@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"github.com/ethereum/go-ethereum/core/types"
 	"math/big"
 	"sync"
 	"time"
@@ -24,6 +25,10 @@ type Coordinator struct {
 	startCallbackFn    StartFn
 	voteCallbackFn     VoteFn
 	decisionCallbackFn DecisionFn
+	blockCallbackFn    BlockFn
+
+	pendingBlocks   map[string]*types.Block
+	pendingBlocksMu sync.RWMutex
 }
 
 func NewCoordinator(nodeID string, isLeader bool, timeout time.Duration) *Coordinator {
@@ -51,6 +56,10 @@ func (c *Coordinator) SetVoteCallback(fn VoteFn) {
 
 func (c *Coordinator) SetStartCallback(fn StartFn) {
 	c.startCallbackFn = fn
+}
+
+func (c *Coordinator) SetBlockCallback(fn BlockFn) {
+	c.blockCallbackFn = fn
 }
 
 func (c *Coordinator) StartTransaction(from string, xtReq *pb.XTRequest) error {
@@ -248,7 +257,7 @@ func (c *Coordinator) RecordDecision(xtID *pb.XtID, decision bool) error {
 
 	if !exists {
 		log.Debug("Received decision for unknown transaction", "xt_id", xtIDStr, "role", c.role.String(), "decision", decision)
-		return nil // Ignore decisions for unknown transactions
+		return nil
 	}
 
 	state.mu.Lock()
@@ -256,24 +265,65 @@ func (c *Coordinator) RecordDecision(xtID *pb.XtID, decision bool) error {
 
 	if state.Decision != StateUndecided {
 		log.Debug("Received decision for already committed transaction", "xt_id", xtIDStr, "role", c.role.String(), "decision", decision)
-		return nil // Already decided
+		return nil
 	}
 
 	if decision {
 		state.Decision = StateCommit
+		log.Info("Recorded decision", "xt_id", xtIDStr, "role", c.role.String(), "decision", decision, "decision_state", state.Decision.String(), "pending_block", true)
 	} else {
 		state.Decision = StateAbort
+		log.Info("Recorded decision", "xt_id", xtIDStr, "role", c.role.String(), "decision", decision, "decision_state", state.Decision.String())
 	}
 
 	if state.Timer != nil {
 		state.Timer.Stop()
 	}
 
-	log.Info("Recorded decision", "xt_id", xtIDStr, "role", c.role.String(), "decision", decision, "decision_state", state.Decision.String())
-
 	time.AfterFunc(5*time.Minute, func() {
 		c.removeTransaction(xtID)
 	})
+
+	return nil
+}
+
+func (c *Coordinator) HandleBlockReady(ctx context.Context, block *types.Block) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var committedXTs []*pb.XtID
+	var statesToUpdate []*TwoPCState
+
+	// Find committed XTs that haven't been sent to SP yet
+	for xtIDStr, state := range c.states {
+		state.mu.RLock()
+		if state.Decision == StateCommit && !state.BlockSent {
+			if xtIDBytes, err := hex.DecodeString(xtIDStr); err == nil {
+				committedXTs = append(committedXTs, &pb.XtID{Hash: xtIDBytes})
+				statesToUpdate = append(statesToUpdate, state)
+			}
+		}
+		state.mu.RUnlock()
+	}
+
+	// Only send if we have new committed XTs
+	if len(committedXTs) > 0 && c.blockCallbackFn != nil {
+		log.Info("Sending block to SP", "blockHash", block.Hash().Hex(), "committedXTs", len(committedXTs))
+
+		if err := c.blockCallbackFn(ctx, block, committedXTs); err != nil {
+			log.Error("Failed to send block to SP", "error", err, "blockHash", block.Hash().Hex())
+			return err
+		}
+
+		// Mark XTs as sent
+		for _, state := range statesToUpdate {
+			state.mu.Lock()
+			state.BlockSent = true
+			state.mu.Unlock()
+		}
+
+		log.Info("Block sent to SP successfully", "blockHash", block.Hash().Hex())
+	}
 
 	return nil
 }

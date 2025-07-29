@@ -17,6 +17,7 @@
 package eth
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"errors"
@@ -1220,20 +1221,74 @@ func (b *EthAPIBackend) OnBlockBuildingStart(ctx context.Context) error {
 
 // OnBlockBuildingComplete is called when block building completes
 // SSV
-func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, blockHash common.Hash, success bool) error {
-	if success {
-		log.Info("[SSV] Block building completed successfully", "blockHash", blockHash.Hex())
+func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *types.Block, success bool) error {
+	if success && block != nil {
+		log.Info("[SSV] Block building completed successfully", "blockHash", block.Hash().Hex())
 
-		// Clear sequencer transactions now that block is built
+		pendingPutInbox := b.GetPendingPutInboxTxs()
+		containsPutInbox := false
+
+		if len(pendingPutInbox) > 0 {
+			putInboxMap := make(map[common.Hash]bool)
+			for _, ptx := range pendingPutInbox {
+				putInboxMap[ptx.Hash()] = true
+			}
+
+			for _, btx := range block.Transactions() {
+				if putInboxMap[btx.Hash()] {
+					containsPutInbox = true
+					break
+				}
+			}
+		}
+
+		// Only notify coordinator for blocks with putInbox transactions
+		if containsPutInbox {
+			if err := b.coordinator.HandleBlockReady(ctx, block); err != nil {
+				log.Error("[SSV] Coordinator failed to handle block", "err", err, "blockHash", block.Hash().Hex())
+			}
+		}
+
 		b.ClearSequencerTransactionsAfterBlock()
-
 		log.Info("[SSV] Sequencer transaction state cleared after successful block")
-	} else {
-		log.Warn("[SSV] Block building failed", "blockHash", blockHash.Hex())
-		// Don't clear transactions on failure - they might be needed for retry
 	}
-
 	return nil
+}
+
+func (b *EthAPIBackend) BlockCallbackFn() func(ctx context.Context, block *types.Block, xtIDs []*sptypes.XtID) error {
+	return func(ctx context.Context, block *types.Block, xtIDs []*sptypes.XtID) error {
+
+		var buf bytes.Buffer
+		if err := block.EncodeRLP(&buf); err != nil {
+			return fmt.Errorf("failed to RLP encode block: %w", err)
+		}
+		blockData := buf.Bytes()
+
+		blockMsg := &sptypes.Block{
+			ChainId:       b.ChainConfig().ChainID.Bytes(),
+			BlockData:     blockData,
+			IncludedXtIds: xtIDs,
+		}
+
+		spMsg := &sptypes.Message{
+			SenderId: b.ChainConfig().ChainID.String(),
+			Payload: &sptypes.Message_Block{
+				Block: blockMsg,
+			},
+		}
+
+		log.Info("[SSV] Sending block to shared publisher", "blockHash", block.Hash().Hex(), "xtIDs", len(xtIDs))
+
+		err := b.spClient.Send(ctx, spMsg)
+
+		if err != nil {
+			log.Error("[SSV] Failed to send block to shared publisher", "err", err, "blockHash", block.Hash().Hex())
+			return fmt.Errorf("failed to send block to shared publisher: %w", err)
+		}
+
+		log.Info("[SSV] Block sent to shared publisher successfully", "blockHash", block.Hash().Hex(), "xtIDs", len(xtIDs))
+		return nil
+	}
 }
 
 // GetPendingTransactionsForMining provides a complete interface for the miner to get ordered transactions
