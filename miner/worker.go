@@ -738,11 +738,12 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 			}
 
 			if env.gasPool.Gas() < params.TxGas {
-				log.Trace("[SSV] Not enough gas for sequencer transactions", "have", env.gasPool.Gas(), "want", params.TxGas)
+				log.Error("[SSV] Not enough gas for sequencer transactions", "have", env.gasPool.Gas(), "want", params.TxGas)
 				break
 			}
 
 			env.state.SetTxContext(tx.Hash(), env.tcount)
+			log.Info("Commit tx", "tx", tx.Hash().String())
 			if err := miner.commitTransaction(env, tx); err != nil {
 				log.Warn("[SSV] Failed to commit sequencer transaction", "hash", tx.Hash(), "err", err)
 				continue
@@ -750,19 +751,19 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 			sequencerCount++
 		}
 
-		log.Info("[SSV] Committed sequencer transactions", "count", sequencerCount)
+		//log.Info("[SSV] Committed sequencer transactions", "count", sequencerCount)
 
 		// PHASE 2: Process priority transactions (maintain account-based ordering)
 		prioCount := miner.commitAccountBasedTransactions(interrupt, env, prioPlainTxs)
 		prioCount += miner.commitAccountBasedTransactions(interrupt, env, prioBlobTxs)
 
-		log.Info("[SSV] Committed priority transactions", "count", prioCount)
+		//log.Info("[SSV] Committed priority transactions", "count", prioCount)
 
 		// PHASE 3: Process normal transactions (maintain account-based ordering)
 		normalCount := miner.commitAccountBasedTransactions(interrupt, env, normalPlainTxs)
 		normalCount += miner.commitAccountBasedTransactions(interrupt, env, normalBlobTxs)
 
-		log.Info("[SSV] Committed normal transactions", "count", normalCount)
+		//log.Info("[SSV] Committed normal transactions", "count", normalCount)
 		log.Info("[SSV] Total transactions committed",
 			"sequencer", sequencerCount,
 			"priority", prioCount,
