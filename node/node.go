@@ -18,9 +18,11 @@ package node
 
 import (
 	"context"
+	"crypto/ecdsa"
 	crand "crypto/rand"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/crypto"
 	spnetwork "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
 	spconsensus "github.com/ethereum/go-ethereum/internal/sp/consensus"
 	sperrors "github.com/ethereum/go-ethereum/internal/sp/errors"
@@ -75,6 +77,7 @@ type Node struct {
 	spServer         spnetwork.Server
 	spClient         spnetwork.Client
 	sequencerClients map[string]spnetwork.Client
+	sequencerKey     *ecdsa.PrivateKey
 
 	coordinator *spconsensus.Coordinator
 
@@ -192,11 +195,29 @@ func New(conf *Config) (*Node, error) {
 	node.spClient = spnetwork.NewClient(clientCfg)
 
 	node.sequencerClients = generateClients(conf.SequencerAddrs)
+	node.sequencerKey = parsePrivateKey(conf.SequencerKey)
 
 	nodeID := fmt.Sprintf("sequencer-%d", time.Now().UnixNano())
 	node.coordinator = spconsensus.NewCoordinator(nodeID, false, 3*time.Minute)
 
 	return node, nil
+}
+
+func parsePrivateKey(privKeyHex string) *ecdsa.PrivateKey {
+	if privKeyHex == "" {
+		log.Error("Private key cannot be empty")
+	}
+
+	if len(privKeyHex) >= 2 && privKeyHex[:2] == "0x" {
+		privKeyHex = privKeyHex[2:]
+	}
+
+	privateKey, err := crypto.HexToECDSA(privKeyHex)
+	if err != nil {
+		log.Error("Failed to parse private key: %v", err)
+	}
+
+	return privateKey
 }
 
 func generateClients(addrs string) map[string]spnetwork.Client {
@@ -793,6 +814,13 @@ func (n *Node) SequencerClients() map[string]spnetwork.Client {
 	defer n.lock.Unlock()
 
 	return n.sequencerClients
+}
+
+func (n *Node) SequencerKey() *ecdsa.PrivateKey {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+
+	return n.sequencerKey
 }
 
 // DataDir retrieves the current datadir used by the protocol stack.

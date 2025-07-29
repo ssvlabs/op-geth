@@ -3,6 +3,7 @@ package eth
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"encoding/hex"
 	"fmt"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -21,7 +22,7 @@ import (
 	"time"
 )
 
-const mailboxABI = `[{"inputs":[{"internalType":"uint256","name":"chainSrc","type":"uint256"},{"internalType":"uint256","name":"chainDest","type":"uint256"},{"internalType":"address","name":"sender","type":"address"},{"internalType":"address","name":"receiver","type":"address"},{"internalType":"uint256","name":"sessionId","type":"uint256"},{"internalType":"bytes","name":"label","type":"bytes"}],"name":"read","outputs":[{"internalType":"bytes","name":"message","type":"bytes"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"chainSrc","type":"uint256"},{"internalType":"uint256","name":"chainDest","type":"uint256"},{"internalType":"address","name":"receiver","type":"address"},{"internalType":"uint256","name":"sessionId","type":"uint256"},{"internalType":"bytes","name":"data","type":"bytes"},{"internalType":"bytes","name":"label","type":"bytes"}],"name":"write","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint256","name":"chainSrc","type":"uint256"},{"internalType":"uint256","name":"chainDest","type":"uint256"},{"internalType":"address","name":"receiver","type":"address"},{"internalType":"uint256","name":"sessionId","type":"uint256"},{"internalType":"bytes","name":"data","type":"bytes"},{"internalType":"bytes","name":"label","type":"bytes"}],"name":"putInbox","outputs":[],"stateMutability":"nonpayable","type":"function"}]`
+const mailboxABI = `[{"type":"constructor","inputs":[{"name":"_coordinator","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"clear","inputs":[],"outputs":[],"stateMutability":"nonpayable"},{"type":"function","name":"coordinator","inputs":[],"outputs":[{"name":"","type":"address","internalType":"address"}],"stateMutability":"view"},{"type":"function","name":"getKey","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"stateMutability":"pure"},{"type":"function","name":"inbox","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"keyListInbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"keyListOutbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"outbox","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"putInbox","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"function","name":"read","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"write","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"error","name":"InvalidCoordinator","inputs":[]}]`
 
 type MailboxCall struct {
 	ChainSrc  *big.Int
@@ -71,15 +72,19 @@ type MailboxProcessor struct {
 	sequencerClients map[string]network.Client
 	coordinator      *spconsensus.Coordinator
 	backend          interface{}
+	sequencerKey     *ecdsa.PrivateKey
+	sequencerAddr    common.Address
 }
 
-func NewMailboxProcessor(chainID uint64, mailboxAddrs []common.Address, sequencerClients map[string]network.Client, coordinator *spconsensus.Coordinator, backend interface{}) *MailboxProcessor {
+func NewMailboxProcessor(chainID uint64, mailboxAddrs []common.Address, sequencerClients map[string]network.Client, coordinator *spconsensus.Coordinator, sequencerKey *ecdsa.PrivateKey, sequencerAddr common.Address, backend *EthAPIBackend) *MailboxProcessor {
 	return &MailboxProcessor{
 		chainID:          chainID,
 		mailboxAddresses: mailboxAddrs,
 		sequencerClients: sequencerClients,
 		coordinator:      coordinator,
 		backend:          backend,
+		sequencerKey:     sequencerKey,
+		sequencerAddr:    sequencerAddr,
 	}
 }
 
@@ -337,7 +342,7 @@ func (mp *MailboxProcessor) parseWriteCall(data []byte) (*MailboxCall, error) {
 	}, nil
 }
 
-func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, simState *SimulationState, xtID *sptypes.XtID) error {
+func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, simState *SimulationState, xtID *sptypes.XtID, startNonce uint64) error {
 	log.Info("[SSV] Starting cross-rollup coordination", "xtID", xtID.Hex())
 
 	// Send outbound CIRC messages
@@ -347,11 +352,27 @@ func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, s
 		}
 	}
 
+	nonce := startNonce
+
 	// Wait for required CIRC messages and create putInbox transactions
 	for _, dep := range simState.Dependencies {
-		if err := mp.waitForCIRCMessage(ctx, xtID, &dep); err != nil {
+		log.Info("[SSV] Await for CIRC message",
+			"from", dep.SourceChainID,
+			"to", dep.DestChainID,
+			"sessionId", dep.SessionID,
+		)
+
+		circMsg, err := mp.waitForCIRCMessage(ctx, xtID, hex.EncodeToString(new(big.Int).SetUint64(dep.SourceChainID).Bytes()))
+		if err != nil {
 			return fmt.Errorf("failed to wait for CIRC message: %w", err)
 		}
+
+		err = mp.createAndSubmitPutInboxTx(ctx, dep, circMsg.Data[0], nonce)
+		if err != nil {
+			return fmt.Errorf("failed to createAndSubmitPutInboxTx: %v", err)
+		}
+
+		nonce++
 	}
 
 	log.Info("[SSV] Cross-rollup coordination completed", "xtID", xtID.Hex())
@@ -396,9 +417,7 @@ func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollu
 	return client.Send(ctx, spMsg)
 }
 
-func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *sptypes.XtID, dep *CrossRollupDependency) error {
-	sourceChainStr := hex.EncodeToString(new(big.Int).SetUint64(dep.SourceChainID).Bytes())
-
+func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *sptypes.XtID, sourceChainID string) (*sptypes.CIRCMessage, error) {
 	// Wait for CIRC message with timeout
 	timeout := time.NewTimer(2 * time.Minute)
 	defer timeout.Stop()
@@ -406,36 +425,29 @@ func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *sptype
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
-	log.Info("[SSV] Waiting for CIRC message",
-		"from", dep.SourceChainID,
-		"to", dep.DestChainID,
-		"sessionId", dep.SessionID,
-	)
-
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil, ctx.Err()
 		case <-timeout.C:
-			return fmt.Errorf("timeout waiting for CIRC message from chain %s", sourceChainStr)
+			return nil, fmt.Errorf("timeout waiting for CIRC message from chain %s", sourceChainID)
 		case <-ticker.C:
-			circMsg, err := mp.coordinator.ConsumeCIRCMessage(xtID, sourceChainStr)
+			circMsg, err := mp.coordinator.ConsumeCIRCMessage(xtID, sourceChainID)
 			if err != nil {
 				continue // Keep waiting
 			}
 
 			log.Info("[SSV] Received CIRC message",
-				"from", sourceChainStr,
+				"from", sourceChainID,
 				"dataLen", len(circMsg.Data[0]),
 			)
 
-			// Create putInbox transaction
-			return mp.createAndSubmitPutInboxTx(ctx, dep, circMsg.Data[0])
+			return circMsg, nil
 		}
 	}
 }
 
-func (mp *MailboxProcessor) createAndSubmitPutInboxTx(ctx context.Context, dep *CrossRollupDependency, data []byte) error {
+func (mp *MailboxProcessor) createAndSubmitPutInboxTx(ctx context.Context, dep CrossRollupDependency, data []byte, nonce uint64) error {
 	parsedABI, err := abi.JSON(strings.NewReader(mailboxABI))
 	if err != nil {
 		return err
@@ -457,6 +469,7 @@ func (mp *MailboxProcessor) createAndSubmitPutInboxTx(ctx context.Context, dep *
 	mailboxAddr := mp.mailboxAddresses[0] // Use first mailbox address
 
 	log.Info("[SSV] Created putInbox transaction",
+		"nonce", nonce,
 		"mailbox", mailboxAddr.Hex(),
 		"sourceChain", dep.SourceChainID,
 		"destChain", dep.DestChainID,
@@ -464,31 +477,34 @@ func (mp *MailboxProcessor) createAndSubmitPutInboxTx(ctx context.Context, dep *
 		"dataLen", len(callData),
 	)
 
-	// TODO / TEMPORARY: Waiting, it will be implemented
-	if backend, ok := mp.backend.(*EthAPIBackend); ok {
-
-		// mock
-		mockTx := types.NewTransaction(
-			0,
-			mailboxAddr,
-			big.NewInt(0),
-			300000,
-			big.NewInt(30000000000),
-			callData,
-		)
-
-		// Submitmock
-		err = backend.SubmitSequencerTransaction(ctx, mockTx, true)
-		if err != nil {
-			return fmt.Errorf("failed to submit mock putInbox transaction: %w", err)
-		}
-
-		log.Warn("[SSV] Submitted MOCK putInbox transaction",
-			"txHash", mockTx.Hash().Hex(),
-			"mailbox", mailboxAddr.Hex())
+	txData := &types.DynamicFeeTx{
+		ChainID:    new(big.Int).SetUint64(mp.chainID),
+		Nonce:      nonce,
+		GasTipCap:  big.NewInt(1000000000),
+		GasFeeCap:  big.NewInt(20000000000),
+		Gas:        300000,
+		To:         &mailboxAddr,
+		Value:      big.NewInt(0),
+		Data:       callData,
+		AccessList: nil,
 	}
 
-	return nil
+	tx := types.NewTx(txData)
+	signedTx, err := types.SignTx(tx, types.NewLondonSigner(new(big.Int).SetUint64(mp.chainID)), mp.sequencerKey)
+	if err != nil {
+		return fmt.Errorf("failed to sign tx %v", err)
+	}
+
+	type submitTx interface {
+		SubmitSequencerTransaction(ctx context.Context, tx *types.Transaction, isPutInbox bool) error
+	}
+
+	stb, ok := mp.backend.(submitTx)
+	if !ok {
+		return fmt.Errorf("backend does not implement required SubmitSequencerTransaction method")
+	}
+
+	return stb.SubmitSequencerTransaction(ctx, signedTx, true)
 }
 
 func (mp *MailboxProcessor) isMailboxAddress(addr common.Address) bool {

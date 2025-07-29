@@ -142,17 +142,19 @@ type Miner struct {
 	pending     *pending
 	pendingMu   sync.Mutex // Lock protects the pending block
 
-	backend Backend
+	backend    Backend
+	backendAPI interface{}
 
 	lifeCtxCancel context.CancelFunc
 	lifeCtx       context.Context
 }
 
 // New creates a new miner with provided config.
-func New(eth Backend, config Config, engine consensus.Engine) *Miner {
+func New(eth Backend, backendAPI interface{}, config Config, engine consensus.Engine) *Miner {
 	ctx, cancel := context.WithCancel(context.Background())
 	miner := &Miner{
 		backend:     eth,
+		backendAPI:  backendAPI,
 		config:      &config,
 		chainConfig: eth.BlockChain().Config(),
 		engine:      engine,
@@ -202,7 +204,7 @@ func (miner *Miner) startBackgroundInteropFailsafeDetection() {
 // prepareSequencerTransactions prepares sequencer transactions for block building
 // SSV
 func (miner *Miner) prepareSequencerTransactions(ctx context.Context) error {
-	if backend, ok := miner.backend.(BackendWithSequencerTransactions); ok {
+	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
 		log.Debug("[SSV] Preparing sequencer transactions for block")
 		return backend.PrepareSequencerTransactionsForBlock(ctx)
 	}
@@ -212,7 +214,7 @@ func (miner *Miner) prepareSequencerTransactions(ctx context.Context) error {
 // getOrderedTransactions gets ordered transactions from the backend
 // SSV
 func (miner *Miner) getOrderedTransactions(ctx context.Context) (types.Transactions, error) {
-	if backend, ok := miner.backend.(BackendWithSequencerTransactions); ok {
+	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
 		normalTxs, err := backend.GetAllPendingTransactions()
 		if err != nil {
 			return nil, err
@@ -229,7 +231,7 @@ func (miner *Miner) getOrderedTransactions(ctx context.Context) (types.Transacti
 // clearSequencerTransactions clears sequencer transactions after block creation
 // SSV
 func (miner *Miner) clearSequencerTransactions() {
-	if backend, ok := miner.backend.(BackendWithSequencerTransactions); ok {
+	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
 		log.Debug("[SSV] Clearing sequencer transactions after block")
 		backend.ClearSequencerTransactionsAfterBlock()
 	}
