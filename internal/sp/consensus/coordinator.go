@@ -177,7 +177,7 @@ func (c *Coordinator) ConsumeCIRCMessage(xtID *pb.XtID, sourceChainID string) (*
 
 func (c *Coordinator) RecordVote(xtID *pb.XtID, chainID string, vote bool) (DecisionState, error) {
 	c.mu.Lock()
-	log.Info("Recording vote", "chainID", chainID, "vote", vote)
+	log.Info("[SSV] Recording vote", "chainID", chainID, "vote", vote)
 	xtIDStr := xtID.Hex()
 	state, exists := c.states[xtIDStr]
 	if !exists {
@@ -205,7 +205,7 @@ func (c *Coordinator) RecordVote(xtID *pb.XtID, chainID string, vote bool) (Deci
 	voteLatency := time.Since(state.StartTime)
 	c.metrics.RecordVote(chainID, vote, voteLatency)
 
-	log.Info("Recorded vote", "xt_id", xtIDStr, "role", c.role.String(), "chain", chainID, "vote", vote, "votes_recorded", len(state.Votes), "votes_required", len(state.ParticipatingChains))
+	log.Info("[SSV] Recorded vote", "xt_id", xtIDStr, "role", c.role.String(), "chain", chainID, "vote", vote, "votes_recorded", len(state.Votes), "votes_required", len(state.ParticipatingChains))
 
 	if !vote {
 		return c.handleAbort(xtID, state)
@@ -270,10 +270,10 @@ func (c *Coordinator) RecordDecision(xtID *pb.XtID, decision bool) error {
 
 	if decision {
 		state.Decision = StateCommit
-		log.Info("Recorded decision", "xt_id", xtIDStr, "role", c.role.String(), "decision", decision, "decision_state", state.Decision.String(), "pending_block", true)
+		log.Info("[SSV] Recorded decision", "xt_id", xtIDStr, "role", c.role.String(), "decision", decision, "decision_state", state.Decision.String(), "pending_block", true)
 	} else {
 		state.Decision = StateAbort
-		log.Info("Recorded decision", "xt_id", xtIDStr, "role", c.role.String(), "decision", decision, "decision_state", state.Decision.String())
+		log.Info("[SSV] Recorded decision", "xt_id", xtIDStr, "role", c.role.String(), "decision", decision, "decision_state", state.Decision.String())
 	}
 
 	if state.Timer != nil {
@@ -390,7 +390,7 @@ func (c *Coordinator) handleTimeout(xtID *pb.XtID) {
 
 func (c *Coordinator) broadcastVote(xtID *pb.XtID, vote bool, duration time.Duration) {
 	xtIDStr := xtID.Hex()
-	log.Info("Broadcasting vote", "xt_id", xtIDStr, "vote", vote, "duration", duration)
+	log.Info("[SSV] Broadcasting vote", "xt_id", xtIDStr, "vote", vote, "duration", duration)
 
 	if c.voteCallbackFn != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
