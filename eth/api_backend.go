@@ -628,6 +628,11 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 					return nil, err
 				}
 
+				b.sequencerTxMutex.Lock()
+				b.pendingSequencerTxs = append(b.pendingSequencerTxs, tx)
+				log.Info("[SSV] Added original transaction to pendingSequencerTxs", "hash", tx.Hash().Hex(), "count", len(b.pendingSequencerTxs))
+				b.sequencerTxMutex.Unlock()
+
 				// Analyze transaction for cross-rollup dependencies
 				simState, err := processor.ProcessTransaction(ctx, b, tx, xtRequestId)
 				if err != nil {
@@ -939,8 +944,17 @@ func (b *EthAPIBackend) ClearSequencerTransactions() {
 // ClearSequencerTransactionsAfterBlock clears all pending sequencer transactions after block creation
 // SSV
 func (b *EthAPIBackend) ClearSequencerTransactionsAfterBlock() {
-	b.ClearSequencerTransactions()
-	log.Info("[SSV] Cleared sequencer transactions after block creation")
+	b.sequencerTxMutex.Lock()
+	defer b.sequencerTxMutex.Unlock()
+
+	log.Info("[SSV] Clearing sequencer transactions",
+		"clearTx", b.pendingClearTx != nil,
+		"putInboxCount", len(b.pendingPutInboxTxs),
+		"originalCount", len(b.pendingSequencerTxs))
+
+	b.pendingClearTx = nil
+	b.pendingPutInboxTxs = nil
+	b.pendingSequencerTxs = nil
 }
 
 // PrepareSequencerTransactionsForBlock prepares sequencer transactions for inclusion in a new block
@@ -1219,6 +1233,8 @@ func (b *EthAPIBackend) GetPendingOriginalTxs() []*types.Transaction {
 
 	result := make([]*types.Transaction, len(b.pendingSequencerTxs))
 	copy(result, b.pendingSequencerTxs)
+
+	log.Info("[SSV] GetPendingOriginalTxs called", "count", len(b.pendingSequencerTxs))
 	return result
 }
 
