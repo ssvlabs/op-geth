@@ -890,19 +890,6 @@ func (b *EthAPIBackend) GetPendingPutInboxTxs() []*types.Transaction {
 	return result
 }
 
-// AddPendingPutInboxTx adds a putInbox transaction to the pending list.
-// SSV
-func (b *EthAPIBackend) AddPendingPutInboxTx(tx *types.Transaction) {
-	b.sequencerTxMutex.Lock()
-	defer b.sequencerTxMutex.Unlock()
-
-	b.pendingPutInboxTxs = append(b.pendingPutInboxTxs, tx)
-
-	log.Info("[SSV] Added pending putInbox transaction",
-		"txHash", tx.Hash().Hex(),
-		"totalPending", len(b.pendingPutInboxTxs))
-}
-
 // ClearSequencerTransactions clears all pending sequencer transactions (called after block creation).
 // SSV
 func (b *EthAPIBackend) ClearSequencerTransactions() {
@@ -920,26 +907,6 @@ func (b *EthAPIBackend) ClearSequencerTransactions() {
 func (b *EthAPIBackend) ClearSequencerTransactionsAfterBlock() {
 	b.ClearSequencerTransactions()
 	log.Info("[SSV] Cleared sequencer transactions after block creation")
-}
-
-// SubmitSequencerTransaction submits a transaction with a priority flag.
-// SSV
-func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *types.Transaction, isPutInbox bool) error {
-	if err := b.validateSequencerTransaction(tx); err != nil {
-		log.Error("[SSV] Sequencer transaction validation failed", "err", err, "txHash", tx.Hash().Hex())
-		return fmt.Errorf("sequencer transaction validation failed: %w", err)
-	}
-
-	if isPutInbox {
-		b.AddPendingPutInboxTx(tx)
-		log.Info("[SSV] Added validated putInbox transaction", "txHash", tx.Hash().Hex())
-	} else {
-		b.SetPendingClearTx(tx)
-		log.Info("[SSV] Set validated clear transaction", "txHash", tx.Hash().Hex())
-	}
-
-	// FIXME: this should fail for now (invalid sender: invalid transaction v, r, s value)
-	return b.sendTx(ctx, tx)
 }
 
 // PrepareSequencerTransactionsForBlock prepares sequencer transactions for inclusion in a new block
@@ -1037,13 +1004,6 @@ func (b *EthAPIBackend) GetOrderedTransactionsForBlock(ctx context.Context, norm
 	filteredNormalTxs := b.filterOutSequencerTransactions(normalTxs)
 	orderedTxs = append(orderedTxs, filteredNormalTxs...)
 
-	// 4. Check for conflicts and remove problematic transactions
-	validTxs, err := b.checkTransactionConflicts(ctx, orderedTxs)
-	if err != nil {
-		log.Error("[SSV] Failed to check transaction conflicts", "err", err)
-		return orderedTxs, nil // Return original on error
-	}
-
 	log.Info("[SSV] Block transaction order finalized",
 		"clearTxs", func() int {
 			if b.GetPendingClearTx() != nil {
@@ -1054,18 +1014,14 @@ func (b *EthAPIBackend) GetOrderedTransactionsForBlock(ctx context.Context, norm
 		"putInboxTxs", len(putInboxTxs),
 		"normalTxs", len(filteredNormalTxs),
 		"totalOrdered", len(orderedTxs),
-		"finalValid", len(validTxs))
+	)
 
-	return validTxs, nil
+	return orderedTxs, nil
 }
 
 // filterOutSequencerTransactions removes sequencer transactions from normal transaction list
 // SSV
 func (b *EthAPIBackend) filterOutSequencerTransactions(txs types.Transactions) types.Transactions {
-	// TODO: Get sequencer address (will be implemented)
-	// sequencerAddr := b.getSequencerAddress()
-	// TODO: use b.sequencerAddress
-
 	var filtered types.Transactions
 	sequencerTxHashes := make(map[common.Hash]bool)
 
@@ -1138,74 +1094,6 @@ func (b *EthAPIBackend) validateSequencerTransaction(tx *types.Transaction) erro
 		"gasPrice", tx.GasPrice())
 
 	return nil
-}
-
-// checkTransactionConflicts checks for nonce conflicts and removes problematic transactions
-// SSV
-func (b *EthAPIBackend) checkTransactionConflicts(ctx context.Context, orderedTxs types.Transactions) (types.Transactions, error) {
-	if len(orderedTxs) == 0 {
-		return orderedTxs, nil
-	}
-
-	// Track nonces by address to detect conflicts
-	nonceTracker := make(map[common.Address]uint64)
-	signer := types.LatestSigner(b.ChainConfig())
-
-	var validTxs types.Transactions
-	var conflictCount int
-
-	for i, tx := range orderedTxs {
-		from, err := types.Sender(signer, tx)
-		if err != nil {
-			log.Warn("[SSV] Could not determine sender for transaction",
-				"index", i, "txHash", tx.Hash().Hex(), "err", err)
-			continue
-		}
-
-		expectedNonce, exists := nonceTracker[from]
-		if !exists {
-			// First transaction from this address - get current nonce
-			currentNonce, err := b.GetPoolNonce(ctx, from)
-			if err != nil {
-				log.Warn("[SSV] Could not get nonce for address", "addr", from.Hex(), "err", err)
-				continue
-			}
-			expectedNonce = currentNonce
-			nonceTracker[from] = currentNonce
-		}
-
-		if tx.Nonce() != expectedNonce {
-			log.Warn("[SSV] Transaction nonce conflict detected",
-				"txHash", tx.Hash().Hex(),
-				"from", from.Hex(),
-				"txNonce", tx.Nonce(),
-				"expectedNonce", expectedNonce,
-				"index", i)
-			conflictCount++
-			continue
-		}
-
-		// Transaction is valid, add it and increment expected nonce
-		validTxs = append(validTxs, tx)
-		nonceTracker[from] = expectedNonce + 1
-
-		// Log sequencer transactions specifically
-		if i < len(b.GetPendingPutInboxTxs())+1 { // +1 for clear tx
-			log.Info("[SSV] Sequencer transaction validated for inclusion",
-				"txHash", tx.Hash().Hex(),
-				"from", from.Hex(),
-				"nonce", tx.Nonce())
-		}
-	}
-
-	if conflictCount > 0 {
-		log.Warn("[SSV] Removed transactions due to nonce conflicts",
-			"removed", conflictCount,
-			"remaining", len(validTxs),
-			"original", len(orderedTxs))
-	}
-
-	return validTxs, nil
 }
 
 // OnBlockBuildingStart is called when block building starts
@@ -1289,40 +1177,6 @@ func (b *EthAPIBackend) BlockCallbackFn() func(ctx context.Context, block *types
 		log.Info("[SSV] Block sent to shared publisher successfully", "blockHash", block.Hash().Hex(), "xtIDs", len(xtIDs))
 		return nil
 	}
-}
-
-// GetPendingTransactionsForMining provides a complete interface for the miner to get ordered transactions
-// SSV
-func (b *EthAPIBackend) GetPendingTransactionsForMining(ctx context.Context) (types.Transactions, error) {
-	log.Info("[SSV] Miner requesting transactions for block building")
-
-	// 1. First prepare sequencer transactions
-	if err := b.PrepareSequencerTransactionsForBlock(ctx); err != nil {
-		log.Error("[SSV] Failed to prepare sequencer transactions", "err", err)
-		return nil, err
-	}
-
-	// 2. Get normal pending transactions from txpool
-	normalTxs, err := b.GetPoolTransactions()
-	if err != nil {
-		log.Error("[SSV] Failed to get pool transactions", "err", err)
-		return nil, err
-	}
-
-	log.Info("[SSV] Retrieved normal transactions from pool", "count", len(normalTxs))
-
-	// 3. Get properly ordered transactions (sequencer first, then normal)
-	orderedTxs, err := b.GetOrderedTransactionsForBlock(ctx, normalTxs)
-	if err != nil {
-		log.Error("[SSV] Failed to order transactions", "err", err)
-		return nil, err
-	}
-
-	log.Info("[SSV] Final transaction order for mining",
-		"total", len(orderedTxs),
-		"normalOriginal", len(normalTxs))
-
-	return orderedTxs, nil
 }
 
 // GetAllPendingTransactions returns all pending transactions, including sequencer transactions
@@ -1527,45 +1381,4 @@ func (b *EthAPIBackend) waitForPutInboxTransactionsToBeProcessed(ctx context.Con
 	}
 
 	return nil
-}
-
-// isTransactionProcessed checks if a transaction has been processed (in pending state or mined)
-// SSV
-func (b *EthAPIBackend) isTransactionProcessed(ctx context.Context, tx *types.Transaction) bool {
-	// Check if transaction is in the pool (pending state)
-	if poolTx := b.GetPoolTransaction(tx.Hash()); poolTx != nil {
-		log.Debug("[SSV] Transaction found in pool", "txHash", tx.Hash().Hex())
-		return true
-	}
-
-	// Check if transaction has been mined
-	found, _, _, _, _ := b.GetTransaction(tx.Hash())
-	if found {
-		log.Debug("[SSV] Transaction found in blockchain", "txHash", tx.Hash().Hex())
-		return true
-	}
-
-	return false
-}
-
-// validateMailboxStateAfterPutInbox validates that the mailbox state has been updated correctly
-// SSV
-func (b *EthAPIBackend) validateMailboxStateAfterPutInbox(ctx context.Context, xtID *sptypes.XtID) (bool, error) {
-	log.Debug("[SSV] Validating mailbox state after putInbox", "xtID", xtID.Hex())
-
-	// Get the current state to check mailbox contents
-	_, header, err := b.StateAndHeaderByNumber(ctx, rpc.LatestBlockNumber)
-	if err != nil {
-		log.Error("[SSV] Failed to get current state", "error", err, "xtID", xtID.Hex())
-		return false, err
-	}
-
-	// Check mailbox contract state - this would require ABI calls to verify
-	// For now, we assume if putInbox transactions were processed, state is valid
-
-	log.Debug("[SSV] Mailbox state validation completed",
-		"blockNumber", header.Number,
-		"xtID", xtID.Hex())
-
-	return true, nil
 }
