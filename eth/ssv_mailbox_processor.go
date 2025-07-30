@@ -499,12 +499,7 @@ func (mp *MailboxProcessor) createAndSubmitPutInboxTx(ctx context.Context, dep C
 		SubmitSequencerTransaction(ctx context.Context, tx *types.Transaction, isPutInbox bool) error
 	}
 
-	stb, ok := mp.backend.(submitTx)
-	if !ok {
-		return fmt.Errorf("backend does not implement required SubmitSequencerTransaction method")
-	}
-
-	return stb.SubmitSequencerTransaction(ctx, signedTx, true)
+	return mp.backend.(submitTx).SubmitSequencerTransaction(ctx, signedTx, true)
 }
 
 func (mp *MailboxProcessor) isMailboxAddress(addr common.Address) bool {

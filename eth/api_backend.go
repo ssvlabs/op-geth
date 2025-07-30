@@ -80,9 +80,10 @@ type EthAPIBackend struct {
 	sequencerAddress common.Address
 
 	// SSV: Sequencer transaction management
-	pendingClearTx     *types.Transaction
-	pendingPutInboxTxs []*types.Transaction
-	sequencerTxMutex   sync.RWMutex
+	pendingClearTx      *types.Transaction
+	pendingPutInboxTxs  []*types.Transaction
+	pendingSequencerTxs []*types.Transaction
+	sequencerTxMutex    sync.RWMutex
 }
 
 // ChainConfig returns the active chain configuration.
@@ -855,6 +856,26 @@ func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx 
 	return traceResult, nil
 }
 
+// SubmitSequencerTransaction submits a transaction with a priority flag.
+// SSV
+func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *types.Transaction, isPutInbox bool) error {
+	if err := b.validateSequencerTransaction(tx); err != nil {
+		log.Error("[SSV] Sequencer transaction validation failed", "err", err, "txHash", tx.Hash().Hex())
+		return fmt.Errorf("sequencer transaction validation failed: %w", err)
+	}
+
+	if isPutInbox {
+		b.AddPendingPutInboxTx(tx)
+		log.Info("[SSV] Added validated putInbox transaction", "txHash", tx.Hash().Hex())
+	} else {
+		b.SetPendingClearTx(tx)
+		log.Info("[SSV] Set validated clear transaction", "txHash", tx.Hash().Hex())
+	}
+
+	// FIXME: this should fail for now (invalid sender: invalid transaction v, r, s value)
+	return b.sendTx(ctx, tx)
+}
+
 // GetMailboxAddresses returns the list of mailbox contract addresses to watch.package ethapi
 // SSV
 func (b *EthAPIBackend) GetMailboxAddresses() []common.Address {
@@ -877,6 +898,19 @@ func (b *EthAPIBackend) SetPendingClearTx(tx *types.Transaction) {
 	b.sequencerTxMutex.Lock()
 	defer b.sequencerTxMutex.Unlock()
 	b.pendingClearTx = tx
+}
+
+// AddPendingPutInboxTx adds a putInbox transaction to the pending list.
+// SSV
+func (b *EthAPIBackend) AddPendingPutInboxTx(tx *types.Transaction) {
+	b.sequencerTxMutex.Lock()
+	defer b.sequencerTxMutex.Unlock()
+
+	b.pendingPutInboxTxs = append(b.pendingPutInboxTxs, tx)
+
+	log.Info("[SSV] Added pending putInbox transaction",
+		"txHash", tx.Hash().Hex(),
+		"totalPending", len(b.pendingPutInboxTxs))
 }
 
 // GetPendingPutInboxTxs returns all pending putInbox transactions.
@@ -1179,49 +1213,13 @@ func (b *EthAPIBackend) BlockCallbackFn() func(ctx context.Context, block *types
 	}
 }
 
-// GetAllPendingTransactions returns all pending transactions, including sequencer transactions
-// SSV
-func (b *EthAPIBackend) GetAllPendingTransactions() (types.Transactions, error) {
-	log.Debug("[SSV] Getting all pending transactions")
+func (b *EthAPIBackend) GetPendingOriginalTxs() []*types.Transaction {
+	b.sequencerTxMutex.RLock()
+	defer b.sequencerTxMutex.RUnlock()
 
-	// Get normal transactions from pool
-	normalTxs, err := b.GetPoolTransactions()
-	if err != nil {
-		log.Error("[SSV] Failed to get pool transactions", "err", err)
-		return nil, err
-	}
-
-	// Get sequencer transactions
-	var allTxs types.Transactions
-
-	// Add clear transaction first if exists
-	if clearTx := b.GetPendingClearTx(); clearTx != nil {
-		allTxs = append(allTxs, clearTx)
-		log.Debug("[SSV] Added clear transaction to all pending", "txHash", clearTx.Hash().Hex())
-	}
-
-	// Add putInbox transactions
-	putInboxTxs := b.GetPendingPutInboxTxs()
-	allTxs = append(allTxs, putInboxTxs...)
-	if len(putInboxTxs) > 0 {
-		log.Debug("[SSV] Added putInbox transactions to all pending", "count", len(putInboxTxs))
-	}
-
-	// Add normal transactions
-	allTxs = append(allTxs, normalTxs...)
-
-	log.Debug("[SSV] All pending transactions retrieved",
-		"clearTxs", func() int {
-			if b.GetPendingClearTx() != nil {
-				return 1
-			}
-			return 0
-		}(),
-		"putInboxTxs", len(putInboxTxs),
-		"normalTxs", len(normalTxs),
-		"total", len(allTxs))
-
-	return allTxs, nil
+	result := make([]*types.Transaction, len(b.pendingSequencerTxs))
+	copy(result, b.pendingSequencerTxs)
+	return result
 }
 
 // reSimulateAfterMailboxPopulation re-simulates transactions after mailbox has been populated

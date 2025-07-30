@@ -75,10 +75,6 @@ type BackendWithSequencerTransactions interface {
 	// SSV
 	GetOrderedTransactionsForBlock(ctx context.Context, normalTxs types.Transactions) (types.Transactions, error)
 
-	// GetAllPendingTransactions returns all pending transactions, including sequencer transactions
-	// SSV
-	GetAllPendingTransactions() (types.Transactions, error)
-
 	// GetPendingClearTx returns the pending clear transaction, if any
 	// SSV
 	GetPendingClearTx() *types.Transaction
@@ -86,6 +82,10 @@ type BackendWithSequencerTransactions interface {
 	// GetPendingPutInboxTxs returns all pending put inbox transactions
 	// SSV
 	GetPendingPutInboxTxs() []*types.Transaction
+
+	// GetPendingOriginalTxs returns all pending original transactions
+	// SSV
+	GetPendingOriginalTxs() []*types.Transaction
 
 	// ClearSequencerTransactionsAfterBlock clears all pending sequencer transactions after block creation
 	// SSV
@@ -199,42 +199,6 @@ func (miner *Miner) startBackgroundInteropFailsafeDetection() {
 			}
 		}
 	}()
-}
-
-// prepareSequencerTransactions prepares sequencer transactions for block building
-// SSV
-func (miner *Miner) prepareSequencerTransactions(ctx context.Context) error {
-	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
-		log.Debug("[SSV] Preparing sequencer transactions for block")
-		return backend.PrepareSequencerTransactionsForBlock(ctx)
-	}
-	return nil
-}
-
-// getOrderedTransactions gets ordered transactions from the backend
-// SSV
-func (miner *Miner) getOrderedTransactions(ctx context.Context) (types.Transactions, error) {
-	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
-		normalTxs, err := backend.GetAllPendingTransactions()
-		if err != nil {
-			return nil, err
-		}
-
-		log.Debug("[SSV] Getting ordered transactions for block", "normalTxs", len(normalTxs))
-		return backend.GetOrderedTransactionsForBlock(ctx, normalTxs)
-	}
-
-	// Fallback to normal txpool access
-	return nil, fmt.Errorf("backend does not support sequencer transactions")
-}
-
-// clearSequencerTransactions clears sequencer transactions after block creation
-// SSV
-func (miner *Miner) clearSequencerTransactions() {
-	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
-		log.Debug("[SSV] Clearing sequencer transactions after block")
-		backend.ClearSequencerTransactionsAfterBlock()
-	}
 }
 
 // Pending returns the currently pending block and associated receipts, logs
