@@ -612,10 +612,6 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 
 	for _, txReq := range xtReq.Transactions {
 		txChainID := new(big.Int).SetBytes(txReq.ChainId)
-		log.Info("[DEBUG] Transaction for chain",
-			"txChainID", txChainID,
-			"localChainID", chainID,
-			"match", txChainID.Cmp(chainID) == 0)
 
 		if txChainID.Cmp(chainID) == 0 {
 			hasLocalTx = true
@@ -625,7 +621,6 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 			for _, txBytes := range txReq.Transaction {
 				tx := new(types.Transaction)
 				if err := tx.UnmarshalBinary(txBytes); err != nil {
-					log.Error("[SSV] Failed to unmarshal transaction", "error", err)
 					return nil, err
 				}
 
