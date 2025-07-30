@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/ethereum/go-ethereum/crypto"
 	"math/big"
 	"runtime"
 	"sync"
@@ -359,11 +360,10 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 
 	eth.dropper = newDropper(eth.p2pServer.MaxDialedConns(), eth.p2pServer.MaxInboundConns())
 
-	eth.miner = miner.New(eth, config.Miner, eth.engine)
-	eth.miner.SetExtra(makeExtraData(config.Miner.ExtraData))
-	eth.miner.SetPrioAddresses(config.TxPool.Locals)
-
-	eth.APIBackend = &EthAPIBackend{stack.Config().ExtRPCEnabled(), stack.Config().AllowUnprotectedTxs, config.RollupDisableTxPoolAdmission, eth, nil, nil, nil, nil, nil}
+	eth.APIBackend = &EthAPIBackend{stack.Config().ExtRPCEnabled(), stack.Config().AllowUnprotectedTxs,
+		config.RollupDisableTxPoolAdmission, eth, nil, nil, nil,
+		nil, nil, nil, common.Address{}, nil,
+		make([]*types.Transaction, 0), make([]*types.Transaction, 0), sync.RWMutex{}}
 	if eth.APIBackend.allowUnprotectedTxs {
 		log.Info("Unprotected transactions allowed")
 	}
@@ -408,6 +408,12 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	eth.APIBackend.spClient = stack.SPClient()
 	eth.APIBackend.coordinator = stack.Coordinator()
 	eth.APIBackend.sequencerClients = stack.SequencerClients()
+	eth.APIBackend.sequencerKey = stack.SequencerKey()
+	eth.APIBackend.sequencerAddress = crypto.PubkeyToAddress(stack.SequencerKey().PublicKey)
+
+	eth.miner = miner.New(eth, eth.APIBackend, config.Miner, eth.engine)
+	eth.miner.SetExtra(makeExtraData(config.Miner.ExtraData))
+	eth.miner.SetPrioAddresses(config.TxPool.Locals)
 
 	return eth, nil
 }
@@ -517,6 +523,7 @@ func (s *Ethereum) Start() error {
 
 	s.APIBackend.coordinator.SetStartCallback(s.APIBackend.StartCallbackFn(s.blockchain.Config().ChainID))
 	s.APIBackend.coordinator.SetVoteCallback(s.APIBackend.VoteCallbackFn(s.blockchain.Config().ChainID))
+	s.APIBackend.coordinator.SetBlockCallback(s.APIBackend.BlockCallbackFn())
 
 	return nil
 }

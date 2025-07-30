@@ -88,6 +88,12 @@ func (c *client) Connect(ctx context.Context, mandatory bool) error {
 		return nil
 	}
 
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
+		_ = tcpConn.SetNoDelay(true)
+	}
+
 	c.conn = conn
 	c.writer = spcodec.NewStreamWriter(conn, c.codec)
 	c.connected.Store(true)
@@ -97,6 +103,9 @@ func (c *client) Connect(ctx context.Context, mandatory bool) error {
 
 	c.wg.Add(1)
 	go c.receiveLoop(ctx)
+
+	c.wg.Add(1)
+	go c.heartbeatLoop(ctx)
 
 	log.Info("Connected", "server", c.cfg.ServerAddr, "chainID", c.cfg.ChainID)
 
@@ -287,6 +296,32 @@ func (c *client) autoReconnectLoop(ctx context.Context) {
 			} else {
 				log.Info("Successfully reconnected", "to", c.cfg.ServerAddr, "chainID", c.cfg.ChainID)
 				return // Successfully reconnected, exit
+			}
+		}
+	}
+}
+
+func (c *client) heartbeatLoop(ctx context.Context) {
+	defer c.wg.Done()
+
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !c.connected.Load() {
+				continue
+			}
+
+			c.mu.RLock()
+			conn := c.conn
+			c.mu.RUnlock()
+
+			if conn != nil {
+				_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
 			}
 		}
 	}

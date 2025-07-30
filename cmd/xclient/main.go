@@ -22,7 +22,6 @@ import (
 const (
 	sendTxRPCMethod = "eth_sendXTransaction"
 	configFile      = "config.yml"
-	mailboxAddr     = "0xEd3afBc0af3B010815dd242f1aA20d493Ae3160d"
 )
 
 type Rollup struct {
@@ -66,21 +65,10 @@ func main() {
 	publicKeyECDSA, _ = publicKey.(*ecdsa.PublicKey)
 	addressB := crypto.PubkeyToAddress(*publicKeyECDSA)
 
-	nonceA, err := getNonceFor(rollupA.RPC, addressA)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	nonceB, err := getNonceFor(rollupB.RPC, addressB)
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	// Create ping-pong parameters
 	sessionId := big.NewInt(12345)
 	pingData := []byte("hello from rollup A")
 	pongData := []byte("hello from rollup B")
-	label := []byte("test-session")
 
 	// Create a ping transaction (A -> B)
 	pingParams := PingPongParams{
@@ -90,7 +78,11 @@ func main() {
 		Receiver:  addressB,
 		SessionId: sessionId,
 		Data:      pingData,
-		Label:     label,
+	}
+
+	nonceA, err := getNonceFor(rollupA.RPC, addressA)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	signedTx1, err := createPingTransaction(pingParams, nonceA, privateKeyA)
@@ -111,7 +103,11 @@ func main() {
 		Receiver:  addressA,
 		SessionId: sessionId,
 		Data:      pongData,
-		Label:     label,
+	}
+
+	nonceB, err := getNonceFor(rollupB.RPC, addressB)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	signedTx2, err := createPongTransaction(pongParams, nonceB, privateKeyB)

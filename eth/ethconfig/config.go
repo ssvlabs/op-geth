@@ -202,6 +202,7 @@ type Config struct {
 	SPListenAddr   string
 	SPServerAddr   string
 	SequencerAddrs string
+	SequencerKey   string
 }
 
 // CreateConsensusEngine creates a consensus engine for the given chain config.

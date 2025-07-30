@@ -1127,6 +1127,12 @@ Please note that --` + MetricsHTTPFlag.Name + ` must be set to start the server.
 		Value:    ethconfig.Defaults.SequencerAddrs,
 		Category: flags.SharedPublisherCategory,
 	}
+	SequencerKeyHex = &cli.StringFlag{
+		Name:     "sequencer.key",
+		Usage:    `Sequencers private key to sign putInbox and mailbox clear transactions`,
+		Value:    ethconfig.Defaults.SequencerKey,
+		Category: flags.SharedPublisherCategory,
+	}
 )
 
 var (
@@ -1563,6 +1569,12 @@ func SetNodeConfig(ctx *cli.Context, cfg *node.Config) {
 		cfg.SequencerAddrs = ctx.String(SequencerAddrs.Name)
 	} else {
 		cfg.SequencerAddrs = ethconfig.Defaults.SequencerAddrs
+	}
+
+	if ctx.IsSet(SequencerKeyHex.Name) {
+		cfg.SequencerKey = ctx.String(SequencerKeyHex.Name)
+	} else {
+		cfg.SequencerKey = ethconfig.Defaults.SequencerKey // empty
 	}
 
 	if ctx.IsSet(JWTSecretFlag.Name) {

@@ -64,6 +64,42 @@ type BackendWithInterop interface {
 	QueryFailsafe(ctx context.Context) (bool, error)
 }
 
+// BackendWithSequencerTransactions defines the interface for sequencer transaction handling
+// SSV
+type BackendWithSequencerTransactions interface {
+	// PrepareSequencerTransactionsForBlock prepares sequencer transactions for inclusion in a new block
+	// SSV
+	PrepareSequencerTransactionsForBlock(ctx context.Context) error
+
+	// GetOrderedTransactionsForBlock returns transactions in the correct order for block inclusion
+	// SSV
+	GetOrderedTransactionsForBlock(ctx context.Context, normalTxs types.Transactions) (types.Transactions, error)
+
+	// GetPendingClearTx returns the pending clear transaction, if any
+	// SSV
+	GetPendingClearTx() *types.Transaction
+
+	// GetPendingPutInboxTxs returns all pending put inbox transactions
+	// SSV
+	GetPendingPutInboxTxs() []*types.Transaction
+
+	// GetPendingOriginalTxs returns all pending original transactions
+	// SSV
+	GetPendingOriginalTxs() []*types.Transaction
+
+	// ClearSequencerTransactionsAfterBlock clears all pending sequencer transactions after block creation
+	// SSV
+	ClearSequencerTransactionsAfterBlock()
+
+	// OnBlockBuildingStart is called when block building starts
+	// SSV
+	OnBlockBuildingStart(ctx context.Context) error
+
+	// OnBlockBuildingComplete is called when block building completes
+	// SSV
+	OnBlockBuildingComplete(ctx context.Context, block *types.Block, success bool) error
+}
+
 // Config is the configuration parameters of mining.
 type Config struct {
 	Etherbase           common.Address `toml:"-"`          // Deprecated
@@ -106,17 +142,19 @@ type Miner struct {
 	pending     *pending
 	pendingMu   sync.Mutex // Lock protects the pending block
 
-	backend Backend
+	backend    Backend
+	backendAPI interface{}
 
 	lifeCtxCancel context.CancelFunc
 	lifeCtx       context.Context
 }
 
 // New creates a new miner with provided config.
-func New(eth Backend, config Config, engine consensus.Engine) *Miner {
+func New(eth Backend, backendAPI interface{}, config Config, engine consensus.Engine) *Miner {
 	ctx, cancel := context.WithCancel(context.Background())
 	miner := &Miner{
 		backend:     eth,
+		backendAPI:  backendAPI,
 		config:      &config,
 		chainConfig: eth.BlockChain().Config(),
 		engine:      engine,
