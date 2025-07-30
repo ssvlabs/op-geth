@@ -979,16 +979,9 @@ func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context
 }
 
 // shouldCreateClearTx determines if we need a clear transaction
-// TODO: should we rely on this? txs are cleared from state in 5 minutes after "decided=true" only
 // SSV
 func (b *EthAPIBackend) shouldCreateClearTx() bool {
-	// Check if there are any active cross-chain transactions
-	// For now, always create it if we're handling cross-chain txs
-	if b.coordinator != nil {
-		activeXTs := b.coordinator.GetActiveTransactions()
-		return len(activeXTs) > 0
-	}
-	return false
+	return len(b.GetPendingOriginalTxs()) > 0
 }
 
 // createClearTransaction creates a transaction to clear the mailbox
