@@ -983,6 +983,9 @@ func (b *EthAPIBackend) shouldCreateClearTx() bool {
 // SSV
 func (b *EthAPIBackend) createClearTransaction(ctx context.Context) (*types.Transaction, error) {
 	nonce, err := b.GetPoolNonce(ctx, b.sequencerAddress)
+	if err != nil {
+		return nil, err
+	}
 
 	parsedABI, err := abi.JSON(strings.NewReader(mailboxABI))
 	if err != nil {
