@@ -66,16 +66,6 @@ func main() {
 	publicKeyECDSA, _ = publicKey.(*ecdsa.PublicKey)
 	addressB := crypto.PubkeyToAddress(*publicKeyECDSA)
 
-	nonceA, err := getNonceFor(rollupA.RPC, addressA)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	nonceB, err := getNonceFor(rollupB.RPC, addressB)
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	// Create ping-pong parameters
 	sessionId := big.NewInt(12345)
 	pingData := []byte("hello from rollup A")
@@ -91,6 +81,11 @@ func main() {
 		SessionId: sessionId,
 		Data:      pingData,
 		Label:     label,
+	}
+
+	nonceA, err := getNonceFor(rollupA.RPC, addressA)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	signedTx1, err := createPingTransaction(pingParams, nonceA, privateKeyA)
@@ -112,6 +107,11 @@ func main() {
 		SessionId: sessionId,
 		Data:      pongData,
 		Label:     label,
+	}
+
+	nonceB, err := getNonceFor(rollupB.RPC, addressB)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	signedTx2, err := createPongTransaction(pongParams, nonceB, privateKeyB)
