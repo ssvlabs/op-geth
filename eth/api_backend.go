@@ -1223,7 +1223,6 @@ func (b *EthAPIBackend) GetPendingOriginalTxs() []*types.Transaction {
 	result := make([]*types.Transaction, len(b.pendingSequencerTxs))
 	copy(result, b.pendingSequencerTxs)
 
-	log.Info("[SSV] GetPendingOriginalTxs called", "count", len(b.pendingSequencerTxs))
 	return result
 }
 

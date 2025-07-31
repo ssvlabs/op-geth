@@ -731,12 +731,6 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 		sequencerCount := 0
 
 		for _, tx := range sequencerTxs {
-			if interrupt != nil {
-				if signal := interrupt.Load(); signal != commitInterruptNone {
-					return signalToErr(signal)
-				}
-			}
-
 			if env.gasPool.Gas() < params.TxGas {
 				log.Error("[SSV] Not enough gas for sequencer transactions", "have", env.gasPool.Gas(), "want", params.TxGas)
 				break
@@ -751,19 +745,14 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 			sequencerCount++
 		}
 
-		//log.Info("[SSV] Committed sequencer transactions", "count", sequencerCount)
-
 		// PHASE 2: Process priority transactions (maintain account-based ordering)
 		prioCount := miner.commitAccountBasedTransactions(interrupt, env, prioPlainTxs)
 		prioCount += miner.commitAccountBasedTransactions(interrupt, env, prioBlobTxs)
-
-		//log.Info("[SSV] Committed priority transactions", "count", prioCount)
 
 		// PHASE 3: Process normal transactions (maintain account-based ordering)
 		normalCount := miner.commitAccountBasedTransactions(interrupt, env, normalPlainTxs)
 		normalCount += miner.commitAccountBasedTransactions(interrupt, env, normalBlobTxs)
 
-		//log.Info("[SSV] Committed normal transactions", "count", normalCount)
 		log.Info("[SSV] Total transactions committed",
 			"sequencer", sequencerCount,
 			"priority", prioCount,
@@ -771,7 +760,6 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 			"total", sequencerCount+prioCount+normalCount)
 
 	} else {
-		// Fall back to normal transaction filling if backend doesn't support sequencer ordering
 		log.Info("[SSV] Backend doesn't support sequencer ordering, falling back to normal")
 		return miner.fillTransactions(interrupt, env)
 	}
@@ -782,25 +770,44 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 // getSequencerTransactions retrieves sequencer transactions in correct order
 // SSV
 func (miner *Miner) getSequencerTransactions(backend BackendWithSequencerTransactions) types.Transactions {
+	clearTx := backend.GetPendingClearTx()
+	putInboxTxs := backend.GetPendingPutInboxTxs()
+	originalTxs := backend.GetPendingOriginalTxs()
+
+	hasClear := clearTx != nil
+	hasPutInbox := len(putInboxTxs) > 0
+	hasOriginal := len(originalTxs) > 0
+
+	// If we have any sequencer transactions, warn about missing components
+	if hasClear || hasPutInbox || hasOriginal {
+		if !hasClear {
+			log.Warn("[SSV] Missing clear transaction - sequencer block may be incomplete")
+		}
+		if !hasPutInbox {
+			log.Warn("[SSV] Missing putInbox transactions - no cross-chain dependencies processed")
+		}
+		if !hasOriginal {
+			log.Warn("[SSV] Missing original transactions - no user transactions in sequencer block")
+		}
+	}
+
 	var sequencerTxs types.Transactions
 
 	// First: clear transaction
-	if clearTx := backend.GetPendingClearTx(); clearTx != nil {
+	if hasClear {
 		sequencerTxs = append(sequencerTxs, clearTx)
-		log.Info("[SSV] Added clear transaction", "hash", clearTx.Hash().Hex())
+		log.Info("[SSV] Added clear transaction", "count", 1)
 	}
 
 	// Second: putInbox transactions
-	putInboxTxs := backend.GetPendingPutInboxTxs()
-	sequencerTxs = append(sequencerTxs, putInboxTxs...)
-	if len(putInboxTxs) > 0 {
+	if hasPutInbox {
+		sequencerTxs = append(sequencerTxs, putInboxTxs...)
 		log.Info("[SSV] Added putInbox transactions", "count", len(putInboxTxs))
 	}
 
 	// Third: original user transactions
-	originalTxs := backend.GetPendingOriginalTxs()
-	sequencerTxs = append(sequencerTxs, originalTxs...)
-	if len(originalTxs) > 0 {
+	if hasOriginal {
+		sequencerTxs = append(sequencerTxs, originalTxs...)
 		log.Info("[SSV] Added original transactions", "count", len(originalTxs))
 	}
 
