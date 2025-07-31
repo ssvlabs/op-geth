@@ -62,7 +62,7 @@ import (
 )
 
 // const mailBoxAddr = "0xEd3afBc0af3B010815dd242f1aA20d493Ae3160d"
-const mailBoxAddr = "0xaCfc748C73630F3a6E4fEEc8cF7695Eeb4836088"
+const mailBoxAddr = "0x7ca2b4e61909a94C5D769C9072032350CAc3D02E"
 
 // EthAPIBackend implements ethapi.Backend and tracers.Backend for full nodes
 type EthAPIBackend struct {
