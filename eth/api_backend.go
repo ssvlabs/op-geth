@@ -1138,11 +1138,8 @@ func (b *EthAPIBackend) validateSequencerTransaction(tx *types.Transaction) erro
 
 // OnBlockBuildingStart is called when block building starts
 // SSV
-func (b *EthAPIBackend) OnBlockBuildingStart(ctx context.Context) error {
+func (b *EthAPIBackend) OnBlockBuildingStart(context.Context) error {
 	log.Info("[SSV] Block building started - preparing sequencer state")
-
-	// Clear any stale state from previous block
-	// (but don't clear current pending txs yet)
 
 	return nil
 }
