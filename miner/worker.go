@@ -790,18 +790,18 @@ func (miner *Miner) getSequencerTransactions(backend BackendWithSequencerTransac
 		log.Info("[SSV] Added clear transaction", "hash", clearTx.Hash().Hex())
 	}
 
-	// Second: original user transactions (ping/pong)
-	originalTxs := backend.GetPendingOriginalTxs()
-	sequencerTxs = append(sequencerTxs, originalTxs...)
-	if len(originalTxs) > 0 {
-		log.Info("[SSV] Added original transactions", "count", len(originalTxs))
-	}
-
-	// Third: putInbox transactions
+	// Second: putInbox transactions
 	putInboxTxs := backend.GetPendingPutInboxTxs()
 	sequencerTxs = append(sequencerTxs, putInboxTxs...)
 	if len(putInboxTxs) > 0 {
 		log.Info("[SSV] Added putInbox transactions", "count", len(putInboxTxs))
+	}
+
+	// Third: original user transactions
+	originalTxs := backend.GetPendingOriginalTxs()
+	sequencerTxs = append(sequencerTxs, originalTxs...)
+	if len(originalTxs) > 0 {
+		log.Info("[SSV] Added original transactions", "count", len(originalTxs))
 	}
 
 	return sequencerTxs
