@@ -612,10 +612,6 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 
 	for _, txReq := range xtReq.Transactions {
 		txChainID := new(big.Int).SetBytes(txReq.ChainId)
-		log.Info("[DEBUG] Transaction for chain",
-			"txChainID", txChainID,
-			"localChainID", chainID,
-			"match", txChainID.Cmp(chainID) == 0)
 
 		if txChainID.Cmp(chainID) == 0 {
 			hasLocalTx = true
@@ -625,7 +621,6 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 			for _, txBytes := range txReq.Transaction {
 				tx := new(types.Transaction)
 				if err := tx.UnmarshalBinary(txBytes); err != nil {
-					log.Error("[SSV] Failed to unmarshal transaction", "error", err)
 					return nil, err
 				}
 
@@ -988,6 +983,9 @@ func (b *EthAPIBackend) shouldCreateClearTx() bool {
 // SSV
 func (b *EthAPIBackend) createClearTransaction(ctx context.Context) (*types.Transaction, error) {
 	nonce, err := b.GetPoolNonce(ctx, b.sequencerAddress)
+	if err != nil {
+		return nil, err
+	}
 
 	parsedABI, err := abi.JSON(strings.NewReader(mailboxABI))
 	if err != nil {
@@ -1140,11 +1138,8 @@ func (b *EthAPIBackend) validateSequencerTransaction(tx *types.Transaction) erro
 
 // OnBlockBuildingStart is called when block building starts
 // SSV
-func (b *EthAPIBackend) OnBlockBuildingStart(ctx context.Context) error {
+func (b *EthAPIBackend) OnBlockBuildingStart(context.Context) error {
 	log.Info("[SSV] Block building started - preparing sequencer state")
-
-	// Clear any stale state from previous block
-	// (but don't clear current pending txs yet)
 
 	return nil
 }
@@ -1228,7 +1223,6 @@ func (b *EthAPIBackend) GetPendingOriginalTxs() []*types.Transaction {
 	result := make([]*types.Transaction, len(b.pendingSequencerTxs))
 	copy(result, b.pendingSequencerTxs)
 
-	log.Info("[SSV] GetPendingOriginalTxs called", "count", len(b.pendingSequencerTxs))
 	return result
 }
 

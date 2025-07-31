@@ -116,13 +116,9 @@ func (mp *MailboxProcessor) analyzeTransaction(ctx context.Context, backend inte
 		SimulateTransactionWithSSVTrace(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error)
 	}
 
-	tb, ok := backend.(traceBackend)
-	if !ok {
-		return nil, fmt.Errorf("backend does not implement required tracing methods")
-	}
-
-	traceResult, err := tb.SimulateTransactionWithSSVTrace(ctx, tx, blockNrOrHash)
+	traceResult, err := backend.(traceBackend).SimulateTransactionWithSSVTrace(ctx, tx, blockNrOrHash)
 	if err != nil {
+		log.Error("[SSV] Cross-chain transaction simulation failed", "txHash", tx.Hash().Hex(), "error", err)
 		return nil, fmt.Errorf("simulation failed: %w", err)
 	}
 
@@ -137,8 +133,15 @@ func (mp *MailboxProcessor) analyzeTransaction(ctx context.Context, backend inte
 		"success", simState.OriginalSuccess,
 		"operations", len(traceResult.Operations))
 
+	if traceResult.ExecutionResult.Err != nil {
+		log.Warn("[SSV] Cross-chain transaction reverted during simulation",
+			"txHash", tx.Hash().Hex(),
+			"error", traceResult.ExecutionResult.Err,
+			"revert", traceResult.ExecutionResult.Revert(),
+			"continuing_analysis", true)
+	}
+
 	for i, op := range traceResult.Operations {
-		// Only analyze calls to mailbox contracts
 		if !mp.isMailboxAddress(op.Address) {
 			continue
 		}

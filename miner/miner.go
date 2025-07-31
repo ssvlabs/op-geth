@@ -325,3 +325,14 @@ func (miner *Miner) getPending() *newPayloadResult {
 func (miner *Miner) Close() {
 	miner.lifeCtxCancel()
 }
+
+// hasCrossChainTransactions checks if there are any cross-chain transactions pending in the tx pool.
+// SSV: Check if there are cross-chain transactions before notifying
+func (miner *Miner) hasCrossChainTransactions() bool {
+	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
+		return backend.GetPendingClearTx() != nil ||
+			len(backend.GetPendingPutInboxTxs()) > 0 ||
+			len(backend.GetPendingOriginalTxs()) > 0
+	}
+	return false
+}
