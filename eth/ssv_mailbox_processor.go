@@ -467,8 +467,15 @@ func (mp *MailboxProcessor) createAndSubmitPutInboxTx(ctx context.Context, dep C
 		return err
 	}
 
-	// Create transaction to mailbox
-	mailboxAddr := mp.mailboxAddresses[0] // Use first mailbox address
+	var mailboxAddr common.Address
+	switch mp.chainID {
+	case 11111:
+		mailboxAddr = mp.mailboxAddresses[0]
+	case 22222:
+		mailboxAddr = mp.mailboxAddresses[1]
+	default:
+		return fmt.Errorf("unable to select mailbox addr. Unsupported \"%d\"chain id", mp.chainID)
+	}
 
 	log.Info("[SSV] Created putInbox transaction",
 		"nonce", nonce,
