@@ -61,9 +61,6 @@ import (
 	sptypes "github.com/ethereum/go-ethereum/internal/sp/proto"
 )
 
-// const mailBoxAddr = "0xEd3afBc0af3B010815dd242f1aA20d493Ae3160d"
-const mailBoxAddr = "0x7ca2b4e61909a94C5D769C9072032350CAc3D02E"
-
 // EthAPIBackend implements ethapi.Backend and tracers.Backend for full nodes
 type EthAPIBackend struct {
 	extRPCEnabled       bool
@@ -881,7 +878,8 @@ func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *type
 // SSV
 func (b *EthAPIBackend) GetMailboxAddresses() []common.Address {
 	return []common.Address{
-		common.HexToAddress(mailBoxAddr),
+		common.HexToAddress(native.RollupAMailBoxAddr),
+		common.HexToAddress(native.RollupBMailBoxAddr),
 	}
 }
 
@@ -997,13 +995,24 @@ func (b *EthAPIBackend) createClearTransaction(ctx context.Context) (*types.Tran
 		return nil, fmt.Errorf("failed to prepare calldata for \"clear\" method: %v", err)
 	}
 
+	var mailboxAddr common.Address
+	chainID := b.ChainConfig().ChainID.Int64()
+	switch chainID {
+	case 11111:
+		mailboxAddr = b.GetMailboxAddresses()[0]
+	case 22222:
+		mailboxAddr = b.GetMailboxAddresses()[1]
+	default:
+		return nil, fmt.Errorf("unable to select mailbox addr. Unsupported \"%d\"chain id", chainID)
+	}
+
 	txData := &types.DynamicFeeTx{
 		ChainID:    b.ChainConfig().ChainID,
 		Nonce:      nonce,
 		GasTipCap:  big.NewInt(1000000000),
 		GasFeeCap:  big.NewInt(20000000000),
 		Gas:        300000,
-		To:         &b.GetMailboxAddresses()[0],
+		To:         &mailboxAddr,
 		Value:      big.NewInt(0),
 		Data:       callData,
 		AccessList: nil,

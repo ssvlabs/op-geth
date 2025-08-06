@@ -15,6 +15,9 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
+const RollupAMailBoxAddr = "0x33C061304de440B89BC829bD4dC4eF688E5d1Cef"
+const RollupBMailBoxAddr = "0xbB6A1eCF93641122E5c76b6978bb4B7304879Dd5"
+
 func init() {
 	tracers.DefaultDirectory.Register("ssvTracer", newSSVTracer, false)
 }
@@ -33,12 +36,12 @@ type SSVTracer struct {
 
 // newSSVTracer is the registered constructor.
 func newSSVTracer(ctx *tracers.Context, cfg json.RawMessage, chainConfig *params.ChainConfig) (*tracers.Tracer, error) {
-	mailBoxAddr := common.HexToAddress("0x7ca2b4e61909a94C5D769C9072032350CAc3D02E")
 
 	t := &SSVTracer{
 		operations: make([]ssv.SSVOperation, 0),
 		watchedAddresses: map[common.Address]bool{
-			mailBoxAddr: true,
+			common.HexToAddress(RollupAMailBoxAddr): true,
+			common.HexToAddress(RollupBMailBoxAddr): true,
 		},
 	}
 
