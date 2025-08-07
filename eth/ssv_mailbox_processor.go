@@ -396,6 +396,8 @@ func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, s
 		if err := mp.sendCIRCMessage(ctx, &outMsg, xtID); err != nil {
 			return nil, nil, fmt.Errorf("failed to send CIRC message: %w", err)
 		}
+
+		sentMsgs = append(sentMsgs, outMsg)
 	}
 
 	circDeps := make([]CrossRollupDependency, 0)
