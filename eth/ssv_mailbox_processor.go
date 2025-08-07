@@ -523,7 +523,10 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 		"sourceChain", dep.SourceChainID,
 		"destChain", dep.DestChainID,
 		"sessionId", dep.SessionID,
+		"data", hex.EncodeToString(dep.Data),
 		"dataLen", len(callData),
+		"receiver", dep.Receiver,
+		"label", dep.Label,
 	)
 
 	txData := &types.DynamicFeeTx{

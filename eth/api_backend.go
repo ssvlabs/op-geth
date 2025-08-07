@@ -619,7 +619,7 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 		b,
 	)
 
-	var newCIRCDeps []CrossRollupDependency
+	var newFulfilledDeps []CrossRollupDependency
 	historicalSentCIRCMsgs := make([]CrossRollupMessage, 0)
 	historicalCIRCDeps := make([]CrossRollupDependency, 0)
 
@@ -629,20 +629,20 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 	}
 
 	// Populate mempool with payload txs
-	for _, txReq := range localTxs {
-		for _, txBytes := range txReq.Transaction {
-			tx := new(types.Transaction)
-			if err := tx.UnmarshalBinary(txBytes); err != nil {
-				return nil, err
-			}
-			b.poolPayloadTx(tx)
-		}
-	}
+	//for _, txReq := range localTxs {
+	//	for _, txBytes := range txReq.Transaction {
+	//		tx := new(types.Transaction)
+	//		if err := tx.UnmarshalBinary(txBytes); err != nil {
+	//			return nil, err
+	//		}
+	//		b.poolPayloadTx(tx) // user tx
+	//	}
+	//}
 
 	sequencerNonce := startNonce + 1 // preserve startNonce for clear() tx
 	for {
 		// Populate mempool with new putInbox txs
-		for _, dep := range newCIRCDeps {
+		for _, dep := range newFulfilledDeps {
 			var putInboxTx *types.Transaction
 			putInboxTx, err = mailboxProcessor.createPutInboxTx(dep, sequencerNonce)
 			if err != nil {
@@ -651,13 +651,14 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 
 			err = b.SubmitSequencerTransaction(ctx, putInboxTx, true)
 			if err != nil {
-				return nil, fmt.Errorf("failed to SubmitSequencerTransaction")
+				return nil, fmt.Errorf("failed to SubmitSequencerTransaction: %v", "txHash", putInboxTx.Hash().Hex(), err)
 			}
+
 			sequencerNonce++
 		}
 
-		newCIRCDeps = make([]CrossRollupDependency, 0)                  // reset fullfilled dependencies
-		historicalCIRCDeps = append(historicalCIRCDeps, newCIRCDeps...) // TODO: better refactor: use map[] or create new struct
+		historicalCIRCDeps = append(historicalCIRCDeps, newFulfilledDeps...) // TODO: better refactor: use map[] or create new struct
+		newFulfilledDeps = make([]CrossRollupDependency, 0)                  // reset fullfilled dependencies
 
 		var coordinationStates []*SimulationState
 		for _, txReq := range localTxs {
@@ -708,9 +709,9 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 			// Handle cross-rollup coordination for each transaction that needs it
 			for _, state := range coordinationStates {
 				if state.RequiresCoordination() {
-					var sentMsgs []CrossRollupMessage
-					var fullFilledDeps []CrossRollupDependency
-					sentMsgs, fullFilledDeps, err = mailboxProcessor.handleCrossRollupCoordination(ctx, state, xtID)
+					var sentOutboundMsgs []CrossRollupMessage
+					var fulFilledDeps []CrossRollupDependency
+					sentOutboundMsgs, fulFilledDeps, err = mailboxProcessor.handleCrossRollupCoordination(ctx, state, xtID)
 					if err != nil {
 						log.Error("[SSV] Cross-rollup coordination failed", "error", err, "xtID", xtID.Hex())
 						// Vote abort if coordination fails
@@ -718,8 +719,8 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 						return nil, err
 					}
 
-					newCIRCDeps = append(newCIRCDeps, fullFilledDeps...)
-					historicalSentCIRCMsgs = append(historicalSentCIRCMsgs, sentMsgs...)
+					newFulfilledDeps = append(newFulfilledDeps, fulFilledDeps...)
+					historicalSentCIRCMsgs = append(historicalSentCIRCMsgs, sentOutboundMsgs...)
 				}
 			}
 
@@ -840,16 +841,68 @@ func (b *EthAPIBackend) VoteCallbackFn(chainID *big.Int) spconsensus.VoteFn {
 
 // SimulateTransactionWithSSVTrace simulates a transaction and returns SSV trace data.
 // SSV
+//func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
+//	timer := time.Now()
+//	defer func() {
+//		log.Info("[SSV] Simulated transaction with SSV trace", "txHash", tx.Hash().Hex(), "duration", time.Since(timer))
+//	}()
+//
+//	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	snapshot := stateDB.Snapshot()
+//	defer stateDB.RevertToSnapshot(snapshot)
+//
+//	signer := types.MakeSigner(b.ChainConfig(), header.Number, header.Time)
+//	msg, err := core.TransactionToMessage(tx, signer, header.BaseFee)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	mailboxAddresses := b.GetMailboxAddresses()
+//	tracer := native.NewSSVTracer(mailboxAddresses)
+//
+//	vmConfig := vm.Config{}
+//	if b.eth.blockchain.GetVMConfig() != nil {
+//		vmConfig = *b.eth.blockchain.GetVMConfig()
+//	}
+//	vmConfig.Tracer = tracer.Hooks()
+//	vmConfig.EnablePreimageRecording = true
+//
+//	blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
+//	evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), vmConfig)
+//
+//	result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(header.GasLimit))
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	traceResult := tracer.GetTraceResult()
+//	traceResult.ExecutionResult = result
+//
+//	return traceResult, nil
+//}
+
 func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
 	timer := time.Now()
 	defer func() {
 		log.Info("[SSV] Simulated transaction with SSV trace", "txHash", tx.Hash().Hex(), "duration", time.Since(timer))
 	}()
 
+	//b.poolPayloadTx(tx)
+
 	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
 	if err != nil {
 		return nil, err
 	}
+
+	log.Info("[DEBUG] Block info",
+		"requestedBlock", blockNrOrHash,
+		"returnedBlockNumber", header.Number,
+		"returnedBlockHash", header.Hash(),
+		"txIndex", stateDB.TxIndex())
 
 	snapshot := stateDB.Snapshot()
 	defer stateDB.RevertToSnapshot(snapshot)
@@ -871,9 +924,15 @@ func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Trans
 	vmConfig.EnablePreimageRecording = true
 
 	blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
+
+	txContext := core.NewEVMTxContext(msg)
+
 	evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), vmConfig)
 
-	result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(header.GasLimit))
+	evm.SetTxContext(txContext)
+
+	gasPool := new(core.GasPool).AddGas(header.GasLimit)
+	result, err := core.ApplyMessage(evm, msg, gasPool)
 	if err != nil {
 		return nil, err
 	}
@@ -894,14 +953,14 @@ func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *type
 
 	if isPutInbox {
 		b.AddPendingPutInboxTx(tx)
-		log.Info("[SSV] Add putInbox transaction to mempool", "txHash", tx.Hash().Hex())
 	} else {
 		b.SetPendingClearTx(tx)
 		log.Info("[SSV] Set clear transaction to mempool", "txHash", tx.Hash().Hex())
 	}
 
 	// FIXME: this should fail for now (invalid sender: invalid transaction v, r, s value)
-	return b.sendTx(ctx, tx)
+	//return b.sendTx(ctx, tx)
+	return nil
 }
 
 // GetMailboxAddresses returns the list of mailbox contract addresses to watch.package ethapi
@@ -1277,7 +1336,7 @@ func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(ctx context.Context, xt
 		"transactions", len(xtReq.Transactions))
 
 	// Wait for putInbox transactions to be processed
-	if err := b.waitForPutInboxTransactionsToBeProcessed(ctx, xtID); err != nil {
+	if err := b.waitForPutInboxTransactionsToBeProcessed(); err != nil {
 		log.Error("[SSV] Failed waiting for putInbox transactions", "error", err, "xtID", xtID.Hex())
 		return false, err
 	}
@@ -1394,7 +1453,7 @@ func (b *EthAPIBackend) reSimulateTransaction(ctx context.Context, tx *types.Tra
 
 // waitForPutInboxTransactionsToBeProcessed waits for putInbox transactions to be included
 // SSV
-func (b *EthAPIBackend) waitForPutInboxTransactionsToBeProcessed(ctx context.Context, xtID *sptypes.XtID) error {
+func (b *EthAPIBackend) waitForPutInboxTransactionsToBeProcessed() error {
 	putInboxTxs := b.GetPendingPutInboxTxs()
 	if len(putInboxTxs) == 0 {
 		return nil
@@ -1410,6 +1469,7 @@ func (b *EthAPIBackend) waitForPutInboxTransactionsToBeProcessed(ctx context.Con
 			for {
 				select {
 				case <-timeout:
+					log.Error("timed out waiting for putInbox transaction appearance in pool")
 					return // This will trigger the defer and stop the ticker
 				case <-ticker.C:
 					if poolTx := b.GetPoolTransaction(tx.Hash()); poolTx != nil {

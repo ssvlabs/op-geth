@@ -106,8 +106,8 @@ func main() {
 		ChainSrc:  chainAId, // 11111
 		ChainDest: chainBId, // 22222
 		Token:     tokenA,
-		Sender:    addressB,
-		Receiver:  addressA,
+		Sender:    addressA,
+		Receiver:  addressB,
 		Amount:    amount,
 		SessionId: sessionId,
 	}
