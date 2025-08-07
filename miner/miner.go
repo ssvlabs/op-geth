@@ -19,6 +19,7 @@ package miner
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"math/big"
 	"sync"
@@ -222,6 +223,14 @@ func (miner *Miner) Pending() (*types.Block, types.Receipts, *state.StateDB) {
 	if pending == nil {
 		return nil, nil, nil
 	}
+
+	if len(pending.block.Transactions()) == 2 {
+		tx := pending.block.Transactions()[0]
+		fmt.Println("tx0", hexutil.Encode(tx.Data()))
+		tx = pending.block.Transactions()[1]
+		fmt.Println("tx1", hexutil.Encode(tx.Data()))
+	}
+
 	return pending.block, pending.receipts, pending.stateDB.Copy()
 }
 
@@ -294,9 +303,10 @@ func (miner *Miner) getPending() *newPayloadResult {
 	header := miner.chain.CurrentHeader()
 	miner.pendingMu.Lock()
 	defer miner.pendingMu.Unlock()
-	if cached := miner.pending.resolve(header.Hash()); cached != nil {
-		return cached
-	}
+	//if cached := miner.pending.resolve(header.Hash()); cached != nil {
+	//	fmt.Println("RETURN CACHED!!!")
+	//	return cached
+	//}
 
 	var (
 		timestamp  = uint64(time.Now().Unix())
@@ -305,21 +315,46 @@ func (miner *Miner) getPending() *newPayloadResult {
 	if miner.chainConfig.IsShanghai(new(big.Int).Add(header.Number, big.NewInt(1)), timestamp) {
 		withdrawal = []*types.Withdrawal{}
 	}
+	var eip1559Params []byte
+	if miner.chainConfig.IsHolocene(timestamp) {
+		eip1559Params = miner.createHoloceneEIP1559Params(header, timestamp)
+	}
 	ret := miner.generateWork(&generateParams{
-		timestamp:   timestamp,
-		forceTime:   false,
-		parentHash:  header.Hash(),
-		coinbase:    miner.config.PendingFeeRecipient,
-		random:      common.Hash{},
-		withdrawals: withdrawal,
-		beaconRoot:  nil,
-		noTxs:       false,
+		timestamp:     timestamp,
+		forceTime:     false,
+		parentHash:    header.Hash(),
+		coinbase:      miner.config.PendingFeeRecipient,
+		random:        common.Hash{},
+		withdrawals:   withdrawal,
+		beaconRoot:    nil,
+		noTxs:         false,
+		eip1559Params: eip1559Params,
 	}, false) // we will never make a witness for a pending block
 	if ret.err != nil {
 		return nil
 	}
-	miner.pending.update(header.Hash(), ret)
+	//miner.pending.update(header.Hash(), ret)
 	return ret
+}
+
+func (miner *Miner) createHoloceneEIP1559Params(parent *types.Header, timestamp uint64) []byte {
+	params := make([]byte, 8)
+
+	// Get the chain config values
+	baseFeeChangeDenominator := miner.chainConfig.BaseFeeChangeDenominator(timestamp)
+	elasticityMultiplier := miner.chainConfig.ElasticityMultiplier()
+
+	binary.BigEndian.PutUint32(params[0:4], 8)
+	// Last 4 bytes: ElasticityMultiplier
+	binary.BigEndian.PutUint32(params[4:8], 2)
+
+	log.Debug("Created Holocene EIP-1559 params",
+		"baseFeeChangeDenominator", baseFeeChangeDenominator,
+		"elasticityMultiplier", elasticityMultiplier,
+		"paramsHex", common.Bytes2Hex(params),
+	)
+
+	return params
 }
 
 func (miner *Miner) Close() {

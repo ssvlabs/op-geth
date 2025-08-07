@@ -4,23 +4,21 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"fmt"
-	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"log"
 	"math/big"
 	"os"
 
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/ethclient"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rpc"
-	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
-
-	spproto "github.com/ethereum/go-ethereum/internal/sp/proto"
 )
 
 const (
-	sendTxRPCMethod = "eth_sendXTransaction"
+	sendTxRPCMethod = "eth_sendRawTransaction"
 	configFile      = "config.yml"
 )
 
@@ -52,7 +50,6 @@ func main() {
 	}
 
 	chainAId := rollupA.GetChainID()
-	chainBId := rollupB.GetChainID()
 
 	privateKeyA := parsePrivateKey(rollupA.PrivateKey)
 	privateKeyB := parsePrivateKey(rollupB.PrivateKey)
@@ -63,31 +60,29 @@ func main() {
 
 	publicKey = privateKeyB.Public()
 	publicKeyECDSA, _ = publicKey.(*ecdsa.PublicKey)
-	addressB := crypto.PubkeyToAddress(*publicKeyECDSA)
+	// addressB := crypto.PubkeyToAddress(*publicKeyECDSA)
 
-	// Create ping-pong parameters
+	// Create bridge parameters
 	sessionId := big.NewInt(12345)
-	pingData := []byte("hello from rollup A")
-	pongData := []byte("hello from rollup B")
+	amount := big.NewInt(100000000000000000)
 
-	// Create a ping transaction (A -> B)
-	pingParams := PingPongParams{
-		ChainSrc:  chainAId,
-		ChainDest: chainBId,
-		Sender:    addressA,
-		Receiver:  addressB,
-		SessionId: sessionId,
-		Data:      pingData,
+	// Create a mint transaction (A -> B)
+	mintParams := MintParams{
+		ChainSrc: chainAId,
+		Receiver: addressA,
+		Amount:   amount,
 	}
+
+	fmt.Println(mintParams)
 
 	nonceA, err := getNonceFor(rollupA.RPC, addressA)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	signedTx1, err := createPingTransaction(pingParams, nonceA, privateKeyA)
+	signedTx1, err := createMintTransaction(mintParams, nonceA, privateKeyA)
 	if err != nil {
-		log.Fatal("Failed to create ping transaction:", err)
+		log.Fatal("Failed to create mint transaction:", err)
 	}
 
 	rlpSignedTx1, err := signedTx1.MarshalBinary()
@@ -95,64 +90,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Create a pong transaction (B -> A)
-	pongParams := PingPongParams{
-		ChainSrc:  chainAId,
-		ChainDest: chainBId,
-		Sender:    addressB,
-		Receiver:  addressA,
-		SessionId: sessionId,
-		Data:      pongData,
-	}
-
-	nonceB, err := getNonceFor(rollupB.RPC, addressB)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	signedTx2, err := createPongTransaction(pongParams, nonceB, privateKeyB)
-	if err != nil {
-		log.Fatal("Failed to create pong transaction:", err)
-	}
-
-	rlpSignedTx2, err := signedTx2.MarshalBinary()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	xtRequest := &spproto.XTRequest{
-		Transactions: []*spproto.TransactionRequest{
-			{
-				ChainId: chainAId.Bytes(),
-				Transaction: [][]byte{
-					rlpSignedTx1,
-				},
-			},
-			{
-				ChainId: chainBId.Bytes(),
-				Transaction: [][]byte{
-					rlpSignedTx2,
-				},
-			},
-		},
-	}
-
-	spMsg := &spproto.Message{
-		SenderId: "client",
-		Payload: &spproto.Message_XtRequest{
-			XtRequest: xtRequest,
-		},
-	}
-
-	encodedPayload, err := proto.Marshal(spMsg)
-	if err != nil {
-		log.Fatalf("Failed to marshal XTRequest: %v", err)
-	}
-
-	fmt.Printf("Successfully encoded ping-pong payload. Size: %d bytes\n", len(encodedPayload))
 	fmt.Printf("Session ID: %d\n", sessionId.Int64())
-	fmt.Printf("Ping data: %s\n", string(pingData))
-	fmt.Printf("Pong data: %s\n", string(pongData))
+	fmt.Printf("mint amount: %d\n", amount.Int64())
 
 	l1Client, err := rpc.Dial(rollupA.RPC)
 	if err != nil {
@@ -160,11 +99,13 @@ func main() {
 	}
 	defer l1Client.Close()
 
-	var resultHashes []common.Hash
-	err = l1Client.CallContext(context.Background(), &resultHashes, sendTxRPCMethod, hexutil.Encode(encodedPayload))
+	var txHash common.Hash
+	raw := hexutil.Encode(rlpSignedTx1) // "0x..."
+	err = l1Client.CallContext(context.Background(), &txHash, sendTxRPCMethod, raw)
 	if err != nil {
 		log.Fatalf("RPC call failed: %v", err)
 	}
+	fmt.Println("tx hash:", txHash.Hex())
 }
 
 func loadConfigFromYAML(filename string) Config {

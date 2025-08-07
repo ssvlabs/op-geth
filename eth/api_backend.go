@@ -586,12 +586,32 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 	}
 
 	chainID := b.ChainConfig().ChainID
-	mailboxAddrs := b.GetMailboxAddresses()
+
+	// Generate unique ID for this xTRequest (for 2PC tracking)
+	xtRequestId := fmt.Sprintf("xt_%d_%s", time.Now().UnixNano(), from)
+	log.Info("[SSV] Processing xTRequest", "id", xtRequestId, "senderID", from, "xtID", xtID.Hex())
+
+	// Process each transaction for cross-rollup coordination
+	localTxs := make([]*sptypes.TransactionRequest, 0)
+	for _, txReq := range xtReq.Transactions {
+		txChainID := new(big.Int).SetBytes(txReq.ChainId)
+
+		if txChainID.Cmp(chainID) == 0 {
+			localTxs = append(localTxs, txReq)
+		} else {
+			log.Info("[SSV] Received cross-chain transaction", "chainID", txChainID, "senderID", from, "txCount", len(txReq.Transaction))
+		}
+	}
+	// Only proceed with coordination if we have local transactions
+	if len(localTxs) == 0 {
+		log.Info("[SSV] No local transactions to process", "xtID", xtID.Hex())
+		return nil, nil
+	}
 
 	sequencerAddr := crypto.PubkeyToAddress(b.sequencerKey.PublicKey)
-	processor := NewMailboxProcessor(
+	mailboxProcessor := NewMailboxProcessor(
 		b.ChainConfig().ChainID.Uint64(),
-		mailboxAddrs,
+		b.GetMailboxAddresses(),
 		b.sequencerClients,
 		b.coordinator,
 		b.sequencerKey,
@@ -599,20 +619,50 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 		b,
 	)
 
-	// Generate unique ID for this xTRequest (for 2PC tracking)
-	xtRequestId := fmt.Sprintf("xt_%d_%s", time.Now().UnixNano(), from)
-	log.Info("[SSV] Processing xTRequest", "id", xtRequestId, "senderID", from, "xtID", xtID.Hex())
+	var newFulfilledDeps []CrossRollupDependency
+	historicalSentCIRCMsgs := make([]CrossRollupMessage, 0)
+	historicalCIRCDeps := make([]CrossRollupDependency, 0)
 
-	// Process each transaction for cross-rollup coordination
-	var coordinationStates []*SimulationState
-	var hasLocalTx bool
+	startNonce, err := b.GetPoolNonce(ctx, sequencerAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get nonce: %v", err)
+	}
 
-	for _, txReq := range xtReq.Transactions {
-		txChainID := new(big.Int).SetBytes(txReq.ChainId)
+	// Populate mempool with payload txs
+	//for _, txReq := range localTxs {
+	//	for _, txBytes := range txReq.Transaction {
+	//		tx := new(types.Transaction)
+	//		if err := tx.UnmarshalBinary(txBytes); err != nil {
+	//			return nil, err
+	//		}
+	//		b.poolPayloadTx(tx) // user tx
+	//	}
+	//}
 
-		if txChainID.Cmp(chainID) == 0 {
-			hasLocalTx = true
-			log.Info("[SSV] Processing local transaction", "senderID", from, "chainID", txChainID, "txCount", len(txReq.Transaction))
+	sequencerNonce := startNonce + 1 // preserve startNonce for clear() tx
+	for {
+		// Populate mempool with new putInbox txs
+		for _, dep := range newFulfilledDeps {
+			var putInboxTx *types.Transaction
+			putInboxTx, err = mailboxProcessor.createPutInboxTx(dep, sequencerNonce)
+			if err != nil {
+				return nil, fmt.Errorf("failed to createAndSubmitPutInboxTx: %v", err)
+			}
+
+			err = b.SubmitSequencerTransaction(ctx, putInboxTx, true)
+			if err != nil {
+				return nil, fmt.Errorf("failed to SubmitSequencerTransaction: %v", "txHash", putInboxTx.Hash().Hex(), err)
+			}
+
+			sequencerNonce++
+		}
+
+		historicalCIRCDeps = append(historicalCIRCDeps, newFulfilledDeps...) // TODO: better refactor: use map[] or create new struct
+		newFulfilledDeps = make([]CrossRollupDependency, 0)                  // reset fullfilled dependencies
+
+		var coordinationStates []*SimulationState
+		for _, txReq := range localTxs {
+			log.Info("[SSV] Processing local transaction", "senderID", from, "chainID", b.ChainConfig().ChainID.String(), "txCount", len(txReq.Transaction))
 
 			// Process each transaction
 			for _, txBytes := range txReq.Transaction {
@@ -621,13 +671,18 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 					return nil, err
 				}
 
-				b.sequencerTxMutex.Lock()
-				b.pendingSequencerTxs = append(b.pendingSequencerTxs, tx)
-				log.Info("[SSV] Added original transaction to pendingSequencerTxs", "hash", tx.Hash().Hex(), "count", len(b.pendingSequencerTxs))
-				b.sequencerTxMutex.Unlock()
+				// SIMULATE
+				traceResult, err := b.SimulateTransaction(ctx, tx, rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber))
+				if err != nil {
+					log.Error("[SSV] Cross-chain transaction simulation failed", "txHash", tx.Hash().Hex(), "error", err)
+					return nil, fmt.Errorf("simulation failed: %w", err)
+				}
 
-				// Analyze transaction for cross-rollup dependencies
-				simState, err := processor.ProcessTransaction(ctx, b, tx, xtRequestId)
+				log.Info("[SSV] Transaction simulated", "txHash", tx.Hash().Hex())
+
+				// ANALYZE
+				log.Info("[SSV] Analyzing cross-rollup transaction", "txHash", tx.Hash().Hex(), "xtRequestId", xtRequestId)
+				simState, err := mailboxProcessor.AnalyzeTransaction(traceResult, historicalSentCIRCMsgs, historicalCIRCDeps, tx.Hash().Hex())
 				if err != nil {
 					log.Error("[SSV] Failed to process transaction", "error", err, "txHash", tx.Hash().Hex())
 					// Vote abort if processing fails
@@ -636,96 +691,100 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 				}
 				coordinationStates = append(coordinationStates, simState)
 
-				log.Info("[SSV] Transaction processed",
-					"txHash", tx.Hash().Hex(),
-					"requiresCoordination", simState.RequiresCoordination,
-					"dependencies", len(simState.Dependencies),
-					"outbound", len(simState.OutboundMessages))
+				log.Info("[SSV] Transaction analyzed", "txHash", tx.Hash().Hex(), "requiresCoordination", simState.RequiresCoordination(), "dependencies", len(simState.Dependencies), "outbound", len(simState.OutboundMessages))
 			}
+		}
+
+		logSummary(xtRequestId, xtID, coordinationStates)
+
+		// successful when EVM does not end up with reverted()
+		if successful(coordinationStates) {
+			_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), true)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		if requiresCoordination(coordinationStates) {
+			// Handle cross-rollup coordination for each transaction that needs it
+			for _, state := range coordinationStates {
+				if state.RequiresCoordination() {
+					var sentOutboundMsgs []CrossRollupMessage
+					var fulFilledDeps []CrossRollupDependency
+					sentOutboundMsgs, fulFilledDeps, err = mailboxProcessor.handleCrossRollupCoordination(ctx, state, xtID)
+					if err != nil {
+						log.Error("[SSV] Cross-rollup coordination failed", "error", err, "xtID", xtID.Hex())
+						// Vote abort if coordination fails
+						_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), false)
+						return nil, err
+					}
+
+					newFulfilledDeps = append(newFulfilledDeps, fulFilledDeps...)
+					historicalSentCIRCMsgs = append(historicalSentCIRCMsgs, sentOutboundMsgs...)
+				}
+			}
+
+			log.Info("[SSV] Cross-rollup coordination phase completed", "xtID", xtID.Hex())
 		} else {
-			log.Info("[SSV] Received cross-chain transaction", "chainID", txChainID, "senderID", from, "txCount", len(txReq.Transaction))
+			log.Info("[SSV] No coordination required, voting commit", "xtID", xtID.Hex())
+			_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), true)
+			if err != nil {
+				return nil, err
+			}
+			return nil, nil
+		}
+	}
+}
+
+func successful(coordinationStates []*SimulationState) bool {
+	for _, s := range coordinationStates {
+		if !s.OriginalSuccess {
+			return false
 		}
 	}
 
-	// Only proceed with coordination if we have local transactions
-	if !hasLocalTx {
-		log.Info("[SSV] No local transactions to process", "xtID", xtID.Hex())
-		return nil, nil
-	}
+	return true
+}
 
-	// Check if any coordination is required
+func ToString(success bool) string {
+	if success {
+		return "successful"
+	}
+	return "failed"
+}
+
+func logSummary(xtRequestId string, xtID *sptypes.XtID, coordinationStates []*SimulationState) {
 	totalDeps := 0
 	totalOutbound := 0
-	coordRequired := false
+	successfulStates := 0
 
 	for _, state := range coordinationStates {
 		totalDeps += len(state.Dependencies)
 		totalOutbound += len(state.OutboundMessages)
-		if state.RequiresCoordination {
-			coordRequired = true
+		if state.OriginalSuccess {
+			successfulStates++
 		}
 	}
 
 	log.Info("[SSV] xTRequest coordination summary",
 		"id", xtRequestId,
 		"xtID", xtID.Hex(),
-		"requiresCoordination", coordRequired,
+		"requiresCoordination", requiresCoordination(coordinationStates),
 		"totalDependencies", totalDeps,
-		"totalOutbound", totalOutbound)
+		"totalOutbound", totalOutbound,
+		"successfulStates", successfulStates,
+		"totalStates", len(coordinationStates),
+	)
+}
 
-	if coordRequired {
-		// Handle cross-rollup coordination for each transaction that needs it
-		for _, state := range coordinationStates {
-			if state.RequiresCoordination {
-				startNonce, err := b.GetPoolNonce(ctx, sequencerAddr)
-				if err != nil {
-					return nil, fmt.Errorf("failed to get nonce: %v", err)
-				}
-
-				// !!! preserving "startNonce" value for "clear" transaction
-
-				if err := processor.handleCrossRollupCoordination(ctx, state, xtID, startNonce+1); err != nil {
-					log.Error("[SSV] Cross-rollup coordination failed", "error", err, "xtID", xtID.Hex())
-					// Vote abort if coordination fails
-					_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), false)
-					return nil, err
-				}
-			}
-		}
-
-		// Re-simulate after mailbox population
-		log.Info("[SSV] Cross-rollup coordination completed, starting re-simulation", "xtID", xtID.Hex())
-
-		success, err := b.reSimulateAfterMailboxPopulation(ctx, xtReq, xtID, coordinationStates)
-		if err != nil {
-			log.Error("[SSV] Re-simulation failed with error", "error", err, "xtID", xtID.Hex())
-			_, voteErr := b.coordinator.RecordVote(xtID, chainID.Text(16), false)
-			if voteErr != nil {
-				log.Error("[SSV] Failed to record abort vote", "error", voteErr)
-			}
-			return nil, err
-		}
-
-		if success {
-			log.Info("[SSV] Re-simulation successful, voting commit", "xtID", xtID.Hex())
-			_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), true)
-		} else {
-			log.Warn("[SSV] Re-simulation failed, voting abort", "xtID", xtID.Hex())
-			_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), false)
-		}
-
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		log.Info("[SSV] No coordination required, voting commit", "xtID", xtID.Hex())
-		_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), true)
-		if err != nil {
-			return nil, err
+func requiresCoordination(coordinationStates []*SimulationState) bool {
+	for _, s := range coordinationStates {
+		if s.RequiresCoordination() {
+			return true
 		}
 	}
 
-	return nil, nil
+	return false
 }
 
 // handleDecided processes a Decided message received from the shared publisher.
@@ -780,46 +839,70 @@ func (b *EthAPIBackend) VoteCallbackFn(chainID *big.Int) spconsensus.VoteFn {
 	}
 }
 
-// SimulateTransaction simulates the execution of a transaction in the context of a specific block.
-// SSV
-func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*core.ExecutionResult, error) {
-	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
-	if err != nil {
-		return nil, err
-	}
-
-	snapshot := stateDB.Snapshot()
-	defer stateDB.RevertToSnapshot(snapshot)
-
-	signer := types.MakeSigner(b.ChainConfig(), header.Number, header.Time)
-	msg, err := core.TransactionToMessage(tx, signer, header.BaseFee)
-	if err != nil {
-		return nil, err
-	}
-
-	blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
-	evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), *b.eth.blockchain.GetVMConfig())
-
-	result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(msg.GasLimit))
-	if err != nil {
-		return nil, err
-	}
-
-	return result, nil
-}
-
 // SimulateTransactionWithSSVTrace simulates a transaction and returns SSV trace data.
 // SSV
-func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
+//func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
+//	timer := time.Now()
+//	defer func() {
+//		log.Info("[SSV] Simulated transaction with SSV trace", "txHash", tx.Hash().Hex(), "duration", time.Since(timer))
+//	}()
+//
+//	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	snapshot := stateDB.Snapshot()
+//	defer stateDB.RevertToSnapshot(snapshot)
+//
+//	signer := types.MakeSigner(b.ChainConfig(), header.Number, header.Time)
+//	msg, err := core.TransactionToMessage(tx, signer, header.BaseFee)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	mailboxAddresses := b.GetMailboxAddresses()
+//	tracer := native.NewSSVTracer(mailboxAddresses)
+//
+//	vmConfig := vm.Config{}
+//	if b.eth.blockchain.GetVMConfig() != nil {
+//		vmConfig = *b.eth.blockchain.GetVMConfig()
+//	}
+//	vmConfig.Tracer = tracer.Hooks()
+//	vmConfig.EnablePreimageRecording = true
+//
+//	blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
+//	evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), vmConfig)
+//
+//	result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(header.GasLimit))
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	traceResult := tracer.GetTraceResult()
+//	traceResult.ExecutionResult = result
+//
+//	return traceResult, nil
+//}
+
+func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
 	timer := time.Now()
 	defer func() {
 		log.Info("[SSV] Simulated transaction with SSV trace", "txHash", tx.Hash().Hex(), "duration", time.Since(timer))
 	}()
 
+	//b.poolPayloadTx(tx)
+
 	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
 	if err != nil {
 		return nil, err
 	}
+
+	log.Info("[DEBUG] Block info",
+		"requestedBlock", blockNrOrHash,
+		"returnedBlockNumber", header.Number,
+		"returnedBlockHash", header.Hash(),
+		"txIndex", stateDB.TxIndex())
 
 	snapshot := stateDB.Snapshot()
 	defer stateDB.RevertToSnapshot(snapshot)
@@ -841,9 +924,15 @@ func (b *EthAPIBackend) SimulateTransactionWithSSVTrace(ctx context.Context, tx 
 	vmConfig.EnablePreimageRecording = true
 
 	blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
+
+	txContext := core.NewEVMTxContext(msg)
+
 	evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), vmConfig)
 
-	result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(header.GasLimit))
+	evm.SetTxContext(txContext)
+
+	gasPool := new(core.GasPool).AddGas(header.GasLimit)
+	result, err := core.ApplyMessage(evm, msg, gasPool)
 	if err != nil {
 		return nil, err
 	}
@@ -864,14 +953,14 @@ func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *type
 
 	if isPutInbox {
 		b.AddPendingPutInboxTx(tx)
-		log.Info("[SSV] Added validated putInbox transaction", "txHash", tx.Hash().Hex())
 	} else {
 		b.SetPendingClearTx(tx)
-		log.Info("[SSV] Set validated clear transaction", "txHash", tx.Hash().Hex())
+		log.Info("[SSV] Set clear transaction to mempool", "txHash", tx.Hash().Hex())
 	}
 
 	// FIXME: this should fail for now (invalid sender: invalid transaction v, r, s value)
-	return b.sendTx(ctx, tx)
+	//return b.sendTx(ctx, tx)
+	return nil
 }
 
 // GetMailboxAddresses returns the list of mailbox contract addresses to watch.package ethapi
@@ -1247,7 +1336,7 @@ func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(ctx context.Context, xt
 		"transactions", len(xtReq.Transactions))
 
 	// Wait for putInbox transactions to be processed
-	if err := b.waitForPutInboxTransactionsToBeProcessed(ctx, xtID); err != nil {
+	if err := b.waitForPutInboxTransactionsToBeProcessed(); err != nil {
 		log.Error("[SSV] Failed waiting for putInbox transactions", "error", err, "xtID", xtID.Hex())
 		return false, err
 	}
@@ -1319,7 +1408,7 @@ func (b *EthAPIBackend) reSimulateTransaction(ctx context.Context, tx *types.Tra
 		"xtID", xtID.Hex())
 
 	// Simulate with SSV tracing to detect mailbox interactions
-	traceResult, err := b.SimulateTransactionWithSSVTrace(ctx, tx, blockNrOrHash)
+	traceResult, err := b.SimulateTransaction(ctx, tx, blockNrOrHash)
 	if err != nil {
 		log.Error("[SSV] Transaction simulation with trace failed",
 			"txHash", tx.Hash().Hex(),
@@ -1364,7 +1453,7 @@ func (b *EthAPIBackend) reSimulateTransaction(ctx context.Context, tx *types.Tra
 
 // waitForPutInboxTransactionsToBeProcessed waits for putInbox transactions to be included
 // SSV
-func (b *EthAPIBackend) waitForPutInboxTransactionsToBeProcessed(ctx context.Context, xtID *sptypes.XtID) error {
+func (b *EthAPIBackend) waitForPutInboxTransactionsToBeProcessed() error {
 	putInboxTxs := b.GetPendingPutInboxTxs()
 	if len(putInboxTxs) == 0 {
 		return nil
@@ -1380,10 +1469,11 @@ func (b *EthAPIBackend) waitForPutInboxTransactionsToBeProcessed(ctx context.Con
 			for {
 				select {
 				case <-timeout:
+					log.Error("timed out waiting for putInbox transaction appearance in pool")
 					return // This will trigger the defer and stop the ticker
 				case <-ticker.C:
 					if poolTx := b.GetPoolTransaction(tx.Hash()); poolTx != nil {
-						log.Info("[SSV] putInbox transaction in pool", "hash", tx.Hash().Hex())
+						log.Info("[SSV] found putInbox transaction in pool", "hash", tx.Hash().Hex())
 						return // This will trigger the defer and stop the ticker
 					}
 				}
@@ -1392,4 +1482,12 @@ func (b *EthAPIBackend) waitForPutInboxTransactionsToBeProcessed(ctx context.Con
 	}
 
 	return nil
+}
+
+func (b *EthAPIBackend) poolPayloadTx(tx *types.Transaction) {
+	b.sequencerTxMutex.Lock()
+	defer b.sequencerTxMutex.Unlock()
+
+	b.pendingSequencerTxs = append(b.pendingSequencerTxs, tx)
+	log.Info("[SSV] Added payload transaction to pendingSequencerTxs", "hash", tx.Hash().Hex(), "count", len(b.pendingSequencerTxs))
 }

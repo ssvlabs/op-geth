@@ -160,6 +160,8 @@ func (miner *Miner) generateWork(params *generateParams, witness bool) *newPaylo
 		if err := backend.PrepareSequencerTransactionsForBlock(work.rpcCtx); err != nil {
 			log.Error("[SSV] Failed to prepare sequencer transactions", "err", err)
 		}
+	} else {
+		log.Error("[SSV] backend API doesnt support BackendWithSequencerTransactions", "err", err)
 	}
 
 	for _, tx := range params.txs {

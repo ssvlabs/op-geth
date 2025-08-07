@@ -95,7 +95,7 @@ type Backend interface {
 
 	// Shared publisher API
 	HandleSPMessage(ctx context.Context, msg *sptypes.Message) ([]common.Hash, error)
-	SimulateTransactionWithSSVTrace(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error)
+	SimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error)
 	// GetMailboxAddresses returns the list of mailbox contract addresses to watch
 	GetMailboxAddresses() []common.Address
 	//ForwardXTxs(ctx context.Context, xTxs []*xt.TransactionRequest) error

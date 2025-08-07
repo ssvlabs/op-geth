@@ -2,8 +2,11 @@ package native
 
 import (
 	"encoding/json"
+	"fmt"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/core/ssv"
 	"math/big"
+	"strings"
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -17,6 +20,8 @@ import (
 
 const RollupAMailBoxAddr = "0x33C061304de440B89BC829bD4dC4eF688E5d1Cef"
 const RollupBMailBoxAddr = "0xbB6A1eCF93641122E5c76b6978bb4B7304879Dd5"
+
+//const mailboxABI = `[{"type":"constructor","inputs":[{"name":"_coordinator","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"clear","inputs":[],"outputs":[],"stateMutability":"nonpayable"},{"type":"function","name":"coordinator","inputs":[],"outputs":[{"name":"","type":"address","internalType":"address"}],"stateMutability":"view"},{"type":"function","name":"getKey","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"stateMutability":"pure"},{"type":"function","name":"inbox","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"keyListInbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"keyListOutbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"outbox","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"putInbox","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"function","name":"read","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"write","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"error","name":"InvalidCoordinator","inputs":[]}]`
 
 func init() {
 	tracers.DefaultDirectory.Register("ssvTracer", newSSVTracer, false)
@@ -72,6 +77,51 @@ func (t *SSVTracer) OnTxEnd(_ *types.Receipt, err error) {
 	}
 }
 
+func decodeTransactionInput(contractABIJSON string, input []byte) {
+	if len(input) == 0 {
+		fmt.Println("Input is empty. Likely a simple Ether transfer.")
+		return
+	}
+
+	parsedABI, err := abi.JSON(strings.NewReader(contractABIJSON))
+	if err != nil {
+		fmt.Println("Err", err)
+	}
+
+	if len(input) < 4 {
+		fmt.Println("Input is too short to contain a function selector.")
+		return
+	}
+	methodID := input[:4]
+	packedArgs := input[4:]
+
+	method, err := parsedABI.MethodById(methodID)
+	if err != nil {
+		fmt.Println("Err", err)
+		return
+	}
+
+	fmt.Printf("Method Name: %s\n", method.Name)
+
+	args, err := method.Inputs.Unpack(packedArgs)
+	if err != nil {
+		fmt.Println("Err", err)
+		return
+	}
+
+	fmt.Println("Decoded Arguments:")
+	for i, arg := range args {
+		fmt.Printf("  - Arg %d (%s): %v\n", i, method.Inputs[i].Name, arg)
+
+		switch v := arg.(type) {
+		case *big.Int:
+			fmt.Printf("    (Value as big.Int: %s)\n", v.String())
+		case common.Address:
+			fmt.Printf("    (Value as Address: %s)\n", v.Hex())
+		}
+	}
+}
+
 func (t *SSVTracer) OnEnter(depth int, typ byte, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
 	log.Info("[SSV] OnEnter called", "depth", depth, "type", vm.OpCode(typ).String(), "from", from.Hex(), "to", to.Hex(), "gas", gas, "value", value)
 
@@ -85,6 +135,8 @@ func (t *SSVTracer) OnEnter(depth int, typ byte, from common.Address, to common.
 
 	// Track calls to watched addresses, including internal calls
 	if t.watchedAddresses[to] {
+		//decodeTransactionInput(mailboxABI, input)
+
 		op := ssv.SSVOperation{
 			Type:     vm.OpCode(typ),
 			Address:  to,

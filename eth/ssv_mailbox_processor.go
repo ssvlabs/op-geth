@@ -15,7 +15,6 @@ import (
 	spconsensus "github.com/ethereum/go-ethereum/internal/sp/consensus"
 	sptypes "github.com/ethereum/go-ethereum/internal/sp/proto"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/rpc"
 	"math/big"
 	"strconv"
 	"strings"
@@ -27,7 +26,6 @@ const mailboxABI = `[{"type":"constructor","inputs":[{"name":"_coordinator","typ
 type MailboxCall struct {
 	ChainSrc  *big.Int
 	ChainDest *big.Int
-	Sender    common.Address
 	Receiver  common.Address
 	SessionId *big.Int
 	Data      []byte
@@ -39,12 +37,12 @@ type MailboxCall struct {
 type CrossRollupDependency struct {
 	SourceChainID uint64
 	DestChainID   uint64
-	Sender        common.Address
 	Receiver      common.Address
 	SessionID     *big.Int
 	Label         []byte
 	RequiredData  bool
 	IsInboxRead   bool
+	Data          []byte // Fulfilled by CIRCMessage
 }
 
 type CrossRollupMessage struct {
@@ -60,10 +58,13 @@ type CrossRollupMessage struct {
 }
 
 type SimulationState struct {
-	OriginalSuccess      bool
-	Dependencies         []CrossRollupDependency
-	OutboundMessages     []CrossRollupMessage
-	RequiresCoordination bool
+	OriginalSuccess  bool
+	Dependencies     []CrossRollupDependency
+	OutboundMessages []CrossRollupMessage
+}
+
+func (s SimulationState) RequiresCoordination() bool {
+	return len(s.Dependencies) > 0 || len(s.OutboundMessages) > 0
 }
 
 type MailboxProcessor struct {
@@ -88,40 +89,37 @@ func NewMailboxProcessor(chainID uint64, mailboxAddrs []common.Address, sequence
 	}
 }
 
-func (mp *MailboxProcessor) ProcessTransaction(ctx context.Context, backend interface{}, tx *types.Transaction, xtRequestId string) (*SimulationState, error) {
-	log.Info("[SSV] Processing cross-rollup transaction", "txHash", tx.Hash().Hex(), "xtRequestId", xtRequestId)
-
-	simState, err := mp.analyzeTransaction(ctx, backend, tx)
+func (mp *MailboxProcessor) AnalyzeTransaction(traceResult *ssv.SSVTraceResult, sentOutboundMsgs []CrossRollupMessage, fullFilledDeps []CrossRollupDependency, txHashHex string) (*SimulationState, error) {
+	simState, err := mp.analyzeTransaction(traceResult, sentOutboundMsgs, fullFilledDeps, txHashHex)
 	if err != nil {
 		return nil, fmt.Errorf("failed to analyze transaction: %w", err)
 	}
 
-	if !simState.RequiresCoordination {
-		log.Info("[SSV] Transaction requires no cross-rollup coordination", "txHash", tx.Hash().Hex())
+	if !simState.RequiresCoordination() {
+		log.Info("[SSV] Transaction requires no cross-rollup coordination", "txHash", txHashHex)
 		return simState, nil
 	}
 
 	log.Info("[SSV] Transaction requires cross-rollup coordination",
-		"txHash", tx.Hash().Hex(),
+		"txHash", txHashHex,
 		"dependencies", len(simState.Dependencies),
 		"outbound", len(simState.OutboundMessages))
 
 	return simState, nil
 }
 
-func (mp *MailboxProcessor) analyzeTransaction(ctx context.Context, backend interface{}, tx *types.Transaction) (*SimulationState, error) {
-	blockNrOrHash := rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
-
-	type traceBackend interface {
-		SimulateTransactionWithSSVTrace(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error)
+func parseCallType(call *MailboxCall) string {
+	if call.IsRead {
+		return "read"
+	}
+	if call.IsWrite {
+		return "write"
 	}
 
-	traceResult, err := backend.(traceBackend).SimulateTransactionWithSSVTrace(ctx, tx, blockNrOrHash)
-	if err != nil {
-		log.Error("[SSV] Cross-chain transaction simulation failed", "txHash", tx.Hash().Hex(), "error", err)
-		return nil, fmt.Errorf("simulation failed: %w", err)
-	}
+	return "unknown"
+}
 
+func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, sentOutboundMsgs []CrossRollupMessage, fullfilledDeps []CrossRollupDependency, txHashHex string) (*SimulationState, error) {
 	simState := &SimulationState{
 		OriginalSuccess:  traceResult.ExecutionResult.Err == nil,
 		Dependencies:     make([]CrossRollupDependency, 0),
@@ -129,13 +127,13 @@ func (mp *MailboxProcessor) analyzeTransaction(ctx context.Context, backend inte
 	}
 
 	log.Info("[SSV] Analyzing transaction trace",
-		"txHash", tx.Hash().Hex(),
+		"txHash", txHashHex,
 		"success", simState.OriginalSuccess,
 		"operations", len(traceResult.Operations))
 
 	if traceResult.ExecutionResult.Err != nil {
 		log.Warn("[SSV] Cross-chain transaction reverted during simulation",
-			"txHash", tx.Hash().Hex(),
+			"txHash", txHashHex,
 			"error", traceResult.ExecutionResult.Err,
 			"revert", traceResult.ExecutionResult.Revert(),
 			"continuing_analysis", true)
@@ -161,29 +159,19 @@ func (mp *MailboxProcessor) analyzeTransaction(ctx context.Context, backend inte
 				continue
 			}
 
-			log.Info("[SSV] Parsed mailbox call",
-				"isRead", call.IsRead,
-				"isWrite", call.IsWrite,
+			log.Info(fmt.Sprintf("[SSV] Parsed mailbox %s call", parseCallType(call)),
 				"chainSrc", call.ChainSrc,
 				"chainDest", call.ChainDest,
-				"sender", call.Sender.Hex(),
 				"receiver", call.Receiver.Hex(),
 				"sessionId", call.SessionId)
 
-			// Check for cross-rollup read dependency
+			// mailbox.read(...)
 			if call.IsRead {
-				log.Info("[SSV] Processing read operation",
-					"chainSrc", call.ChainSrc.Uint64(),
-					"chainDest", call.ChainDest.Uint64(),
-					"localChainID", mp.chainID,
-					"shouldCreateDep", call.ChainDest.Uint64() != mp.chainID)
-
-				// If we're reading from a different source chain, this is a dependency
-				if call.ChainDest.Uint64() != mp.chainID {
+				// If we're reading (chainDest  == chainID) this is a dependency
+				if awaitRead(call, mp.chainID) {
 					dep := CrossRollupDependency{
-						SourceChainID: call.ChainDest.Uint64(),
-						DestChainID:   mp.chainID,
-						Sender:        call.Sender,
+						SourceChainID: call.ChainSrc.Uint64(),
+						DestChainID:   call.ChainDest.Uint64(),
 						Receiver:      call.Receiver,
 						SessionID:     call.SessionId,
 						Label:         call.Label,
@@ -191,26 +179,32 @@ func (mp *MailboxProcessor) analyzeTransaction(ctx context.Context, backend inte
 						IsInboxRead:   true,
 					}
 
-					simState.Dependencies = append(simState.Dependencies, dep)
-					simState.RequiresCoordination = true
+					if !containsDependency(fullfilledDeps, dep) {
+						simState.Dependencies = append(simState.Dependencies, dep)
 
-					log.Info("[SSV] Detected cross-rollup read dependency",
-						"sourceChain", dep.SourceChainID,
-						"destChain", dep.DestChainID,
-						"sender", dep.Sender.Hex(),
-						"receiver", dep.Receiver.Hex(),
-						"sessionId", dep.SessionID)
+						log.Info("[SSV] Detected await read",
+							"chainSrc", dep.SourceChainID,
+							"chainDest", dep.DestChainID,
+							"receiver", dep.Receiver.Hex(),
+							"sessionId", dep.SessionID)
+					} else {
+						log.Info("[SSV] Ignore read call: already fulfilled",
+							"chainSrc", call.ChainSrc.Uint64(),
+							"chainDest", call.ChainDest.Uint64(),
+							"localChain", mp.chainID)
+					}
 				} else {
-					log.Debug("[SSV] Local chain read, no dependency needed",
+					log.Info("[SSV] Ignore read call: chainDest is another chain",
 						"chainSrc", call.ChainSrc.Uint64(),
+						"chainDest", call.ChainDest.Uint64(),
 						"localChain", mp.chainID)
 				}
 			}
 
-			// Check for cross-rollup write (outbound message)
+			// mailbox.write(...)
 			if call.IsWrite {
-				// If we're writing to a different destination chain, this is an outbound message
-				if call.ChainDest.Uint64() != mp.chainID {
+				// If we're writing (chainSrc == chainID) this is an outbound message
+				if mustWrite(call, mp.chainID) {
 					msg := CrossRollupMessage{
 						SourceChainID: call.ChainSrc.Uint64(),
 						DestChainID:   call.ChainDest.Uint64(),
@@ -223,31 +217,36 @@ func (mp *MailboxProcessor) analyzeTransaction(ctx context.Context, backend inte
 						IsOutboxWrite: true,
 					}
 
-					simState.OutboundMessages = append(simState.OutboundMessages, msg)
-					simState.RequiresCoordination = true
+					if !alreadySent(sentOutboundMsgs, msg) {
+						simState.OutboundMessages = append(simState.OutboundMessages, msg)
 
-					log.Info("[SSV] Detected cross-rollup write (outbound message)",
-						"sourceChain", msg.SourceChainID,
-						"destChain", msg.DestChainID,
-						"sender", msg.Sender.Hex(),
-						"receiver", msg.Receiver.Hex(),
-						"sessionId", msg.SessionID,
-						"dataLen", len(msg.Data))
+						log.Info("[SSV] Detected must write",
+							"chainSrc", msg.SourceChainID,
+							"chainDest", msg.DestChainID,
+							"sender", msg.Sender.Hex(),
+							"receiver", msg.Receiver.Hex(),
+							"sessionId", msg.SessionID,
+							"dataLen", len(msg.Data))
+					} else {
+						log.Info("[SSV] Ignore write call: already sent",
+							"chainSrc", call.ChainSrc.Uint64(),
+							"chainDest", call.ChainDest.Uint64(),
+							"localChain", mp.chainID)
+					}
 				} else {
-					log.Debug("[SSV] Local chain write, no cross-rollup message needed",
+					log.Info("[SSV] Ignore write call: chainSrc is another chain",
+						"chainSrc", call.ChainSrc.Uint64(),
 						"chainDest", call.ChainDest.Uint64(),
 						"localChain", mp.chainID)
 				}
 			}
 		} else if op.Type != vm.CALL && op.Type != vm.STATICCALL {
-			log.Debug("[SSV] Ignoring non-CALL/STATICCALL operation to mailbox",
-				"type", op.Type.String(),
-				"address", op.Address.Hex())
+			log.Debug("[SSV] Ignoring non-CALL/STATICCALL operation to mailbox", "type", op.Type.String(), "address", op.Address.Hex())
 		}
 	}
 
 	log.Info("[SSV] Transaction analysis complete",
-		"txHash", tx.Hash().Hex(),
+		"txHash", txHashHex,
 		"requiresCoordination", simState.RequiresCoordination,
 		"dependencies", len(simState.Dependencies),
 		"outboundMessages", len(simState.OutboundMessages))
@@ -256,8 +255,8 @@ func (mp *MailboxProcessor) analyzeTransaction(ctx context.Context, backend inte
 	for i, dep := range simState.Dependencies {
 		log.Info("[SSV] Dependency details",
 			"index", i,
-			"sourceChain", dep.SourceChainID,
-			"destChain", dep.DestChainID,
+			"chainSrc", dep.SourceChainID,
+			"chainDest", dep.DestChainID,
 			"sessionId", dep.SessionID,
 			"label", string(dep.Label))
 	}
@@ -266,14 +265,58 @@ func (mp *MailboxProcessor) analyzeTransaction(ctx context.Context, backend inte
 	for i, msg := range simState.OutboundMessages {
 		log.Info("[SSV] Outbound message details",
 			"index", i,
-			"sourceChain", msg.SourceChainID,
-			"destChain", msg.DestChainID,
+			"chainSrc", msg.SourceChainID,
+			"chainDest", msg.DestChainID,
 			"sessionId", msg.SessionID,
 			"dataLen", len(msg.Data),
 			"label", string(msg.Label))
 	}
 
 	return simState, nil
+}
+
+func alreadySent(msgs []CrossRollupMessage, msg CrossRollupMessage) bool {
+	for _, m := range msgs {
+		if m.SourceChainID == msg.SourceChainID &&
+			m.DestChainID == msg.DestChainID &&
+			m.Sender == msg.Sender &&
+			m.Receiver == msg.Receiver &&
+			m.SessionID.Cmp(msg.SessionID) == 0 &&
+			bytes.Equal(m.Data, msg.Data) &&
+			bytes.Equal(m.Label, msg.Label) &&
+			m.MessageType == msg.MessageType &&
+			m.IsOutboxWrite == msg.IsOutboxWrite {
+			return true
+		}
+	}
+
+	return false
+}
+
+func containsDependency(deps []CrossRollupDependency, dep CrossRollupDependency) bool {
+	for _, d := range deps {
+		if d.SourceChainID == dep.SourceChainID &&
+			d.DestChainID == dep.DestChainID &&
+			d.Receiver == dep.Receiver &&
+			d.SessionID.Cmp(dep.SessionID) == 0 &&
+			bytes.Equal(d.Label, dep.Label) &&
+			d.RequiredData == dep.RequiredData &&
+			d.IsInboxRead == dep.IsInboxRead {
+			return true
+		}
+	}
+
+	return false
+}
+
+// Check whether our sequencer must write
+func mustWrite(call *MailboxCall, chainID uint64) bool {
+	return call.ChainSrc.Uint64() == chainID && call.ChainDest.Uint64() != chainID
+}
+
+// Checker whether our sequencer should wait for other sequencer "mustWrite"
+func awaitRead(call *MailboxCall, chainID uint64) bool {
+	return call.ChainSrc.Uint64() != chainID && call.ChainDest.Uint64() == chainID
 }
 
 func (mp *MailboxProcessor) parseMailboxCall(callData []byte) (*MailboxCall, error) {
@@ -344,18 +387,18 @@ func (mp *MailboxProcessor) parseWriteCall(data []byte) (*MailboxCall, error) {
 	}, nil
 }
 
-func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, simState *SimulationState, xtID *sptypes.XtID, startNonce uint64) error {
-	log.Info("[SSV] Starting cross-rollup coordination", "xtID", xtID.Hex())
+func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, simState *SimulationState, xtID *sptypes.XtID) ([]CrossRollupMessage, []CrossRollupDependency, error) {
+	log.Info("[SSV] Starting CIRCMessage exchange", "xtID", xtID.Hex())
 
+	sentMsgs := make([]CrossRollupMessage, 0)
 	// Send outbound CIRC messages
 	for _, outMsg := range simState.OutboundMessages {
 		if err := mp.sendCIRCMessage(ctx, &outMsg, xtID); err != nil {
-			return fmt.Errorf("failed to send CIRC message: %w", err)
+			return nil, nil, fmt.Errorf("failed to send CIRC message: %w", err)
 		}
 	}
 
-	nonce := startNonce
-
+	circDeps := make([]CrossRollupDependency, 0)
 	// Wait for required CIRC messages and create putInbox transactions
 	for _, dep := range simState.Dependencies {
 		log.Info("[SSV] Await for CIRC message",
@@ -366,19 +409,16 @@ func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, s
 
 		circMsg, err := mp.waitForCIRCMessage(ctx, xtID, hex.EncodeToString(new(big.Int).SetUint64(dep.SourceChainID).Bytes()))
 		if err != nil {
-			return fmt.Errorf("failed to wait for CIRC message: %w", err)
+			return nil, nil, fmt.Errorf("failed to wait for CIRC message: %w", err)
 		}
 
-		err = mp.createAndSubmitPutInboxTx(ctx, dep, circMsg.Data[0], nonce)
-		if err != nil {
-			return fmt.Errorf("failed to createAndSubmitPutInboxTx: %v", err)
-		}
-
-		nonce++
+		// populate dependency with data
+		dep.Data = circMsg.Data[0]
+		circDeps = append(circDeps, dep)
 	}
 
-	log.Info("[SSV] Cross-rollup coordination completed", "xtID", xtID.Hex())
-	return nil
+	log.Info("[SSV] Cross-rollup coordination completed", "xtID", xtID.Hex(), "circMsgsCount", len(circDeps))
+	return sentMsgs, circDeps, nil
 }
 
 func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollupMessage, xtID *sptypes.XtID) error {
@@ -439,7 +479,7 @@ func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *sptype
 				continue // Keep waiting
 			}
 
-			log.Info("[SSV] Received CIRC message",
+			log.Info("[SSV] Consumed CIRC message",
 				"from", sourceChainID,
 				"dataLen", len(circMsg.Data[0]),
 			)
@@ -449,10 +489,10 @@ func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *sptype
 	}
 }
 
-func (mp *MailboxProcessor) createAndSubmitPutInboxTx(ctx context.Context, dep CrossRollupDependency, data []byte, nonce uint64) error {
+func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce uint64) (*types.Transaction, error) {
 	parsedABI, err := abi.JSON(strings.NewReader(mailboxABI))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	callData, err := parsedABI.Pack("putInbox",
@@ -460,11 +500,11 @@ func (mp *MailboxProcessor) createAndSubmitPutInboxTx(ctx context.Context, dep C
 		new(big.Int).SetUint64(dep.DestChainID),
 		dep.Receiver,
 		dep.SessionID,
-		data,
+		dep.Data,
 		dep.Label,
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var mailboxAddr common.Address
@@ -474,7 +514,7 @@ func (mp *MailboxProcessor) createAndSubmitPutInboxTx(ctx context.Context, dep C
 	case 22222:
 		mailboxAddr = mp.mailboxAddresses[1]
 	default:
-		return fmt.Errorf("unable to select mailbox addr. Unsupported \"%d\"chain id", mp.chainID)
+		return nil, fmt.Errorf("unable to select mailbox addr. Unsupported \"%d\"chain id", mp.chainID)
 	}
 
 	log.Info("[SSV] Created putInbox transaction",
@@ -483,7 +523,10 @@ func (mp *MailboxProcessor) createAndSubmitPutInboxTx(ctx context.Context, dep C
 		"sourceChain", dep.SourceChainID,
 		"destChain", dep.DestChainID,
 		"sessionId", dep.SessionID,
+		"data", hex.EncodeToString(dep.Data),
 		"dataLen", len(callData),
+		"receiver", dep.Receiver,
+		"label", dep.Label,
 	)
 
 	txData := &types.DynamicFeeTx{
@@ -501,14 +544,10 @@ func (mp *MailboxProcessor) createAndSubmitPutInboxTx(ctx context.Context, dep C
 	tx := types.NewTx(txData)
 	signedTx, err := types.SignTx(tx, types.NewLondonSigner(new(big.Int).SetUint64(mp.chainID)), mp.sequencerKey)
 	if err != nil {
-		return fmt.Errorf("failed to sign tx %v", err)
+		return nil, fmt.Errorf("failed to sign tx %v", err)
 	}
 
-	type submitTx interface {
-		SubmitSequencerTransaction(ctx context.Context, tx *types.Transaction, isPutInbox bool) error
-	}
-
-	return mp.backend.(submitTx).SubmitSequencerTransaction(ctx, signedTx, true)
+	return signedTx, nil
 }
 
 func (mp *MailboxProcessor) isMailboxAddress(addr common.Address) bool {
