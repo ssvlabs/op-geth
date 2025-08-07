@@ -4,11 +4,12 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"fmt"
-	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"log"
 	"math/big"
 	"os"
+
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -22,6 +23,7 @@ import (
 const (
 	sendTxRPCMethod = "eth_sendXTransaction"
 	configFile      = "config.yml"
+	TokenAddr       = "0x6d19CB7639DeB366c334BD69f030A38e226BA6d2"
 )
 
 type Rollup struct {
@@ -65,29 +67,33 @@ func main() {
 	publicKeyECDSA, _ = publicKey.(*ecdsa.PublicKey)
 	addressB := crypto.PubkeyToAddress(*publicKeyECDSA)
 
-	// Create ping-pong parameters
-	sessionId := big.NewInt(12345)
-	pingData := []byte("hello from rollup A")
-	pongData := []byte("hello from rollup B")
+	tokenA := common.HexToAddress(TokenAddr)
 
-	// Create a ping transaction (A -> B)
-	pingParams := PingPongParams{
-		ChainSrc:  chainAId,
-		ChainDest: chainBId,
+	// Create bridge parameters
+	sessionId := big.NewInt(12345)
+	amount := big.NewInt(100)
+
+	// Create a send transaction (A -> B)
+	sendParams := BridgeParams{
+		ChainSrc:  chainAId, // 11111
+		ChainDest: chainBId, // 22222
+		Token:     tokenA,
 		Sender:    addressA,
 		Receiver:  addressB,
+		Amount:    amount,
 		SessionId: sessionId,
-		Data:      pingData,
 	}
+
+	fmt.Println(sendParams)
 
 	nonceA, err := getNonceFor(rollupA.RPC, addressA)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	signedTx1, err := createPingTransaction(pingParams, nonceA, privateKeyA)
+	signedTx1, err := createSendTransaction(sendParams, nonceA, privateKeyA)
 	if err != nil {
-		log.Fatal("Failed to create ping transaction:", err)
+		log.Fatal("Failed to create send transaction:", err)
 	}
 
 	rlpSignedTx1, err := signedTx1.MarshalBinary()
@@ -95,14 +101,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Create a pong transaction (B -> A)
-	pongParams := PingPongParams{
-		ChainSrc:  chainAId,
-		ChainDest: chainBId,
+	// Create a receive transaction (B -> A)
+	receiveParams := BridgeParams{
+		ChainSrc:  chainAId, // 11111
+		ChainDest: chainBId, // 22222
+		Token:     tokenA,
 		Sender:    addressB,
 		Receiver:  addressA,
+		Amount:    amount,
 		SessionId: sessionId,
-		Data:      pongData,
 	}
 
 	nonceB, err := getNonceFor(rollupB.RPC, addressB)
@@ -110,9 +117,9 @@ func main() {
 		log.Fatal(err)
 	}
 
-	signedTx2, err := createPongTransaction(pongParams, nonceB, privateKeyB)
+	signedTx2, err := createReceiveTransaction(receiveParams, nonceB, privateKeyB)
 	if err != nil {
-		log.Fatal("Failed to create pong transaction:", err)
+		log.Fatal("Failed to create receive transaction:", err)
 	}
 
 	rlpSignedTx2, err := signedTx2.MarshalBinary()
@@ -149,10 +156,10 @@ func main() {
 		log.Fatalf("Failed to marshal XTRequest: %v", err)
 	}
 
-	fmt.Printf("Successfully encoded ping-pong payload. Size: %d bytes\n", len(encodedPayload))
+	fmt.Printf("Successfully encoded send-receive payload. Size: %d bytes\n", len(encodedPayload))
 	fmt.Printf("Session ID: %d\n", sessionId.Int64())
-	fmt.Printf("Ping data: %s\n", string(pingData))
-	fmt.Printf("Pong data: %s\n", string(pongData))
+	fmt.Printf("Send amount: %d\n", amount.Int64())
+	fmt.Printf("Receive amount: %d\n", amount.Int64())
 
 	l1Client, err := rpc.Dial(rollupA.RPC)
 	if err != nil {
