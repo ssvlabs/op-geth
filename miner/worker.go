@@ -146,6 +146,9 @@ func (miner *Miner) generateWork(params *generateParams, witness bool) *newPaylo
 		work.gasPool = new(core.GasPool).AddGas(gasLimit)
 	}
 
+	//sequencerBalance := work.state.GetBalance(common.HexToAddress("0x0f10aF865F68F5aA1dDB7c5b5A1a0f396232C6Be"))
+	//fmt.Println("[Before] Sequencer balance: ", sequencerBalance.String())
+
 	misc.EnsureCreate2Deployer(miner.chainConfig, work.header.Time, work.state)
 
 	// SSV: Notify backend that block building is starting
@@ -429,8 +432,18 @@ func (miner *Miner) commitTransaction(env *environment, tx *types.Transaction) e
 
 	receipt, err := miner.applyTransaction(env, tx)
 	if err != nil {
+		//fmt.Println("[ERR]:", err)
 		return err
 	}
+
+	//receiptBytes, err := receipt.MarshalJSON()
+	//if err != nil {
+	//	fmt.Println("[JSON ERR]:", err)
+	//	return err
+	//}
+
+	//fmt.Println("[RECEIPT]:", receipt.Status, string(receiptBytes))
+
 	env.txs = append(env.txs, tx)
 	env.receipts = append(env.receipts, receipt)
 	env.tcount++
@@ -738,6 +751,8 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 				break
 			}
 
+			// clear
+			// putInbox
 			env.state.SetTxContext(tx.Hash(), env.tcount)
 			log.Info("Commit tx", "tx", tx.Hash().String())
 			if err := miner.commitTransaction(env, tx); err != nil {

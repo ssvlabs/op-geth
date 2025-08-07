@@ -33,8 +33,8 @@ import (
 // Chain 22222
 
 const (
-	bridgeAddrA = "0x92fA4A23246e01cb14f6dF693F260F06113888E0"
-	bridgeAddrB = "0xbb444564a48D1A48376F86D3E9eFe4b5103BfE38"
+	bridgeAddrA = "0x023224c1e9Da38b0ec6Da6503DFcC79863CBBB14"
+	bridgeAddrB = "0x3FF5A9855AbcDBd2bEF2c0C2c501df9c5407aE7A"
 	bridgeABI   = `[{"type":"constructor","inputs":[{"name":"_mailbox","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"mailbox","inputs":[],"outputs":[{"name":"","type":"address","internalType":"contract IMailbox"}],"stateMutability":"view"},{"type":"function","name":"receiveTokens","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"token","type":"address","internalType":"address"},{"name":"amount","type":"uint256","internalType":"uint256"}],"stateMutability":"nonpayable"},{"type":"function","name":"send","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"token","type":"address","internalType":"address"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"amount","type":"uint256","internalType":"uint256"},{"name":"sessionId","type":"uint256","internalType":"uint256"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"event","name":"DataWritten","inputs":[{"name":"data","type":"bytes","indexed":false,"internalType":"bytes"}],"anonymous":false},{"type":"event","name":"EmptyEvent","inputs":[],"anonymous":false}]`
 )
 
