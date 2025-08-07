@@ -19,9 +19,10 @@ package ethapi
 
 import (
 	"context"
-	"github.com/ethereum/go-ethereum/core/ssv"
 	"math/big"
 	"time"
+
+	"github.com/ethereum/go-ethereum/core/ssv"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts"
@@ -95,7 +96,7 @@ type Backend interface {
 
 	// Shared publisher API
 	HandleSPMessage(ctx context.Context, msg *sptypes.Message) ([]common.Hash, error)
-	SimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error)
+	SimulateTransaction(ctx context.Context, pending_txs []*types.Transaction, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error)
 	// GetMailboxAddresses returns the list of mailbox contract addresses to watch
 	GetMailboxAddresses() []common.Address
 	//ForwardXTxs(ctx context.Context, xTxs []*xt.TransactionRequest) error

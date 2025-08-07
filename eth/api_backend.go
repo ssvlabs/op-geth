@@ -1423,7 +1423,7 @@ func (b *EthAPIBackend) reSimulateTransaction(ctx context.Context, tx *types.Tra
 		"xtID", xtID.Hex())
 
 	// Simulate with SSV tracing to detect mailbox interactions
-	traceResult, err := b.SimulateTransaction(ctx, tx, blockNrOrHash)
+	traceResult, err := b.SimulateTransaction(ctx, []*types.Transaction{}, tx, blockNrOrHash)
 	if err != nil {
 		log.Error("[SSV] Transaction simulation with trace failed",
 			"txHash", tx.Hash().Hex(),
