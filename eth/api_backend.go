@@ -22,12 +22,13 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
-	"github.com/ethereum/go-ethereum/accounts/abi"
-	"github.com/ethereum/go-ethereum/crypto"
 	"math/big"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/ethereum/go-ethereum/core/ssv"
 	"github.com/ethereum/go-ethereum/eth/tracers/native"
@@ -672,7 +673,7 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 				}
 
 				// SIMULATE
-				traceResult, err := b.SimulateTransaction(ctx, tx, rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber))
+				traceResult, err := b.SimulateTransaction(ctx, b.GetPendingPutInboxTxs(), tx, rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber))
 				if err != nil {
 					log.Error("[SSV] Cross-chain transaction simulation failed", "txHash", tx.Hash().Hex(), "error", err)
 					return nil, fmt.Errorf("simulation failed: %w", err)
@@ -885,7 +886,7 @@ func (b *EthAPIBackend) VoteCallbackFn(chainID *big.Int) spconsensus.VoteFn {
 //	return traceResult, nil
 //}
 
-func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
+func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, pending_txs []*types.Transaction, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
 	timer := time.Now()
 	defer func() {
 		log.Info("[SSV] Simulated transaction with SSV trace", "txHash", tx.Hash().Hex(), "duration", time.Since(timer))
@@ -932,6 +933,20 @@ func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Trans
 	evm.SetTxContext(txContext)
 
 	gasPool := new(core.GasPool).AddGas(header.GasLimit)
+
+	// Apply pending transactions
+	for _, tx := range pending_txs {
+		msg, err := core.TransactionToMessage(tx, signer, header.BaseFee)
+		if err != nil {
+			return nil, err
+		}
+		_, err = core.ApplyMessage(evm, msg, gasPool)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Apply main transaction
 	result, err := core.ApplyMessage(evm, msg, gasPool)
 	if err != nil {
 		return nil, err
