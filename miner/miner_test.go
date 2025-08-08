@@ -131,7 +131,7 @@ func TestBuildPendingBlocks(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		block, _, _ := miner.Pending()
+		block, _, _ := miner.Pending(context.Background())
 		if block == nil {
 			t.Error("Pending failed")
 		}

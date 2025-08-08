@@ -123,6 +123,12 @@ type generateParams struct {
 	isUpdate      bool               // Optional flag indicating that this is building a discardable update
 
 	rpcCtx context.Context // context to control block-building RPC work. No RPC allowed if nil.
+
+	// SSV
+	// Flag indicating whether CIRC simulation is running
+	// If false then sequencer txs are removed from mempool when block is build
+	// TODO: rename to pending (???)
+	simulation bool
 }
 
 // generateWork generates a sealing block based on the given parameters.
@@ -236,14 +242,14 @@ func (miner *Miner) generateWork(params *generateParams, witness bool) *newPaylo
 	if err != nil {
 		// SSV: Notify backend that block building failed
 		if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok && miner.hasCrossChainTransactions() {
-			backend.OnBlockBuildingComplete(work.rpcCtx, nil, false)
+			backend.OnBlockBuildingComplete(work.rpcCtx, nil, false, params.simulation)
 		}
 		return &newPayloadResult{err: err}
 	}
 
 	// SSV: Notify backend that block building completed successfully
 	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok && miner.hasCrossChainTransactions() {
-		backend.OnBlockBuildingComplete(work.rpcCtx, block, true)
+		backend.OnBlockBuildingComplete(work.rpcCtx, block, true, params.simulation)
 	}
 
 	return &newPayloadResult{
@@ -739,11 +745,10 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 
 	// SSV: Get ordered transactions from backend if available
 	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
-		log.Info("[SSV] Using sequencer transaction ordering")
 
 		// PHASE 1: Process sequencer transactions first (clear + putInbox)
 		sequencerTxs := miner.getSequencerTransactions(backend)
-		sequencerCount := 0
+		sequencerTxCount := 0
 
 		for _, tx := range sequencerTxs {
 			if env.gasPool.Gas() < params.TxGas {
@@ -759,8 +764,10 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 				log.Warn("[SSV] Failed to commit sequencer transaction", "hash", tx.Hash(), "err", err)
 				continue
 			}
-			sequencerCount++
+			sequencerTxCount++
 		}
+
+		//log.Info("[SSV] Using sequencer transaction ordering")
 
 		// PHASE 2: Process priority transactions (maintain account-based ordering)
 		prioCount := miner.commitAccountBasedTransactions(interrupt, env, prioPlainTxs)
@@ -770,12 +777,14 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 		normalCount := miner.commitAccountBasedTransactions(interrupt, env, normalPlainTxs)
 		normalCount += miner.commitAccountBasedTransactions(interrupt, env, normalBlobTxs)
 
-		log.Info("[SSV] Total transactions committed",
-			"sequencer", sequencerCount,
-			"priority", prioCount,
-			"normal", normalCount,
-			"total", sequencerCount+prioCount+normalCount)
-
+		// Log if there is any sequencer tx
+		if sequencerTxCount > 0 {
+			log.Info("[SSV] Included sequencer transactions",
+				"sequencer", sequencerTxCount,
+				"priority", prioCount,
+				"normal", normalCount,
+				"total", sequencerTxCount+prioCount+normalCount)
+		}
 	} else {
 		log.Info("[SSV] Backend doesn't support sequencer ordering, falling back to normal")
 		return miner.fillTransactions(interrupt, env)

@@ -189,7 +189,7 @@ func NewSSVTracer(mailboxAddresses []common.Address) *SSVTracer {
 		watchedAddresses[addr] = true
 	}
 
-	log.Info("[SSV] Creating new SSVTracer with watched addresses", "addresses", watchedAddresses)
+	log.Info("[SSV] Creating new SSVTracer", "mailboxes", watchedAddresses)
 
 	return &SSVTracer{
 		operations:       make([]ssv.SSVOperation, 0),

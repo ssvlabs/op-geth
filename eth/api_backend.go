@@ -101,7 +101,7 @@ func (b *EthAPIBackend) SetHead(number uint64) {
 func (b *EthAPIBackend) HeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*types.Header, error) {
 	// Pending block is only known by the miner
 	if number == rpc.PendingBlockNumber {
-		block, _, _ := b.eth.miner.Pending()
+		block, _, _ := b.eth.miner.Pending(ctx)
 		if block == nil {
 			return nil, errors.New("pending block is not available")
 		}
@@ -158,7 +158,7 @@ func (b *EthAPIBackend) HeaderByHash(ctx context.Context, hash common.Hash) (*ty
 func (b *EthAPIBackend) BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*types.Block, error) {
 	// Pending block is only known by the miner
 	if number == rpc.PendingBlockNumber {
-		block, _, _ := b.eth.miner.Pending()
+		block, _, _ := b.eth.miner.Pending(context.Background())
 		if block == nil {
 			return nil, errors.New("pending block is not available")
 		}
@@ -246,13 +246,13 @@ func (b *EthAPIBackend) BlockByNumberOrHash(ctx context.Context, blockNrOrHash r
 }
 
 func (b *EthAPIBackend) Pending() (*types.Block, types.Receipts, *state.StateDB) {
-	return b.eth.miner.Pending()
+	return b.eth.miner.Pending(context.Background())
 }
 
 func (b *EthAPIBackend) StateAndHeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*state.StateDB, *types.Header, error) {
 	// Pending state is only known by the miner
 	if number == rpc.PendingBlockNumber {
-		block, _, state := b.eth.miner.Pending()
+		block, _, state := b.eth.miner.Pending(ctx)
 		if block != nil && state != nil {
 			//state.TxIndex() == 1
 			//sequencerBalance := state.GetBalance(common.HexToAddress("0x0f10aF865F68F5aA1dDB7c5b5A1a0f396232C6Be"))
@@ -631,17 +631,9 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 		return nil, fmt.Errorf("failed to get nonce: %v", err)
 	}
 
-	// Populate mempool with payload txs
-	//for _, txReq := range localTxs {
-	//	for _, txBytes := range txReq.Transaction {
-	//		tx := new(types.Transaction)
-	//		if err := tx.UnmarshalBinary(txBytes); err != nil {
-	//			return nil, err
-	//		}
-	//		b.poolPayloadTx(tx) // user tx
-	//	}
-	//}
+	txDone := make(map[string]interface{}, 0)
 
+	timeout := time.After(time.Minute)
 	sequencerNonce := startNonce + 1 // preserve startNonce for clear() tx
 	for {
 		// Populate mempool with new putInbox txs
@@ -685,7 +677,7 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 
 				// ANALYZE
 				log.Info("[SSV] Analyzing cross-rollup transaction", "txHash", tx.Hash().Hex(), "xtRequestId", xtRequestId)
-				simState, err := mailboxProcessor.AnalyzeTransaction(traceResult, historicalSentCIRCMsgs, historicalCIRCDeps, tx.Hash().Hex())
+				simState, err := mailboxProcessor.AnalyzeTransaction(traceResult, historicalSentCIRCMsgs, historicalCIRCDeps, tx)
 				if err != nil {
 					log.Error("[SSV] Failed to process transaction", "error", err, "txHash", tx.Hash().Hex())
 					// Vote abort if processing fails
@@ -700,17 +692,10 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 
 		logSummary(xtRequestId, xtID, coordinationStates)
 
-		// successful when EVM does not end up with reverted()
-		if successful(coordinationStates) {
-			_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), true)
-			if err != nil {
-				return nil, err
-			}
-		}
-
 		if requiresCoordination(coordinationStates) {
 			// Handle cross-rollup coordination for each transaction that needs it
 			for _, state := range coordinationStates {
+				// Checking if sequencer should send or await CIRCMessage
 				if state.RequiresCoordination() {
 					var sentOutboundMsgs []CrossRollupMessage
 					var fulFilledDeps []CrossRollupDependency
@@ -728,32 +713,52 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 			}
 
 			log.Info("[SSV] Cross-rollup coordination phase completed", "xtID", xtID.Hex())
-		} else {
-			log.Info("[SSV] No coordination required, voting commit", "xtID", xtID.Hex())
+		}
+
+		for _, state := range coordinationStates {
+			tx := state.Tx
+			_, done := txDone[tx.Hash().Hex()]
+			// Add to mempool if
+			// 1. no revert()
+			// 2. not added before
+			// 3. no CIRCMessages to be processed
+			if state.Success && !done && (len(state.Dependencies) == 0) {
+				log.Info("[SSV] Payload tx done, adding to payload mempool", "hash", tx.Hash().Hex(), "count", len(b.pendingSequencerTxs))
+				b.poolPayloadTx(tx) // user tx
+				txDone[tx.Hash().Hex()] = struct{}{}
+			}
+		}
+
+		// successful when no tx ends up with revert()
+		if successfulAll(coordinationStates) {
 			_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), true)
 			if err != nil {
 				return nil, err
 			}
 			return nil, nil
 		}
+
+		log.Info("[SSV] Transaction requires another round of simulation", "xtID", xtID.Hex())
+		select {
+		case <-timeout:
+			log.Error("[SSV] Cross-rollup coordination timeout", "error", err, "xtID", xtID.Hex())
+			// Vote abort if coordination fails
+			_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), false)
+			return nil, nil
+		case <-time.After(300 * time.Millisecond):
+		}
 	}
 }
 
-func successful(coordinationStates []*SimulationState) bool {
+func successfulAll(coordinationStates []*SimulationState) bool {
 	for _, s := range coordinationStates {
-		if !s.OriginalSuccess {
+		// checking if any transaction reverted or requires processing CIRCMessage
+		if !s.Success || len(s.Dependencies) > 0 {
 			return false
 		}
 	}
 
 	return true
-}
-
-func ToString(success bool) string {
-	if success {
-		return "successful"
-	}
-	return "failed"
 }
 
 func logSummary(xtRequestId string, xtID *sptypes.XtID, coordinationStates []*SimulationState) {
@@ -764,7 +769,7 @@ func logSummary(xtRequestId string, xtID *sptypes.XtID, coordinationStates []*Si
 	for _, state := range coordinationStates {
 		totalDeps += len(state.Dependencies)
 		totalOutbound += len(state.OutboundMessages)
-		if state.OriginalSuccess {
+		if state.Success {
 			successfulStates++
 		}
 	}
@@ -842,73 +847,19 @@ func (b *EthAPIBackend) VoteCallbackFn(chainID *big.Int) spconsensus.VoteFn {
 	}
 }
 
-// SimulateTransactionWithSSVTrace simulates a transaction and returns SSV trace data.
-// SSV
-//func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
-//	timer := time.Now()
-//	defer func() {
-//		log.Info("[SSV] Simulated transaction with SSV trace", "txHash", tx.Hash().Hex(), "duration", time.Since(timer))
-//	}()
-//
-//	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	snapshot := stateDB.Snapshot()
-//	defer stateDB.RevertToSnapshot(snapshot)
-//
-//	signer := types.MakeSigner(b.ChainConfig(), header.Number, header.Time)
-//	msg, err := core.TransactionToMessage(tx, signer, header.BaseFee)
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	mailboxAddresses := b.GetMailboxAddresses()
-//	tracer := native.NewSSVTracer(mailboxAddresses)
-//
-//	vmConfig := vm.Config{}
-//	if b.eth.blockchain.GetVMConfig() != nil {
-//		vmConfig = *b.eth.blockchain.GetVMConfig()
-//	}
-//	vmConfig.Tracer = tracer.Hooks()
-//	vmConfig.EnablePreimageRecording = true
-//
-//	blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
-//	evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), vmConfig)
-//
-//	result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(header.GasLimit))
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	traceResult := tracer.GetTraceResult()
-//	traceResult.ExecutionResult = result
-//
-//	return traceResult, nil
-//}
-
 func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
 	timer := time.Now()
 	defer func() {
 		log.Info("[SSV] Simulated transaction with SSV trace", "txHash", tx.Hash().Hex(), "duration", time.Since(timer))
 	}()
 
-	//b.poolPayloadTx(tx)
+	ctx = context.WithValue(ctx, "simulation", true)
 
-	// Should contain:
-	// 1. clear()
-	// 2. putInbox()
+	// stateDB should have clear() and putInbox() in its state
 	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
 	if err != nil {
 		return nil, err
 	}
-
-	log.Info("[DEBUG] Block info",
-		"requestedBlock", blockNrOrHash,
-		"returnedBlockNumber", header.Number,
-		"returnedBlockHash", header.Hash(),
-		"txIndex", stateDB.TxIndex())
 
 	stateDB.Finalise(true)
 	snapshot := stateDB.Snapshot()
@@ -1004,9 +955,11 @@ func (b *EthAPIBackend) AddPendingPutInboxTx(tx *types.Transaction) {
 
 	b.pendingPutInboxTxs = append(b.pendingPutInboxTxs, tx)
 
-	log.Info("[SSV] Added pending putInbox transaction",
+	log.Info("[SSV] Added putInbox transaction to mempool",
 		"txHash", tx.Hash().Hex(),
-		"totalPending", len(b.pendingPutInboxTxs))
+		"totalPending", len(b.pendingPutInboxTxs),
+		"nonce", tx.Nonce(),
+	)
 }
 
 // GetPendingPutInboxTxs returns all pending putInbox transactions.
@@ -1051,18 +1004,19 @@ func (b *EthAPIBackend) ClearSequencerTransactionsAfterBlock() {
 // PrepareSequencerTransactionsForBlock prepares sequencer transactions for inclusion in a new block
 // SSV
 func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context) error {
-	log.Info("[SSV] Preparing sequencer transactions for new block")
-
 	// 1. Create clear transaction if we have any cross-chain activity
 	if len(b.GetPendingPutInboxTxs()) > 0 || b.shouldCreateClearTx() {
-		clearTx, err := b.createClearTransaction(ctx)
-		if err != nil {
-			log.Error("[SSV] Failed to create clear transaction", "err", err)
-			return err
-		}
+		// Reuse existing to avoid nonce collision
+		if b.pendingClearTx == nil {
+			clearTx, err := b.createClearTransaction(ctx)
+			if err != nil {
+				log.Error("[SSV] Failed to create clear transaction", "err", err)
+				return err
+			}
 
-		b.SetPendingClearTx(clearTx)
-		log.Info("[SSV] Created clear transaction", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce(), "pendingPutInboxTxs", len(b.GetPendingPutInboxTxs()), "shouldCreate", b.shouldCreateClearTx())
+			b.SetPendingClearTx(clearTx)
+			log.Info("[SSV] Created clear transaction", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce(), "pendingPutInboxTxs", len(b.GetPendingPutInboxTxs()), "shouldCreate", b.shouldCreateClearTx())
+		}
 	}
 
 	return nil
@@ -1252,9 +1206,8 @@ func (b *EthAPIBackend) OnBlockBuildingStart(context.Context) error {
 
 // OnBlockBuildingComplete is called when block building completes
 // SSV
-func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *types.Block, success bool) error {
+func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *types.Block, success, simulation bool) error {
 	if success && block != nil {
-		log.Info("[SSV] Block building completed successfully", "blockHash", block.Hash().Hex())
 
 		pendingPutInbox := b.GetPendingPutInboxTxs()
 		containsPutInbox := false
@@ -1274,14 +1227,18 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *type
 		}
 
 		// Only notify coordinator for blocks with putInbox transactions
-		if containsPutInbox {
+		if containsPutInbox && !simulation {
 			if err := b.coordinator.HandleBlockReady(ctx, block); err != nil {
 				log.Error("[SSV] Coordinator failed to handle block", "err", err, "blockHash", block.Hash().Hex())
 			}
 		}
 
-		b.ClearSequencerTransactionsAfterBlock()
-		log.Info("[SSV] Sequencer transaction state cleared after successful block")
+		if !simulation {
+			b.ClearSequencerTransactionsAfterBlock()
+			log.Info("[SSV] Sequencer transaction state cleared after successful block")
+		}
+
+		log.Info("[SSV] Block building completed successfully", "blockHash", block.Hash().Hex(), "simulation", simulation)
 	}
 	return nil
 }
@@ -1497,5 +1454,4 @@ func (b *EthAPIBackend) poolPayloadTx(tx *types.Transaction) {
 	defer b.sequencerTxMutex.Unlock()
 
 	b.pendingSequencerTxs = append(b.pendingSequencerTxs, tx)
-	log.Info("[SSV] Added payload transaction to pendingSequencerTxs", "hash", tx.Hash().Hex(), "count", len(b.pendingSequencerTxs))
 }
