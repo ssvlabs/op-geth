@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+
 	"github.com/ethereum/go-ethereum/core/types"
+	rollupv1 "github.com/ssvlabs/rollup-shared-publisher/proto/rollup/v1"
+
 	"math/big"
 	"sync"
 	"time"
 
-	pb "github.com/ethereum/go-ethereum/internal/sp/proto"
 	"github.com/ethereum/go-ethereum/log"
 )
 
@@ -62,7 +64,7 @@ func (c *Coordinator) SetBlockCallback(fn BlockFn) {
 	c.blockCallbackFn = fn
 }
 
-func (c *Coordinator) StartTransaction(from string, xtReq *pb.XTRequest) error {
+func (c *Coordinator) StartTransaction(from string, xtReq *rollupv1.XTRequest) error {
 	xtID, err := xtReq.XtID()
 	if err != nil {
 		return fmt.Errorf("failed to generate xtID: %w", err)
@@ -106,7 +108,7 @@ func (c *Coordinator) StartTransaction(from string, xtReq *pb.XTRequest) error {
 	return nil
 }
 
-func (c *Coordinator) RecordCIRCMessage(circMessage *pb.CIRCMessage) error {
+func (c *Coordinator) RecordCIRCMessage(circMessage *rollupv1.CIRCMessage) error {
 	xtID := circMessage.XtId
 	c.mu.Lock()
 	xtIDStr := xtID.Hex()
@@ -132,7 +134,7 @@ func (c *Coordinator) RecordCIRCMessage(circMessage *pb.CIRCMessage) error {
 
 	circMessages, ok := state.CIRCMessages[sourceChainID]
 	if !ok {
-		circMessages = make([]*pb.CIRCMessage, 0)
+		circMessages = make([]*rollupv1.CIRCMessage, 0)
 	}
 
 	circMessages = append(circMessages, circMessage)
@@ -142,7 +144,7 @@ func (c *Coordinator) RecordCIRCMessage(circMessage *pb.CIRCMessage) error {
 	return nil
 }
 
-func (c *Coordinator) ConsumeCIRCMessage(xtID *pb.XtID, sourceChainID string) (*pb.CIRCMessage, error) {
+func (c *Coordinator) ConsumeCIRCMessage(xtID *rollupv1.XtID, sourceChainID string) (*rollupv1.CIRCMessage, error) {
 	c.mu.Lock()
 	xtIDStr := xtID.Hex()
 	state, exists := c.states[xtIDStr]
@@ -175,7 +177,7 @@ func (c *Coordinator) ConsumeCIRCMessage(xtID *pb.XtID, sourceChainID string) (*
 	return message, nil
 }
 
-func (c *Coordinator) RecordVote(xtID *pb.XtID, chainID string, vote bool) (DecisionState, error) {
+func (c *Coordinator) RecordVote(xtID *rollupv1.XtID, chainID string, vote bool) (DecisionState, error) {
 	c.mu.Lock()
 	log.Info("[SSV] Recording vote", "chainID", chainID, "vote", vote)
 	xtIDStr := xtID.Hex()
@@ -228,7 +230,7 @@ func (c *Coordinator) RecordVote(xtID *pb.XtID, chainID string, vote bool) (Deci
 	return StateUndecided, nil
 }
 
-func (c *Coordinator) handleAbort(xtID *pb.XtID, state *TwoPCState) (DecisionState, error) {
+func (c *Coordinator) handleAbort(xtID *rollupv1.XtID, state *TwoPCState) (DecisionState, error) {
 	state.Decision = StateAbort
 	if state.Timer != nil {
 		state.Timer.Stop()
@@ -245,7 +247,7 @@ func (c *Coordinator) handleAbort(xtID *pb.XtID, state *TwoPCState) (DecisionSta
 	return StateAbort, nil
 }
 
-func (c *Coordinator) RecordDecision(xtID *pb.XtID, decision bool) error {
+func (c *Coordinator) RecordDecision(xtID *rollupv1.XtID, decision bool) error {
 	if c.role != Follower {
 		return fmt.Errorf("only follower can record decisions, current role: %s", c.role)
 	}
@@ -291,7 +293,7 @@ func (c *Coordinator) HandleBlockReady(ctx context.Context, block *types.Block) 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	var committedXTs []*pb.XtID
+	var committedXTs []*rollupv1.XtID
 	var statesToUpdate []*TwoPCState
 
 	// Find committed XTs that haven't been sent to SP yet
@@ -299,7 +301,7 @@ func (c *Coordinator) HandleBlockReady(ctx context.Context, block *types.Block) 
 		state.mu.RLock()
 		if state.Decision == StateCommit && !state.BlockSent {
 			if xtIDBytes, err := hex.DecodeString(xtIDStr); err == nil {
-				committedXTs = append(committedXTs, &pb.XtID{Hash: xtIDBytes})
+				committedXTs = append(committedXTs, &rollupv1.XtID{Hash: xtIDBytes})
 				statesToUpdate = append(statesToUpdate, state)
 			}
 		}
@@ -328,7 +330,7 @@ func (c *Coordinator) HandleBlockReady(ctx context.Context, block *types.Block) 
 	return nil
 }
 
-func (c *Coordinator) GetTransactionState(xtID *pb.XtID) (DecisionState, error) {
+func (c *Coordinator) GetTransactionState(xtID *rollupv1.XtID) (DecisionState, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -343,20 +345,20 @@ func (c *Coordinator) GetTransactionState(xtID *pb.XtID) (DecisionState, error) 
 	return state.Decision, nil
 }
 
-func (c *Coordinator) GetActiveTransactions() []*pb.XtID {
+func (c *Coordinator) GetActiveTransactions() []*rollupv1.XtID {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	ids := make([]*pb.XtID, 0, len(c.states))
+	ids := make([]*rollupv1.XtID, 0, len(c.states))
 	for idStr := range c.states {
 		if id, err := hex.DecodeString(idStr); err == nil {
-			ids = append(ids, &pb.XtID{Hash: id})
+			ids = append(ids, &rollupv1.XtID{Hash: id})
 		}
 	}
 	return ids
 }
 
-func (c *Coordinator) handleTimeout(xtID *pb.XtID) {
+func (c *Coordinator) handleTimeout(xtID *rollupv1.XtID) {
 	c.mu.Lock()
 	xtIDStr := xtID.Hex()
 	state, exists := c.states[xtIDStr]
@@ -388,7 +390,7 @@ func (c *Coordinator) handleTimeout(xtID *pb.XtID) {
 	}
 }
 
-func (c *Coordinator) broadcastVote(xtID *pb.XtID, vote bool, duration time.Duration) {
+func (c *Coordinator) broadcastVote(xtID *rollupv1.XtID, vote bool, duration time.Duration) {
 	xtIDStr := xtID.Hex()
 	log.Info("[SSV] Broadcasting vote", "xt_id", xtIDStr, "vote", vote, "duration", duration)
 
@@ -410,7 +412,7 @@ func (c *Coordinator) broadcastVote(xtID *pb.XtID, vote bool, duration time.Dura
 	}
 }
 
-func (c *Coordinator) broadcastDecision(xtID *pb.XtID, decision bool, duration time.Duration) {
+func (c *Coordinator) broadcastDecision(xtID *rollupv1.XtID, decision bool, duration time.Duration) {
 	state := StateCommit
 	if !decision {
 		state = StateAbort
@@ -437,7 +439,7 @@ func (c *Coordinator) broadcastDecision(xtID *pb.XtID, decision bool, duration t
 	})
 }
 
-func (c *Coordinator) removeTransaction(xtID *pb.XtID) {
+func (c *Coordinator) removeTransaction(xtID *rollupv1.XtID) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

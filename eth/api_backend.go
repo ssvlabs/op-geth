@@ -22,8 +22,11 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
+
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/crypto"
+	rollupv1 "github.com/ssvlabs/rollup-shared-publisher/proto/rollup/v1"
+
 	"math/big"
 	"strings"
 	"sync"
@@ -58,7 +61,6 @@ import (
 	network "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
 	spconsensus "github.com/ethereum/go-ethereum/internal/sp/consensus"
 	spnetwork "github.com/ethereum/go-ethereum/internal/sp/network"
-	sptypes "github.com/ethereum/go-ethereum/internal/sp/proto"
 )
 
 // EthAPIBackend implements ethapi.Backend and tracers.Backend for full nodes
@@ -543,23 +545,23 @@ func (b *EthAPIBackend) Genesis() *types.Block {
 
 // HandleSPMessage processes messages received from the shared publisher.
 // SSV
-func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *sptypes.Message) ([]common.Hash, error) {
+func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *rollupv1.Message) ([]common.Hash, error) {
 	switch payload := msg.Payload.(type) {
-	case *sptypes.Message_XtRequest:
+	case *rollupv1.Message_XtRequest:
 		hashes, err := b.handleXtRequest(ctx, msg.SenderId, payload.XtRequest)
 		if err != nil {
 			return nil, fmt.Errorf("failed to handle xt request: %v", err)
 		}
 
 		return hashes, nil
-	case *sptypes.Message_Decided:
+	case *rollupv1.Message_Decided:
 		err := b.handleDecided(payload.Decided)
 		if err != nil {
 			return nil, fmt.Errorf("failed to handle decide: %v", err)
 		}
 
 		return nil, nil
-	case *sptypes.Message_CircMessage:
+	case *rollupv1.Message_CircMessage:
 		err := b.handleCIRCMessage(payload.CircMessage)
 		if err != nil {
 			return nil, fmt.Errorf("failed to handle circ message: %v", err)
@@ -574,7 +576,7 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *sptypes.Messag
 
 // handleXtRequest processes a cross-chain transaction request.
 // SSV
-func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq *sptypes.XTRequest) ([]common.Hash, error) {
+func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq *rollupv1.XTRequest) ([]common.Hash, error) {
 	// Only start coordinator if this is actually a cross-chain transaction
 	if len(xtReq.Transactions) > 1 {
 		err := b.coordinator.StartTransaction(from, xtReq)
@@ -595,7 +597,7 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 	log.Info("[SSV] Processing xTRequest", "id", xtRequestId, "senderID", from, "xtID", xtID.Hex())
 
 	// Process each transaction for cross-rollup coordination
-	localTxs := make([]*sptypes.TransactionRequest, 0)
+	localTxs := make([]*rollupv1.TransactionRequest, 0)
 	for _, txReq := range xtReq.Transactions {
 		txChainID := new(big.Int).SetBytes(txReq.ChainId)
 
@@ -756,7 +758,7 @@ func ToString(success bool) string {
 	return "failed"
 }
 
-func logSummary(xtRequestId string, xtID *sptypes.XtID, coordinationStates []*SimulationState) {
+func logSummary(xtRequestId string, xtID *rollupv1.XtID, coordinationStates []*SimulationState) {
 	totalDeps := 0
 	totalOutbound := 0
 	successfulStates := 0
@@ -792,24 +794,24 @@ func requiresCoordination(coordinationStates []*SimulationState) bool {
 
 // handleDecided processes a Decided message received from the shared publisher.
 // SSV
-func (b *EthAPIBackend) handleDecided(xtDecision *sptypes.Decided) error {
+func (b *EthAPIBackend) handleDecided(xtDecision *rollupv1.Decided) error {
 	return b.coordinator.RecordDecision(xtDecision.XtId, xtDecision.GetDecision())
 }
 
 // handleCIRCMessage processes a CIRC message received from the shared publisher.
 // SSV
-func (b *EthAPIBackend) handleCIRCMessage(circMessage *sptypes.CIRCMessage) error {
+func (b *EthAPIBackend) handleCIRCMessage(circMessage *rollupv1.CIRCMessage) error {
 	return b.coordinator.RecordCIRCMessage(circMessage)
 }
 
 // StartCallbackFn returns a function that can be used to send transaction bundles to the shared publisher.
 // SSV
 func (b *EthAPIBackend) StartCallbackFn(chainID *big.Int) spconsensus.StartFn {
-	return func(ctx context.Context, from string, xtReq *sptypes.XTRequest) error {
+	return func(ctx context.Context, from string, xtReq *rollupv1.XTRequest) error {
 		if from != spnetwork.SharedPublisherSenderID {
-			spMsg := &sptypes.Message{
+			spMsg := &rollupv1.Message{
 				SenderId: chainID.String(),
-				Payload: &sptypes.Message_XtRequest{
+				Payload: &rollupv1.Message_XtRequest{
 					XtRequest: xtReq,
 				},
 			}
@@ -825,16 +827,16 @@ func (b *EthAPIBackend) StartCallbackFn(chainID *big.Int) spconsensus.StartFn {
 // VoteCallbackFn returns a function that can be used to send votes for cross-chain transactions.
 // SSV
 func (b *EthAPIBackend) VoteCallbackFn(chainID *big.Int) spconsensus.VoteFn {
-	return func(ctx context.Context, xtID *sptypes.XtID, vote bool) error {
-		msgVote := &sptypes.Message_Vote{
-			Vote: &sptypes.Vote{
+	return func(ctx context.Context, xtID *rollupv1.XtID, vote bool) error {
+		msgVote := &rollupv1.Message_Vote{
+			Vote: &rollupv1.Vote{
 				Vote:          vote,
 				XtId:          xtID,
 				SenderChainId: chainID.Bytes(),
 			},
 		}
 
-		spMsg := &sptypes.Message{
+		spMsg := &rollupv1.Message{
 			SenderId: chainID.String(),
 			Payload:  msgVote,
 		}
@@ -1286,8 +1288,8 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *type
 	return nil
 }
 
-func (b *EthAPIBackend) BlockCallbackFn() func(ctx context.Context, block *types.Block, xtIDs []*sptypes.XtID) error {
-	return func(ctx context.Context, block *types.Block, xtIDs []*sptypes.XtID) error {
+func (b *EthAPIBackend) BlockCallbackFn() func(ctx context.Context, block *types.Block, xtIDs []*rollupv1.XtID) error {
+	return func(ctx context.Context, block *types.Block, xtIDs []*rollupv1.XtID) error {
 
 		var buf bytes.Buffer
 		if err := block.EncodeRLP(&buf); err != nil {
@@ -1295,15 +1297,15 @@ func (b *EthAPIBackend) BlockCallbackFn() func(ctx context.Context, block *types
 		}
 		blockData := buf.Bytes()
 
-		blockMsg := &sptypes.Block{
+		blockMsg := &rollupv1.Block{
 			ChainId:       b.ChainConfig().ChainID.Bytes(),
 			BlockData:     blockData,
 			IncludedXtIds: xtIDs,
 		}
 
-		spMsg := &sptypes.Message{
+		spMsg := &rollupv1.Message{
 			SenderId: b.ChainConfig().ChainID.String(),
-			Payload: &sptypes.Message_Block{
+			Payload: &rollupv1.Message_Block{
 				Block: blockMsg,
 			},
 		}
@@ -1335,7 +1337,7 @@ func (b *EthAPIBackend) GetPendingOriginalTxs() []*types.Transaction {
 // reSimulateAfterMailboxPopulation re-simulates transactions after mailbox has been populated
 // SSV
 // In api_backend.go, update reSimulateAfterMailboxPopulation:
-func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(ctx context.Context, xtReq *sptypes.XTRequest, xtID *sptypes.XtID, coordinationStates []*SimulationState) (bool, error) {
+func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(ctx context.Context, xtReq *rollupv1.XTRequest, xtID *rollupv1.XtID, coordinationStates []*SimulationState) (bool, error) {
 	chainID := b.ChainConfig().ChainID
 
 	log.Info("[SSV] Starting re-simulation after mailbox population",
@@ -1410,7 +1412,7 @@ func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(ctx context.Context, xt
 
 // reSimulateTransaction re-simulates a single transaction and checks for success
 // SSV
-func (b *EthAPIBackend) reSimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash, xtID *sptypes.XtID) (bool, error) {
+func (b *EthAPIBackend) reSimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash, xtID *rollupv1.XtID) (bool, error) {
 	log.Debug("[SSV] Re-simulating transaction",
 		"txHash", tx.Hash().Hex(),
 		"xtID", xtID.Hex())

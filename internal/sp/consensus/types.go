@@ -3,17 +3,17 @@ package consensus
 import (
 	"context"
 	"github.com/ethereum/go-ethereum/core/types"
+	rollupv1 "github.com/ssvlabs/rollup-shared-publisher/proto/rollup/v1"
+
 	"sync"
 	"time"
-
-	pb "github.com/ethereum/go-ethereum/internal/sp/proto"
 )
 
-type StartFn func(ctx context.Context, from string, xtReq *pb.XTRequest) error
-type VoteFn func(ctx context.Context, xtID *pb.XtID, vote bool) error
-type DecisionFn func(ctx context.Context, xtID *pb.XtID, decision bool) error
+type StartFn func(ctx context.Context, from string, xtReq *rollupv1.XTRequest) error
+type VoteFn func(ctx context.Context, xtID *rollupv1.XtID, vote bool) error
+type DecisionFn func(ctx context.Context, xtID *rollupv1.XtID, decision bool) error
 
-type BlockFn func(ctx context.Context, block *types.Block, xtIDs []*pb.XtID) error
+type BlockFn func(ctx context.Context, block *types.Block, xtIDs []*rollupv1.XtID) error
 
 // Role represents the role of a coordinator in the consensus system
 type Role int
@@ -59,20 +59,20 @@ func (s DecisionState) String() string {
 // TwoPCState holds the state for a single cross-chain transaction.
 type TwoPCState struct {
 	mu                  sync.RWMutex
-	XTID                *pb.XtID
+	XTID                *rollupv1.XtID
 	Decision            DecisionState
 	ParticipatingChains map[string]struct{}
 	Votes               map[string]bool
 	Timer               *time.Timer
 	StartTime           time.Time
-	XTRequest           *pb.XTRequest
-	CIRCMessages        map[string][]*pb.CIRCMessage
+	XTRequest           *rollupv1.XTRequest
+	CIRCMessages        map[string][]*rollupv1.CIRCMessage
 
 	BlockSent bool
 }
 
 // NewTwoPCState creates a new 2PC state.
-func NewTwoPCState(xtID *pb.XtID, req *pb.XTRequest, chains map[string]struct{}) *TwoPCState {
+func NewTwoPCState(xtID *rollupv1.XtID, req *rollupv1.XTRequest, chains map[string]struct{}) *TwoPCState {
 	return &TwoPCState{
 		XTID:                xtID,
 		Decision:            StateUndecided,
@@ -80,7 +80,7 @@ func NewTwoPCState(xtID *pb.XtID, req *pb.XTRequest, chains map[string]struct{})
 		Votes:               make(map[string]bool),
 		StartTime:           time.Now(),
 		XTRequest:           req,
-		CIRCMessages:        make(map[string][]*pb.CIRCMessage, 0),
+		CIRCMessages:        make(map[string][]*rollupv1.CIRCMessage, 0),
 	}
 }
 

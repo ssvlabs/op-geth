@@ -2,11 +2,12 @@ package network
 
 import (
 	"context"
+
 	"github.com/ethereum/go-ethereum/common"
+	rollupv1 "github.com/ssvlabs/rollup-shared-publisher/proto/rollup/v1"
+
 	"net"
 	"time"
-
-	sptypes "github.com/ethereum/go-ethereum/internal/sp/proto"
 )
 
 // Server interface defines the server contract
@@ -26,7 +27,7 @@ type Client interface {
 	// Disconnect closes the connection
 	Disconnect(ctx context.Context) error
 	// Send sends a message to the server
-	Send(ctx context.Context, msg *sptypes.Message) error
+	Send(ctx context.Context, msg *rollupv1.Message) error
 	// SetHandler sets the message handler for received messages
 	SetHandler(handler MessageHandler)
 	// IsConnected returns connection status
@@ -38,7 +39,7 @@ type Client interface {
 }
 
 // MessageHandler processes incoming messages
-type MessageHandler func(ctx context.Context, msg *sptypes.Message) ([]common.Hash, error)
+type MessageHandler func(ctx context.Context, msg *rollupv1.Message) ([]common.Hash, error)
 
 // ConnectionInfo contains information about a connection
 type ConnectionInfo struct {

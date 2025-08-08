@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"encoding/hex"
 	"fmt"
+
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/ssv"
@@ -13,8 +14,9 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	network "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
 	spconsensus "github.com/ethereum/go-ethereum/internal/sp/consensus"
-	sptypes "github.com/ethereum/go-ethereum/internal/sp/proto"
 	"github.com/ethereum/go-ethereum/log"
+	rollupv1 "github.com/ssvlabs/rollup-shared-publisher/proto/rollup/v1"
+
 	"math/big"
 	"strconv"
 	"strings"
@@ -387,7 +389,7 @@ func (mp *MailboxProcessor) parseWriteCall(data []byte) (*MailboxCall, error) {
 	}, nil
 }
 
-func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, simState *SimulationState, xtID *sptypes.XtID) ([]CrossRollupMessage, []CrossRollupDependency, error) {
+func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, simState *SimulationState, xtID *rollupv1.XtID) ([]CrossRollupMessage, []CrossRollupDependency, error) {
 	log.Info("[SSV] Starting CIRCMessage exchange", "xtID", xtID.Hex())
 
 	sentMsgs := make([]CrossRollupMessage, 0)
@@ -423,7 +425,7 @@ func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, s
 	return sentMsgs, circDeps, nil
 }
 
-func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollupMessage, xtID *sptypes.XtID) error {
+func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollupMessage, xtID *rollupv1.XtID) error {
 	destChainStr := strconv.FormatUint(msg.DestChainID, 10)
 	client, exists := mp.sequencerClients[destChainStr]
 	if !exists {
@@ -435,7 +437,7 @@ func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollu
 		"availableClients", len(mp.sequencerClients),
 		"clientExists", exists)
 
-	circMsg := &sptypes.CIRCMessage{
+	circMsg := &rollupv1.CIRCMessage{
 		SourceChain:      new(big.Int).SetUint64(msg.SourceChainID).Bytes(),
 		DestinationChain: new(big.Int).SetUint64(msg.DestChainID).Bytes(),
 		Source:           [][]byte{msg.Sender.Bytes()},
@@ -445,9 +447,9 @@ func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollu
 		Data:             [][]byte{msg.Data},
 	}
 
-	spMsg := &sptypes.Message{
+	spMsg := &rollupv1.Message{
 		SenderId: strconv.FormatUint(mp.chainID, 10),
-		Payload: &sptypes.Message_CircMessage{
+		Payload: &rollupv1.Message_CircMessage{
 			CircMessage: circMsg,
 		},
 	}
@@ -461,7 +463,7 @@ func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollu
 	return client.Send(ctx, spMsg)
 }
 
-func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *sptypes.XtID, sourceChainID string) (*sptypes.CIRCMessage, error) {
+func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *rollupv1.XtID, sourceChainID string) (*rollupv1.CIRCMessage, error) {
 	// Wait for CIRC message with timeout
 	timeout := time.NewTimer(2 * time.Minute)
 	defer timeout.Stop()

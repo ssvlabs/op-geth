@@ -3,9 +3,12 @@ package network
 import (
 	"context"
 	"fmt"
-	"github.com/ethereum/go-ethereum/log"
+
 	spcodec "github.com/ethereum/go-ethereum/internal/sp/codec"
 	sperrors "github.com/ethereum/go-ethereum/internal/sp/errors"
+	"github.com/ethereum/go-ethereum/log"
+	rollupv1 "github.com/ssvlabs/rollup-shared-publisher/proto/rollup/v1"
+
 	"io"
 	"net"
 	"sync"
@@ -13,7 +16,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	sptypes "github.com/ethereum/go-ethereum/internal/sp/proto"
 )
 
 // ServerConfig contains server configuration.
@@ -150,7 +152,7 @@ func (s *server) handleConnection(ctx context.Context, netConn net.Conn) {
 			//	_ = conn.SetReadDeadline(time.Now().Add(s.cfg.ReadTimeout))
 			//}
 
-			var msg sptypes.Message
+			var msg rollupv1.Message
 			if err := s.codec.Decode(conn, &msg); err != nil {
 				if err == io.EOF {
 					log.Debug("Client disconnected", "remote_addr", netConn.RemoteAddr().String(), "connID", connID)

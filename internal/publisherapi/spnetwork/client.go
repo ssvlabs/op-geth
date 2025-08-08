@@ -3,9 +3,11 @@ package network
 import (
 	"context"
 	"fmt"
+
 	spcodec "github.com/ethereum/go-ethereum/internal/sp/codec"
 	sperrors "github.com/ethereum/go-ethereum/internal/sp/errors"
-	sptypes "github.com/ethereum/go-ethereum/internal/sp/proto"
+	rollupv1 "github.com/ssvlabs/rollup-shared-publisher/proto/rollup/v1"
+
 	"io"
 	"net"
 	"sync"
@@ -152,7 +154,7 @@ func (c *client) Disconnect(ctx context.Context) error {
 	return nil
 }
 
-func (c *client) Send(ctx context.Context, msg *sptypes.Message) error {
+func (c *client) Send(ctx context.Context, msg *rollupv1.Message) error {
 	const maxRetries = 3
 	var lastErr error
 
@@ -227,7 +229,7 @@ func (c *client) receiveLoop(ctx context.Context) {
 				_ = c.conn.SetReadDeadline(time.Now().Add(c.cfg.ReadTimeout))
 			}
 
-			var msg sptypes.Message
+			var msg rollupv1.Message
 			if err := c.codec.Decode(c.conn, &msg); err != nil {
 				if err == io.EOF {
 					log.Debug("Server closed connection")
