@@ -1972,6 +1972,15 @@ func NewDebugAPI(b Backend) *DebugAPI {
 	return &DebugAPI{b: b}
 }
 
+func (api *DebugAPI) GetMailboxAddresses() map[string]string {
+	mailboxAddresses := make(map[string]string)
+	for i, ma := range api.b.GetMailboxAddresses() {
+		rollupName := "rollup" + string(rune('A'+i))
+		mailboxAddresses[rollupName] = ma.String()
+	}
+	return mailboxAddresses
+}
+
 // GetRawHeader retrieves the RLP encoding for a single header.
 func (api *DebugAPI) GetRawHeader(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (hexutil.Bytes, error) {
 	var hash common.Hash
