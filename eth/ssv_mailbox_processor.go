@@ -491,6 +491,39 @@ func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *sptype
 	}
 }
 
+func (mp *MailboxProcessor) getCoordinatorAddress(ctx context.Context, addr common.Address) (common.Address, error) {
+	parsedABI, err := abi.JSON(strings.NewReader(mailboxABI))
+	if err != nil {
+		return common.Address{}, err
+	}
+
+	callData, err := parsedABI.Pack("coordinator")
+	if err != nil {
+		return common.Address{}, err
+	}
+
+	// Build a call transaction
+	data := hexutil.Bytes(callData)
+	args := ethapi.TransactionArgs{
+		To:   &addr,
+		Data: &data,
+	}
+	latest := rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
+	res, err := ethapi.DoCall(ctx, mp.backend.(*EthAPIBackend), args, latest, nil, nil, mp.backend.(*EthAPIBackend).RPCEVMTimeout(), mp.backend.(*EthAPIBackend).RPCGasCap())
+	if err != nil {
+		return common.Address{}, err
+	}
+	if len(res.Return()) != 32 && len(res.Return()) != 20 {
+		return common.Address{}, fmt.Errorf("unexpected return size: %d", len(res.Return()))
+	}
+	// The ABI-encoded return for address is 32 bytes right-padded, extract last 20
+	out := res.Return()
+	if len(out) == 32 {
+		out = out[12:]
+	}
+	return common.BytesToAddress(out), nil
+}
+
 func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce uint64) (*types.Transaction, error) {
 	parsedABI, err := abi.JSON(strings.NewReader(mailboxABI))
 	if err != nil {

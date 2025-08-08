@@ -22,12 +22,13 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
-	"github.com/ethereum/go-ethereum/accounts/abi"
-	"github.com/ethereum/go-ethereum/crypto"
 	"math/big"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/ethereum/go-ethereum/core/ssv"
 	"github.com/ethereum/go-ethereum/eth/tracers/native"
@@ -569,6 +570,42 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *sptypes.Messag
 	}
 }
 
+func (b *EthAPIBackend) isCoordinator(ctx context.Context, mailboxProcessor *MailboxProcessor) error {
+	mailboxAddr := b.GetMailboxAddressFromChainID(b.ChainConfig().ChainID.Uint64())
+
+	// Fetch the full block for the current head before creating a state view
+	head := b.eth.blockchain.CurrentBlock()
+	if head == nil {
+		return fmt.Errorf("current head not available")
+	}
+	block := b.eth.blockchain.GetBlock(head.Hash(), head.Number.Uint64())
+	if block == nil {
+		return fmt.Errorf("failed to retrieve current block %s", head.Hash())
+	}
+
+	stateDB, release, err := b.StateAtBlock(ctx, block, 0, nil, false, false)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	mailboxCode := stateDB.GetCode(mailboxAddr)
+	if len(mailboxCode) == 0 {
+		return fmt.Errorf("mailbox code not found")
+	}
+
+	coordinatorAddr, err := mailboxProcessor.getCoordinatorAddress(ctx, mailboxAddr)
+	if err != nil {
+		return err
+	}
+
+	if coordinatorAddr != b.sequencerAddress {
+		return fmt.Errorf("sequencer is not coordinator")
+	}
+
+	return nil
+}
+
 // handleXtRequest processes a cross-chain transaction request.
 // SSV
 func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq *sptypes.XTRequest) ([]common.Hash, error) {
@@ -619,6 +656,12 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 		b,
 	)
 
+	// check if sequencer is coordinator
+	if err = b.isCoordinator(ctx, mailboxProcessor); err != nil {
+		log.Error("[SSV] Sequencer is not coordinator", "err", err)
+		return nil, err
+	}
+
 	var newFulfilledDeps []CrossRollupDependency
 	historicalSentCIRCMsgs := make([]CrossRollupMessage, 0)
 	historicalCIRCDeps := make([]CrossRollupDependency, 0)
@@ -651,7 +694,7 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 
 			err = b.SubmitSequencerTransaction(ctx, putInboxTx, true)
 			if err != nil {
-				return nil, fmt.Errorf("failed to SubmitSequencerTransaction: %v", "txHash", putInboxTx.Hash().Hex(), err)
+				return nil, fmt.Errorf("failed to SubmitSequencerTransaction (txHash=%s): %v", putInboxTx.Hash().Hex(), err)
 			}
 
 			sequencerNonce++
@@ -925,11 +968,9 @@ func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Trans
 
 	blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
 
-	txContext := core.NewEVMTxContext(msg)
-
 	evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), vmConfig)
 
-	evm.SetTxContext(txContext)
+	stateDB.SetTxContext(tx.Hash(), stateDB.TxIndex()+1)
 
 	gasPool := new(core.GasPool).AddGas(header.GasLimit)
 	result, err := core.ApplyMessage(evm, msg, gasPool)
@@ -969,6 +1010,17 @@ func (b *EthAPIBackend) GetMailboxAddresses() []common.Address {
 	return []common.Address{
 		common.HexToAddress(native.RollupAMailBoxAddr),
 		common.HexToAddress(native.RollupBMailBoxAddr),
+	}
+}
+
+func (b *EthAPIBackend) GetMailboxAddressFromChainID(chainID uint64) common.Address {
+	switch chainID {
+	case 11111:
+		return common.HexToAddress(native.RollupAMailBoxAddr)
+	case 22222:
+		return common.HexToAddress(native.RollupBMailBoxAddr)
+	default:
+		return common.Address{}
 	}
 }
 
