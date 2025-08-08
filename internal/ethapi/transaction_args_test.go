@@ -19,8 +19,10 @@ package ethapi
 import (
 	"context"
 	"errors"
+
 	"github.com/ethereum/go-ethereum/core/ssv"
-	xt "github.com/ethereum/go-ethereum/internal/sp/proto"
+	rollupv1 "github.com/ssvlabs/rollup-shared-publisher/proto/rollup/v1"
+
 	"math/big"
 	"reflect"
 	"testing"
@@ -263,12 +265,12 @@ type backendMock struct {
 	config  *params.ChainConfig
 }
 
-func (b *backendMock) HandleSPMessage(ctx context.Context, msg *xt.Message) ([]common.Hash, error) {
+func (b *backendMock) SimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
 	//TODO implement me
 	panic("implement me")
 }
 
-func (b *backendMock) SimulateTransactionWithSSVTrace(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
+func (b *backendMock) HandleSPMessage(ctx context.Context, msg *rollupv1.Message) ([]common.Hash, error) {
 	//TODO implement me
 	panic("implement me")
 }
