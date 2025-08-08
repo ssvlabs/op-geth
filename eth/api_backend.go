@@ -255,6 +255,9 @@ func (b *EthAPIBackend) StateAndHeaderByNumber(ctx context.Context, number rpc.B
 	if number == rpc.PendingBlockNumber {
 		block, _, state := b.eth.miner.Pending()
 		if block != nil && state != nil {
+			//state.TxIndex() == 1
+			//sequencerBalance := state.GetBalance(common.HexToAddress("0x0f10aF865F68F5aA1dDB7c5b5A1a0f396232C6Be"))
+			//fmt.Println("[AFTER] Sequencer balance: ", sequencerBalance.String())
 			return state, block.Header(), nil
 		} else {
 			number = rpc.LatestBlockNumber // fall back to latest state
@@ -936,6 +939,9 @@ func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Trans
 
 	//b.poolPayloadTx(tx)
 
+	// Should contain:
+	// 1. clear()
+	// 2. putInbox()
 	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
 	if err != nil {
 		return nil, err
@@ -947,6 +953,7 @@ func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Trans
 		"returnedBlockHash", header.Hash(),
 		"txIndex", stateDB.TxIndex())
 
+	stateDB.Finalise(true)
 	snapshot := stateDB.Snapshot()
 	defer stateDB.RevertToSnapshot(snapshot)
 

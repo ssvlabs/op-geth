@@ -576,6 +576,24 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 		AccessList: nil,
 	}
 
+	//fmt.Println("[TX TRACE] Start tracing")
+
+	//api := tracers.NewAPI(mp.backend.(tracers.Backend))
+	//tracer := "stateTracer"
+	//res, err := api.TraceCall(context.Background(), ethapi.TransactionArgs{
+	//	Data:  (*hexutil.Bytes)(&callData),
+	//	From:  &mp.sequencerAddr,
+	//	To:    &mailboxAddr,
+	//	Value: (*hexutil.Big)(big.NewInt(1000))},
+	//	rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber),
+	//	nil,
+	//)
+	//if err != nil {
+	//	fmt.Println("[TX TRACE ERR]", err)
+	//}
+	//
+	//fmt.Printf("trace result: %s", string(res.(json.RawMessage)))
+
 	tx := types.NewTx(txData)
 	signedTx, err := types.SignTx(tx, types.NewLondonSigner(new(big.Int).SetUint64(mp.chainID)), mp.sequencerKey)
 	if err != nil {
