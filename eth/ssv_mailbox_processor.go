@@ -12,10 +12,10 @@ import (
 	"github.com/ethereum/go-ethereum/core/ssv"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
-	network "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
 	spconsensus "github.com/ethereum/go-ethereum/internal/sp/consensus"
 	"github.com/ethereum/go-ethereum/log"
 	rollupv1 "github.com/ssvlabs/rollup-shared-publisher/proto/rollup/v1"
+	"github.com/ssvlabs/rollup-shared-publisher/x/transport"
 
 	"math/big"
 	"strconv"
@@ -72,14 +72,14 @@ func (s SimulationState) RequiresCoordination() bool {
 type MailboxProcessor struct {
 	chainID          uint64
 	mailboxAddresses []common.Address
-	sequencerClients map[string]network.Client
+	sequencerClients map[string]transport.Client
 	coordinator      *spconsensus.Coordinator
 	backend          interface{}
 	sequencerKey     *ecdsa.PrivateKey
 	sequencerAddr    common.Address
 }
 
-func NewMailboxProcessor(chainID uint64, mailboxAddrs []common.Address, sequencerClients map[string]network.Client, coordinator *spconsensus.Coordinator, sequencerKey *ecdsa.PrivateKey, sequencerAddr common.Address, backend *EthAPIBackend) *MailboxProcessor {
+func NewMailboxProcessor(chainID uint64, mailboxAddrs []common.Address, sequencerClients map[string]transport.Client, coordinator *spconsensus.Coordinator, sequencerKey *ecdsa.PrivateKey, sequencerAddr common.Address, backend *EthAPIBackend) *MailboxProcessor {
 	return &MailboxProcessor{
 		chainID:          chainID,
 		mailboxAddresses: mailboxAddrs,

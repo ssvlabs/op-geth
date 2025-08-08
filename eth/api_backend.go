@@ -26,6 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/crypto"
 	rollupv1 "github.com/ssvlabs/rollup-shared-publisher/proto/rollup/v1"
+	"github.com/ssvlabs/rollup-shared-publisher/x/transport"
 
 	"math/big"
 	"strings"
@@ -58,7 +59,6 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rpc"
 
-	network "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
 	spconsensus "github.com/ethereum/go-ethereum/internal/sp/consensus"
 	spnetwork "github.com/ethereum/go-ethereum/internal/sp/network"
 )
@@ -72,9 +72,9 @@ type EthAPIBackend struct {
 	gpo                 *gasprice.Oracle
 
 	// SSV: Shared publisher and coordinator
-	spClient         network.Client
+	spClient         transport.Client
 	coordinator      *spconsensus.Coordinator
-	sequencerClients map[string]network.Client
+	sequencerClients map[string]transport.Client
 	sequencerKey     *ecdsa.PrivateKey
 	sequencerAddress common.Address
 
@@ -544,32 +544,32 @@ func (b *EthAPIBackend) Genesis() *types.Block {
 
 // HandleSPMessage processes messages received from the shared publisher.
 // SSV
-func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *rollupv1.Message) ([]common.Hash, error) {
+func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, from string, msg *rollupv1.Message) error {
 	switch payload := msg.Payload.(type) {
 	case *rollupv1.Message_XtRequest:
-		hashes, err := b.handleXtRequest(ctx, msg.SenderId, payload.XtRequest)
+		_, err := b.handleXtRequest(ctx, msg.SenderId, payload.XtRequest)
 		if err != nil {
-			return nil, fmt.Errorf("failed to handle xt request: %v", err)
+			return fmt.Errorf("failed to handle xt request: %v", err)
 		}
 
-		return hashes, nil
+		return nil
 	case *rollupv1.Message_Decided:
 		err := b.handleDecided(payload.Decided)
 		if err != nil {
-			return nil, fmt.Errorf("failed to handle decide: %v", err)
+			return fmt.Errorf("failed to handle decide: %v", err)
 		}
 
-		return nil, nil
+		return nil
 	case *rollupv1.Message_CircMessage:
 		err := b.handleCIRCMessage(payload.CircMessage)
 		if err != nil {
-			return nil, fmt.Errorf("failed to handle circ message: %v", err)
+			return fmt.Errorf("failed to handle circ message: %v", err)
 		}
 
-		return nil, nil
+		return nil
 	default:
 		log.Error("[SSV] Unknown message type", "type", fmt.Sprintf("%T", payload))
-		return nil, fmt.Errorf("unknown message type: %T", payload)
+		return fmt.Errorf("unknown message type: %T", payload)
 	}
 }
 

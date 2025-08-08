@@ -21,12 +21,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	rollupv1 "github.com/ssvlabs/rollup-shared-publisher/proto/rollup/v1"
-	"google.golang.org/protobuf/proto"
 	gomath "math"
 	"math/big"
 	"strings"
 	"time"
+
+	rollupv1 "github.com/ssvlabs/rollup-shared-publisher/proto/rollup/v1"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ethereum/go-ethereum"
@@ -1761,19 +1762,22 @@ func (api *TransactionAPI) SendTransaction(ctx context.Context, args Transaction
 	return SubmitTransaction(ctx, api.b, signed)
 }
 
-func (api *TransactionAPI) SendXTransaction(ctx context.Context, input hexutil.Bytes) ([]common.Hash, error) {
+// SendXTransaction processes a transaction request encapsulated in a hex-encoded protocol message.
+// SSV
+// TODO: it actually doesnt return common.Hash
+func (api *TransactionAPI) SendXTransaction(ctx context.Context, input hexutil.Bytes) error {
 	var msg rollupv1.Message
 	if err := proto.Unmarshal(input, &msg); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal xtReq input: %v", err)
+		return fmt.Errorf("failed to unmarshal xtReq input: %v", err)
 	}
 
 	switch payload := msg.Payload.(type) {
 	case *rollupv1.Message_XtRequest:
 		ctx = context.WithValue(ctx, "forward", true)
-		return api.b.HandleSPMessage(ctx, &msg)
+		return api.b.HandleSPMessage(ctx, "", &msg)
 	default:
 		log.Error("[SSV] Unknown message type", "type", fmt.Sprintf("%T", payload))
-		return nil, fmt.Errorf("unknown message type: %T", payload)
+		return fmt.Errorf("unknown message type: %T", payload)
 	}
 }
 

@@ -34,9 +34,12 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/crypto"
-	spnetwork "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
 	spconsensus "github.com/ethereum/go-ethereum/internal/sp/consensus"
 	sperrors "github.com/ethereum/go-ethereum/internal/sp/errors"
+	ssvlog "github.com/ssvlabs/rollup-shared-publisher/log"
+	"github.com/ssvlabs/rollup-shared-publisher/x/auth"
+	"github.com/ssvlabs/rollup-shared-publisher/x/transport"
+	"github.com/ssvlabs/rollup-shared-publisher/x/transport/tcp"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
@@ -75,8 +78,9 @@ type Node struct {
 	ipc           *ipcServer  // Stores information about the ipc http server
 	inprocHandler *rpc.Server // In-process RPC request handler to process the API requests
 
-	spClient         spnetwork.Client
-	sequencerClients map[string]spnetwork.Client
+	spClient         transport.Client
+	sequencerClients map[string]transport.Client
+	sequencerAddrs   map[string]string
 	sequencerKey     *ecdsa.PrivateKey
 
 	coordinator *spconsensus.Coordinator
@@ -171,19 +175,35 @@ func New(conf *Config) (*Node, error) {
 	node.wsAuth = newHTTPServer(node.log, rpc.DefaultHTTPTimeouts)
 	node.ipc = newIPCServer(node.log, conf.IPCEndpoint())
 
-	// TODO: make configurable after POC
-	clientCfg := spnetwork.ClientConfig{
-		ConnectTimeout: 10 * time.Second,
-		ReadTimeout:    30 * time.Second,
-		WriteTimeout:   30 * time.Second,
-		ReconnectDelay: 5 * time.Second,
-		MaxMessageSize: 10485760, // 10 MB
-		ServerAddr:     conf.SPAddr,
-		ChainID:        "shared-publisher",
+	var authManager auth.Manager
+	if conf.SequencerKey != "" {
+		privKey := parsePrivateKey(conf.SequencerKey)
+		authManager = auth.NewManager(privKey)
+		node.sequencerKey = privKey
 	}
-	node.spClient = spnetwork.NewClient(clientCfg)
 
-	node.sequencerClients = generateClients(conf.SequencerAddrs)
+	// TODO: make configurable after POC
+	clientConfig := tcp.ClientConfig{
+		ServerAddr:      conf.SPAddr,
+		ConnectTimeout:  10 * time.Second,
+		ReadTimeout:     30 * time.Second,
+		WriteTimeout:    30 * time.Second,
+		ReconnectDelay:  5 * time.Second,
+		MaxMessageSize:  10 * 1024 * 1024,
+		KeepAlive:       true,
+		KeepAlivePeriod: 30 * time.Second,
+	}
+
+	slog := ssvlog.New("info", true)
+	tcpClient := tcp.NewClient(clientConfig, slog.Logger)
+	if authManager != nil {
+		tcpClient = tcpClient.WithAuth(authManager)
+	}
+	node.spClient = tcpClient
+
+	clients, addrs := generateClients(conf.SequencerAddrs, authManager)
+	node.sequencerClients = clients
+	node.sequencerAddrs = addrs
 	node.sequencerKey = parsePrivateKey(conf.SequencerKey)
 
 	nodeID := fmt.Sprintf("sequencer-%d", time.Now().UnixNano())
@@ -209,11 +229,12 @@ func parsePrivateKey(privKeyHex string) *ecdsa.PrivateKey {
 	return privateKey
 }
 
-func generateClients(addrs string) map[string]spnetwork.Client {
-	clients := make(map[string]spnetwork.Client)
+func generateClients(addrs string, authManager auth.Manager) (map[string]transport.Client, map[string]string) {
+	clients := make(map[string]transport.Client)
+	addresses := make(map[string]string)
 
 	if addrs == "" {
-		return clients
+		return clients, addresses
 	}
 
 	entries := strings.Split(addrs, ",")
@@ -240,21 +261,29 @@ func generateClients(addrs string) map[string]spnetwork.Client {
 		}
 
 		serverAddr := net.JoinHostPort(host, port)
+		addresses[chainID] = serverAddr
 
-		clientCfg := spnetwork.ClientConfig{
-			ConnectTimeout: 10 * time.Second,
-			ReadTimeout:    30 * time.Second,
-			WriteTimeout:   30 * time.Second,
-			ReconnectDelay: 5 * time.Second,
-			MaxMessageSize: 10485760, // 10 MB
-			ServerAddr:     serverAddr,
-			ChainID:        chainID,
+		clientConfig := tcp.ClientConfig{
+			ServerAddr:      serverAddr,
+			ConnectTimeout:  10 * time.Second,
+			ReadTimeout:     30 * time.Second,
+			WriteTimeout:    30 * time.Second,
+			ReconnectDelay:  5 * time.Second,
+			MaxMessageSize:  10 * 1024 * 1024,
+			KeepAlive:       true,
+			KeepAlivePeriod: 30 * time.Second,
+			ClientID:        chainID,
 		}
 
-		clients[chainID] = spnetwork.NewClient(clientCfg)
-	}
+		slog := ssvlog.New("info", true)
+		tcpClient := tcp.NewClient(clientConfig, slog.Logger)
+		if authManager != nil {
+			tcpClient = tcpClient.WithAuth(authManager)
+		}
 
-	return clients
+		clients[chainID] = tcpClient
+	}
+	return clients, addresses
 }
 
 // Start starts all registered lifecycles, RPC services and p2p networking.
@@ -370,13 +399,17 @@ func (n *Node) openEndpoints() error {
 		return convertFileLockError(err)
 	}
 
-	err := n.spClient.Connect(context.Background(), true)
+	// Connect to shared publisher - pass the address
+	err := n.spClient.Connect(context.Background(), n.config.SPAddr)
 	if err != nil {
 		return err
 	}
 
-	for _, c := range n.sequencerClients {
-		_ = c.Connect(context.Background(), false)
+	// Connect to sequencer clients - each has their own address stored
+	for chainID, c := range n.sequencerClients {
+		// Get the address from the client config or store it separately
+		addr := n.sequencerAddrs[chainID]
+		_ = c.Connect(context.Background(), addr)
 	}
 
 	// start RPC endpoints
@@ -767,7 +800,7 @@ func (n *Node) Server() *p2p.Server {
 	return n.server
 }
 
-func (n *Node) SPClient() spnetwork.Client {
+func (n *Node) SPClient() transport.Client {
 	n.lock.Lock()
 	defer n.lock.Unlock()
 
@@ -781,7 +814,7 @@ func (n *Node) Coordinator() *spconsensus.Coordinator {
 	return n.coordinator
 }
 
-func (n *Node) SequencerClients() map[string]spnetwork.Client {
+func (n *Node) SequencerClients() map[string]transport.Client {
 	n.lock.Lock()
 	defer n.lock.Unlock()
 
