@@ -164,6 +164,7 @@ func (c *client) Send(ctx context.Context, msg *sptypes.Message) error {
 
 		if !connected || writer == nil {
 			// Attempt to reconnect
+			log.Warn("Unable to send msg, reconnect", "to", c.cfg.ServerAddr, "connected", connected, "writerNil", writer == nil)
 			if err := c.Reconnect(ctx); err != nil {
 				lastErr = err
 				time.Sleep(c.cfg.ReconnectDelay)
