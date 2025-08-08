@@ -21,12 +21,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/ethereum/go-ethereum/crypto"
 	"math/big"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/holiman/uint256"
 
@@ -360,10 +361,12 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 
 	eth.dropper = newDropper(eth.p2pServer.MaxDialedConns(), eth.p2pServer.MaxInboundConns())
 
-	eth.APIBackend = &EthAPIBackend{stack.Config().ExtRPCEnabled(), stack.Config().AllowUnprotectedTxs,
-		config.RollupDisableTxPoolAdmission, eth, nil, nil, nil,
-		nil, nil, nil, common.Address{}, nil,
-		make([]*types.Transaction, 0), make([]*types.Transaction, 0), sync.RWMutex{}}
+	eth.APIBackend = &EthAPIBackend{
+		extRPCEnabled:       stack.Config().ExtRPCEnabled(),
+		allowUnprotectedTxs: stack.Config().AllowUnprotectedTxs,
+		disableTxPool:       config.RollupDisableTxPoolAdmission,
+		eth:                 eth,
+	}
 	if eth.APIBackend.allowUnprotectedTxs {
 		log.Info("Unprotected transactions allowed")
 	}
@@ -404,7 +407,6 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	// Successful startup; push a marker and check previous unclean shutdowns.
 	eth.shutdownTracker.MarkStartup()
 
-	eth.APIBackend.spServer = stack.SPServer()
 	eth.APIBackend.spClient = stack.SPClient()
 	eth.APIBackend.coordinator = stack.Coordinator()
 	eth.APIBackend.sequencerClients = stack.SequencerClients()
@@ -518,7 +520,6 @@ func (s *Ethereum) Start() error {
 	s.filterMaps.Start()
 	go s.updateFilterMapsHeads()
 
-	s.APIBackend.spServer.SetHandler(s.APIBackend.HandleSPMessage)
 	s.APIBackend.spClient.SetHandler(s.APIBackend.HandleSPMessage)
 
 	s.APIBackend.coordinator.SetStartCallback(s.APIBackend.StartCallbackFn(s.blockchain.Config().ChainID))

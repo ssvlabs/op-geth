@@ -72,7 +72,6 @@ type EthAPIBackend struct {
 	gpo                 *gasprice.Oracle
 
 	// SSV: Shared publisher and coordinator
-	spServer         network.Server
 	spClient         network.Client
 	coordinator      *spconsensus.Coordinator
 	sequencerClients map[string]network.Client
@@ -656,7 +655,7 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 
 			err = b.SubmitSequencerTransaction(ctx, putInboxTx, true)
 			if err != nil {
-				return nil, fmt.Errorf("failed to SubmitSequencerTransaction: %v", "txHash", putInboxTx.Hash().Hex(), err)
+				return nil, fmt.Errorf("failed to SubmitSequencerTransaction for tx %s: %w", putInboxTx.Hash().Hex(), err)
 			}
 
 			sequencerNonce++
