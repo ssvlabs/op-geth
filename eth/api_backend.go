@@ -603,7 +603,7 @@ func (b *EthAPIBackend) isCoordinator(ctx context.Context, mailboxProcessor *Mai
 	}
 
 	if coordinatorAddr != b.sequencerAddress {
-		return fmt.Errorf("sequencer is not coordinator")
+		return fmt.Errorf("sequencer is not coordinator, coordinatorAddr: %s, sequencerAddr: %s", coordinatorAddr.Hex(), b.sequencerAddress.Hex())
 	}
 
 	return nil
