@@ -718,7 +718,11 @@ func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq 
 		for _, state := range coordinationStates {
 			tx := state.Tx
 			_, done := txDone[tx.Hash().Hex()]
-			if state.Success && !done {
+			// Add to mempool if
+			// 1. no revert()
+			// 2. not added before
+			// 3. no CIRCMessages to be processed
+			if state.Success && !done && (len(state.Dependencies) == 0) {
 				log.Info("[SSV] Payload tx done, adding to payload mempool", "hash", tx.Hash().Hex(), "count", len(b.pendingSequencerTxs))
 				b.poolPayloadTx(tx) // user tx
 				txDone[tx.Hash().Hex()] = struct{}{}
