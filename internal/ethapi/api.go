@@ -1972,7 +1972,7 @@ func NewDebugAPI(b Backend) *DebugAPI {
 	return &DebugAPI{b: b}
 }
 
-func (api *DebugAPI) GetMailboxAddresses() map[string]string {
+func (api *EthereumAPI) GetMailboxAddresses() map[string]string {
 	mailboxAddresses := make(map[string]string)
 	for i, ma := range api.b.GetMailboxAddresses() {
 		rollupName := "rollup" + string(rune('A'+i))
