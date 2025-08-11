@@ -179,7 +179,6 @@ func (c *Coordinator) ConsumeCIRCMessage(xtID *rollupv1.XtID, sourceChainID stri
 
 func (c *Coordinator) RecordVote(xtID *rollupv1.XtID, chainID string, vote bool) (DecisionState, error) {
 	c.mu.Lock()
-	log.Info("[SSV] Recording vote", "chainID", chainID, "vote", vote)
 	xtIDStr := xtID.Hex()
 	state, exists := c.states[xtIDStr]
 	if !exists {

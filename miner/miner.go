@@ -98,7 +98,7 @@ type BackendWithSequencerTransactions interface {
 
 	// OnBlockBuildingComplete is called when block building completes
 	// SSV
-	OnBlockBuildingComplete(ctx context.Context, block *types.Block, success bool) error
+	OnBlockBuildingComplete(ctx context.Context, block *types.Block, success bool, simulation bool) error
 }
 
 // Config is the configuration parameters of mining.
@@ -205,7 +205,7 @@ func (miner *Miner) startBackgroundInteropFailsafeDetection() {
 // Pending returns the currently pending block and associated receipts, logs
 // and statedb. The returned values can be nil in case the pending block is
 // not initialized.
-func (miner *Miner) Pending() (*types.Block, types.Receipts, *state.StateDB) {
+func (miner *Miner) Pending(ctx context.Context) (*types.Block, types.Receipts, *state.StateDB) {
 	if miner.chainConfig.Optimism != nil && !miner.config.RollupComputePendingBlock {
 		// For compatibility when not computing a pending block, we serve the latest block as "pending"
 		headHeader := miner.chain.CurrentHeader()
@@ -219,16 +219,9 @@ func (miner *Miner) Pending() (*types.Block, types.Receipts, *state.StateDB) {
 		return headBlock, headReceipts, stateDB.Copy()
 	}
 
-	pending := miner.getPending()
+	pending := miner.getPending(ctx)
 	if pending == nil {
 		return nil, nil, nil
-	}
-
-	if len(pending.block.Transactions()) == 2 {
-		tx := pending.block.Transactions()[0]
-		fmt.Println("tx0", hexutil.Encode(tx.Data()))
-		tx = pending.block.Transactions()[1]
-		fmt.Println("tx1", hexutil.Encode(tx.Data()))
 	}
 
 	return pending.block, pending.receipts, pending.stateDB.Copy()
@@ -299,7 +292,7 @@ func (miner *Miner) BuildPayload(args *BuildPayloadArgs, witness bool) (*Payload
 
 // getPending retrieves the pending block based on the current head block.
 // The result might be nil if pending generation is failed.
-func (miner *Miner) getPending() *newPayloadResult {
+func (miner *Miner) getPending(ctx context.Context) *newPayloadResult {
 	header := miner.chain.CurrentHeader()
 	miner.pendingMu.Lock()
 	defer miner.pendingMu.Unlock()
@@ -319,6 +312,10 @@ func (miner *Miner) getPending() *newPayloadResult {
 	if miner.chainConfig.IsHolocene(timestamp) {
 		eip1559Params = miner.createHoloceneEIP1559Params(header, timestamp)
 	}
+
+	value := ctx.Value("simulation")
+	simulation, _ := value.(bool)
+
 	ret := miner.generateWork(&generateParams{
 		timestamp:     timestamp,
 		forceTime:     false,
@@ -329,6 +326,7 @@ func (miner *Miner) getPending() *newPayloadResult {
 		beaconRoot:    nil,
 		noTxs:         false,
 		eip1559Params: eip1559Params,
+		simulation:    simulation,
 	}, false) // we will never make a witness for a pending block
 	if ret.err != nil {
 		return nil
