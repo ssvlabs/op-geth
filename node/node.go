@@ -34,10 +34,9 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/crypto"
-	spconsensus "github.com/ethereum/go-ethereum/internal/sp/consensus"
-	sperrors "github.com/ethereum/go-ethereum/internal/sp/errors"
 	ssvlog "github.com/ssvlabs/rollup-shared-publisher/log"
 	"github.com/ssvlabs/rollup-shared-publisher/x/auth"
+	"github.com/ssvlabs/rollup-shared-publisher/x/consensus"
 	"github.com/ssvlabs/rollup-shared-publisher/x/transport"
 	"github.com/ssvlabs/rollup-shared-publisher/x/transport/tcp"
 
@@ -83,7 +82,7 @@ type Node struct {
 	sequencerAddrs   map[string]string
 	sequencerKey     *ecdsa.PrivateKey
 
-	coordinator *spconsensus.Coordinator
+	coordinator consensus.Coordinator
 
 	databases map[*closeTrackingDB]struct{} // All open databases
 }
@@ -207,7 +206,12 @@ func New(conf *Config) (*Node, error) {
 	node.sequencerKey = parsePrivateKey(conf.SequencerKey)
 
 	nodeID := fmt.Sprintf("sequencer-%d", time.Now().UnixNano())
-	node.coordinator = spconsensus.NewCoordinator(nodeID, false, 3*time.Minute)
+	coordinatorConfig := consensus.Config{
+		NodeID:  nodeID,
+		Role:    consensus.Follower,
+		Timeout: 3 * time.Minute,
+	}
+	node.coordinator = consensus.New(coordinatorConfig)
 
 	return node, nil
 }
@@ -438,13 +442,13 @@ func (n *Node) stopServices(running []Lifecycle) error {
 	n.server.Stop()
 
 	err := n.spClient.Disconnect(context.Background())
-	if err != nil && !errors.Is(err, sperrors.ErrNotConnected) {
+	if err != nil {
 		return err
 	}
 
 	for _, c := range n.sequencerClients {
 		err = c.Disconnect(context.Background())
-		if err != nil && !errors.Is(err, sperrors.ErrNotConnected) {
+		if err != nil {
 			return err
 		}
 	}
@@ -807,7 +811,7 @@ func (n *Node) SPClient() transport.Client {
 	return n.spClient
 }
 
-func (n *Node) Coordinator() *spconsensus.Coordinator {
+func (n *Node) Coordinator() consensus.Coordinator {
 	n.lock.Lock()
 	defer n.lock.Unlock()
 

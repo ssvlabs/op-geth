@@ -59,8 +59,7 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rpc"
 
-	spconsensus "github.com/ethereum/go-ethereum/internal/sp/consensus"
-	spnetwork "github.com/ethereum/go-ethereum/internal/sp/network"
+	spconsensus "github.com/ssvlabs/rollup-shared-publisher/x/consensus"
 )
 
 // EthAPIBackend implements ethapi.Backend and tracers.Backend for full nodes
@@ -73,7 +72,7 @@ type EthAPIBackend struct {
 
 	// SSV: Shared publisher and coordinator
 	spClient         transport.Client
-	coordinator      *spconsensus.Coordinator
+	coordinator      spconsensus.Coordinator
 	sequencerClients map[string]transport.Client
 	sequencerKey     *ecdsa.PrivateKey
 	sequencerAddress common.Address
@@ -810,7 +809,7 @@ func (b *EthAPIBackend) handleCIRCMessage(circMessage *rollupv1.CIRCMessage) err
 // SSV
 func (b *EthAPIBackend) StartCallbackFn(chainID *big.Int) spconsensus.StartFn {
 	return func(ctx context.Context, from string, xtReq *rollupv1.XTRequest) error {
-		if from != spnetwork.SharedPublisherSenderID {
+		if from != "shared-publisher" {
 			spMsg := &rollupv1.Message{
 				SenderId: chainID.String(),
 				Payload: &rollupv1.Message_XtRequest{
@@ -1226,10 +1225,12 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *type
 		}
 
 		// Only notify coordinator for blocks with putInbox transactions
+		// TODO: add it to the new coordinator
 		if containsPutInbox && !simulation {
-			if err := b.coordinator.HandleBlockReady(ctx, block); err != nil {
-				log.Error("[SSV] Coordinator failed to handle block", "err", err, "blockHash", block.Hash().Hex())
-			}
+			//	if err := b.coordinator.HandleBlockReady(ctx, block); err != nil {
+			//		log.Error("[SSV] Coordinator failed to handle block", "err", err, "blockHash", block.Hash().Hex())
+			//	}
+			log.Info("TODO [SSV] Coordinator notified about block with putInbox transactions", "blockHash", block.Hash().Hex())
 		}
 
 		if !simulation {

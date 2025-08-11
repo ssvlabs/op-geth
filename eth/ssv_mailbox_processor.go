@@ -16,9 +16,9 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
-	spconsensus "github.com/ethereum/go-ethereum/internal/sp/consensus"
 	"github.com/ethereum/go-ethereum/log"
 	rollupv1 "github.com/ssvlabs/rollup-shared-publisher/proto/rollup/v1"
+	spconsensus "github.com/ssvlabs/rollup-shared-publisher/x/consensus"
 	"github.com/ssvlabs/rollup-shared-publisher/x/transport"
 
 	"math/big"
@@ -81,13 +81,13 @@ type MailboxProcessor struct {
 	chainID          uint64
 	mailboxAddresses []common.Address
 	sequencerClients map[string]transport.Client
-	coordinator      *spconsensus.Coordinator
+	coordinator      spconsensus.Coordinator
 	backend          interface{}
 	sequencerKey     *ecdsa.PrivateKey
 	sequencerAddr    common.Address
 }
 
-func NewMailboxProcessor(chainID uint64, mailboxAddrs []common.Address, sequencerClients map[string]transport.Client, coordinator *spconsensus.Coordinator, sequencerKey *ecdsa.PrivateKey, sequencerAddr common.Address, backend *EthAPIBackend) *MailboxProcessor {
+func NewMailboxProcessor(chainID uint64, mailboxAddrs []common.Address, sequencerClients map[string]transport.Client, coordinator spconsensus.Coordinator, sequencerKey *ecdsa.PrivateKey, sequencerAddr common.Address, backend *EthAPIBackend) *MailboxProcessor {
 	return &MailboxProcessor{
 		chainID:          chainID,
 		mailboxAddresses: mailboxAddrs,

@@ -524,7 +524,7 @@ func (s *Ethereum) Start() error {
 
 	s.APIBackend.coordinator.SetStartCallback(s.APIBackend.StartCallbackFn(s.blockchain.Config().ChainID))
 	s.APIBackend.coordinator.SetVoteCallback(s.APIBackend.VoteCallbackFn(s.blockchain.Config().ChainID))
-	s.APIBackend.coordinator.SetBlockCallback(s.APIBackend.BlockCallbackFn())
+	//s.APIBackend.coordinator.SetBlockCallback(s.APIBackend.BlockCallbackFn())
 
 	return nil
 }
