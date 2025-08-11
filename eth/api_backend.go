@@ -544,32 +544,30 @@ func (b *EthAPIBackend) Genesis() *types.Block {
 
 // HandleSPMessage processes messages received from the shared publisher.
 // SSV
-func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, from string, msg *rollupv1.Message) error {
+func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *rollupv1.Message) ([]common.Hash, error) {
 	switch payload := msg.Payload.(type) {
 	case *rollupv1.Message_XtRequest:
-		_, err := b.handleXtRequest(ctx, msg.SenderId, payload.XtRequest)
+		hashes, err := b.handleXtRequest(ctx, msg.SenderId, payload.XtRequest)
 		if err != nil {
-			return fmt.Errorf("failed to handle xt request: %v", err)
+			return hashes, fmt.Errorf("failed to handle xt request: %v", err)
 		}
-
-		return nil
+		return nil, nil
 	case *rollupv1.Message_Decided:
 		err := b.handleDecided(payload.Decided)
 		if err != nil {
-			return fmt.Errorf("failed to handle decide: %v", err)
+			return nil, fmt.Errorf("failed to handle decide: %v", err)
 		}
-
-		return nil
+		return nil, nil
 	case *rollupv1.Message_CircMessage:
 		err := b.handleCIRCMessage(payload.CircMessage)
 		if err != nil {
-			return fmt.Errorf("failed to handle circ message: %v", err)
+			return nil, fmt.Errorf("failed to handle circ message: %v", err)
 		}
 
-		return nil
+		return nil, nil
 	default:
 		log.Error("[SSV] Unknown message type", "type", fmt.Sprintf("%T", payload))
-		return fmt.Errorf("unknown message type: %T", payload)
+		return nil, fmt.Errorf("unknown message type: %T", payload)
 	}
 }
 

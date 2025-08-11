@@ -602,7 +602,7 @@ type testBackend struct {
 	acc     accounts.Account
 }
 
-func (b *testBackend) HandleSPMessage(ctx context.Context, from string, msg *rollupv1.Message) error {
+func (b *testBackend) HandleSPMessage(ctx context.Context, msg *rollupv1.Message) ([]common.Hash, error) {
 	//TODO implement me
 	panic("implement me")
 }

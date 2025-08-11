@@ -270,7 +270,7 @@ func (b *backendMock) SimulateTransaction(ctx context.Context, tx *types.Transac
 	panic("implement me")
 }
 
-func (b *backendMock) HandleSPMessage(ctx context.Context, from string, msg *rollupv1.Message) error {
+func (b *backendMock) HandleSPMessage(ctx context.Context, msg *rollupv1.Message) ([]common.Hash, error) {
 	//TODO implement me
 	panic("implement me")
 }

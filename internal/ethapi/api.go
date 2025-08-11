@@ -1764,20 +1764,19 @@ func (api *TransactionAPI) SendTransaction(ctx context.Context, args Transaction
 
 // SendXTransaction processes a transaction request encapsulated in a hex-encoded protocol message.
 // SSV
-// TODO: it actually doesnt return common.Hash
-func (api *TransactionAPI) SendXTransaction(ctx context.Context, input hexutil.Bytes) error {
+func (api *TransactionAPI) SendXTransaction(ctx context.Context, input hexutil.Bytes) ([]common.Hash, error) {
 	var msg rollupv1.Message
 	if err := proto.Unmarshal(input, &msg); err != nil {
-		return fmt.Errorf("failed to unmarshal xtReq input: %v", err)
+		return nil, fmt.Errorf("failed to unmarshal xtReq input: %v", err)
 	}
 
 	switch payload := msg.Payload.(type) {
 	case *rollupv1.Message_XtRequest:
 		ctx = context.WithValue(ctx, "forward", true)
-		return api.b.HandleSPMessage(ctx, "", &msg)
+		return api.b.HandleSPMessage(ctx, &msg)
 	default:
 		log.Error("[SSV] Unknown message type", "type", fmt.Sprintf("%T", payload))
-		return fmt.Errorf("unknown message type: %T", payload)
+		return nil, fmt.Errorf("unknown message type: %T", payload)
 	}
 }
 
