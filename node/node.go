@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	crand "crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -179,6 +180,23 @@ func New(conf *Config) (*Node, error) {
 		privKey := parsePrivateKey(conf.SequencerKey)
 		authManager = auth.NewManager(privKey)
 		node.sequencerKey = privKey
+
+		fmt.Printf("Sequencer using public key: %x\n", authManager.PublicKeyBytes())
+		fmt.Printf("Sequencer address: %s\n", authManager.Address())
+	}
+
+	// TODO: make configurable after POC
+	var chainID int
+	addrss := strings.Split(conf.SequencerAddrs, ",")
+	if strings.Contains(addrss[0], ":9898") {
+		chainID = 11111
+	} else if strings.Contains(addrss[0], ":10898") {
+		chainID = 22222
+	}
+
+	if authManager != nil {
+		myChainID := fmt.Sprintf("%d", chainID)
+		setupSequencerAuth(myChainID, authManager)
 	}
 
 	// TODO: make configurable after POC
@@ -211,9 +229,42 @@ func New(conf *Config) (*Node, error) {
 		Role:    consensus.Follower,
 		Timeout: 3 * time.Minute,
 	}
-	node.coordinator = consensus.New(coordinatorConfig)
+	node.coordinator = consensus.New(slog.Logger, coordinatorConfig)
 
 	return node, nil
+}
+
+func setupSequencerAuth(myChainID string, authManager auth.Manager) {
+	spPublicKey := "03c720e214dccd730db38d10daca5f86d9e95f068ca5eb3930b7d0126e7a37c4a1"
+
+	spPubKeyBytes, err := hex.DecodeString(spPublicKey)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to decode SP public key: %v", err))
+	}
+
+	if err := authManager.AddTrustedKey("shared-publisher", spPubKeyBytes); err != nil {
+		panic(fmt.Sprintf("Failed to add SP trusted key: %v", err))
+	}
+
+	fmt.Printf("Added SP public key: %x\n", spPubKeyBytes)
+
+	otherSequencers := map[string]string{
+		"11111": "0210b140eb38ee476dc182ea1e3847055d4e168e665bed78f4a5e6eee9ede64994",
+		"22222": "03eb9bbd096168554c6b9fcd82dcd663e73b8b3b7ad1c247fd3e392d7194315323",
+	}
+
+	for id, pubKeyHex := range otherSequencers {
+		if id != myChainID {
+			pubKeyBytes, err := hex.DecodeString(pubKeyHex)
+			if err != nil {
+				panic(fmt.Sprintf("Failed to decode public key for %s: %v", id, err))
+			}
+			if err := authManager.AddTrustedKey(id, pubKeyBytes); err != nil {
+				panic(fmt.Sprintf("Failed to add trusted key for %s: %v", id, err))
+			}
+			fmt.Printf("Added trusted sequencer: %s with key %x\n", id, pubKeyBytes)
+		}
+	}
 }
 
 func parsePrivateKey(privKeyHex string) *ecdsa.PrivateKey {
