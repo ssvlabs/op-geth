@@ -33,9 +33,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ethereum/go-ethereum/accounts/abi"
-	"github.com/ethereum/go-ethereum/crypto"
-
 	"github.com/ethereum/go-ethereum/core/ssv"
 	"github.com/ethereum/go-ethereum/eth/tracers/native"
 
