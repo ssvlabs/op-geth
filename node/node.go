@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -35,9 +36,12 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/rs/zerolog"
 	ssvlog "github.com/ssvlabs/rollup-shared-publisher/log"
 	"github.com/ssvlabs/rollup-shared-publisher/x/auth"
 	"github.com/ssvlabs/rollup-shared-publisher/x/consensus"
+	"github.com/ssvlabs/rollup-shared-publisher/x/superblock/sequencer"
+	"github.com/ssvlabs/rollup-shared-publisher/x/superblock/slot"
 	"github.com/ssvlabs/rollup-shared-publisher/x/transport"
 	"github.com/ssvlabs/rollup-shared-publisher/x/transport/tcp"
 
@@ -78,12 +82,13 @@ type Node struct {
 	ipc           *ipcServer  // Stores information about the ipc http server
 	inprocHandler *rpc.Server // In-process RPC request handler to process the API requests
 
-	spClient         transport.Client
-	sequencerClients map[string]transport.Client
-	sequencerAddrs   map[string]string
-	sequencerKey     *ecdsa.PrivateKey
-
-	coordinator consensus.Coordinator
+	coordinator          consensus.Coordinator
+	spClient             transport.Client
+	sequencerClients     map[string]transport.Client
+	sequencerAddrs       map[string]string // Map of sequencer chain IDs to their addresses
+	sequencerKey         *ecdsa.PrivateKey
+	sequencerCoordinator *sequencer.SequencerCoordinator
+	ssvLogger            zerolog.Logger
 
 	databases map[*closeTrackingDB]struct{} // All open databases
 }
@@ -124,6 +129,13 @@ func New(conf *Config) (*Node, error) {
 	}
 	server := rpc.NewServer()
 	server.SetBatchLimits(conf.BatchRequestLimit, conf.BatchResponseMaxSize)
+
+	// SSV logger
+	ssvLogger := zerolog.New(os.Stdout).With().
+		Timestamp().
+		Str("component", "ssv").
+		Logger()
+
 	node := &Node{
 		config:        conf,
 		inprocHandler: server,
@@ -132,6 +144,7 @@ func New(conf *Config) (*Node, error) {
 		stop:          make(chan struct{}),
 		server:        &p2p.Server{Config: conf.P2P},
 		databases:     make(map[*closeTrackingDB]struct{}),
+		ssvLogger:     ssvLogger,
 	}
 
 	// Register built-in APIs.
@@ -181,8 +194,10 @@ func New(conf *Config) (*Node, error) {
 		authManager = auth.NewManager(privKey)
 		node.sequencerKey = privKey
 
-		fmt.Printf("Sequencer using public key: %x\n", authManager.PublicKeyBytes())
-		fmt.Printf("Sequencer address: %s\n", authManager.Address())
+		ssvLogger.Info().
+			Str("public_key", fmt.Sprintf("%x", authManager.PublicKeyBytes())).
+			Str("address", authManager.Address()).
+			Msg("Sequencer initialized with key")
 	}
 
 	// TODO: make configurable after POC
@@ -211,8 +226,7 @@ func New(conf *Config) (*Node, error) {
 		KeepAlivePeriod: 30 * time.Second,
 	}
 
-	slog := ssvlog.New("info", true)
-	tcpClient := tcp.NewClient(clientConfig, slog.Logger)
+	tcpClient := tcp.NewClient(clientConfig, ssvLogger)
 	if authManager != nil {
 		tcpClient = tcpClient.WithAuth(authManager)
 	}
@@ -223,13 +237,41 @@ func New(conf *Config) (*Node, error) {
 	node.sequencerAddrs = addrs
 	node.sequencerKey = parsePrivateKey(conf.SequencerKey)
 
+	// Initialize consensus coordinator for 2PC protocol
 	nodeID := fmt.Sprintf("sequencer-%d", time.Now().UnixNano())
 	coordinatorConfig := consensus.Config{
 		NodeID:  nodeID,
 		Role:    consensus.Follower,
 		Timeout: 3 * time.Minute,
 	}
-	node.coordinator = consensus.New(slog.Logger, coordinatorConfig)
+	node.coordinator = consensus.New(ssvLogger, coordinatorConfig)
+
+	chainIDBytes := big.NewInt(int64(chainID)).Bytes()
+	sequencerConfig := sequencer.Config{
+		ChainID: chainIDBytes,
+		Slot: slot.Config{
+			Duration:    12 * time.Second, // Ethereum slot duration
+			SealCutover: 2.0 / 3.0,        // Seal at 2/3 through slot
+			GenesisTime: time.Now(),       // Will be set by SP
+		},
+		BlockTimeout:         30 * time.Second,
+		MaxLocalTxs:          1000,
+		SCPTimeout:           10 * time.Second,
+		EnableCIRCValidation: true,
+	}
+
+	node.sequencerCoordinator = sequencer.NewSequencerCoordinator(
+		node.coordinator,
+		sequencerConfig,
+		tcpClient,
+		ssvLogger,
+	)
+
+	ssvLogger.Info().
+		Str("node_id", nodeID).
+		Int("chain_id", chainID).
+		Str("sp_addr", conf.SPAddr).
+		Msg("Node initialized with superblock protocol support")
 
 	return node, nil
 }
