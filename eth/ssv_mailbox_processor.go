@@ -14,6 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/eth/tracers"
+	"github.com/ethereum/go-ethereum/eth/tracers/native"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	network "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
 	spconsensus "github.com/ethereum/go-ethereum/internal/sp/consensus"
@@ -538,9 +539,9 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 
 	var mailboxAddr common.Address
 	switch mp.chainID {
-	case 55555:
+	case native.RollupAChainID:
 		mailboxAddr = mp.mailboxAddresses[0]
-	case 66666:
+	case native.RollupBChainID:
 		mailboxAddr = mp.mailboxAddresses[1]
 	default:
 		return nil, fmt.Errorf("unable to select mailbox addr. Unsupported \"%d\"chain id", mp.chainID)
