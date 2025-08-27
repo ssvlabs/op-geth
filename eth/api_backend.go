@@ -574,7 +574,8 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *sptypes.Messag
 }
 
 func (b *EthAPIBackend) isCoordinator(ctx context.Context, mailboxProcessor *MailboxProcessor) error {
-	mailboxAddr := b.GetMailboxAddressFromChainID(b.ChainConfig().ChainID.Uint64())
+	chainID := b.ChainConfig().ChainID.Uint64()
+	mailboxAddr := b.GetMailboxAddressFromChainID(chainID)
 
 	// Fetch the full block for the current head before creating a state view
 	head := b.eth.blockchain.CurrentBlock()
@@ -594,7 +595,7 @@ func (b *EthAPIBackend) isCoordinator(ctx context.Context, mailboxProcessor *Mai
 
 	mailboxCode := stateDB.GetCode(mailboxAddr)
 	if len(mailboxCode) == 0 {
-		return fmt.Errorf("mailbox code not found")
+		return fmt.Errorf("mailbox code not found at address %s for %d chain id", mailboxAddr.String(), chainID)
 	}
 
 	coordinatorAddr, err := mailboxProcessor.getCoordinatorAddress(ctx, mailboxAddr)
@@ -972,14 +973,12 @@ func (b *EthAPIBackend) GetMailboxAddresses() []common.Address {
 }
 
 func (b *EthAPIBackend) GetMailboxAddressFromChainID(chainID uint64) common.Address {
-	switch chainID {
-	case 11111:
-		return common.HexToAddress(native.RollupAMailBoxAddr)
-	case 22222:
-		return common.HexToAddress(native.RollupBMailBoxAddr)
-	default:
+	mailboxAddr, ok := native.ChainIDToMailbox[chainID]
+	if !ok {
 		return common.Address{}
 	}
+
+	return common.HexToAddress(mailboxAddr)
 }
 
 // GetPendingClearTx returns the pending clear transaction for the current block.
@@ -1100,9 +1099,9 @@ func (b *EthAPIBackend) createClearTransaction(ctx context.Context) (*types.Tran
 	var mailboxAddr common.Address
 	chainID := b.ChainConfig().ChainID.Int64()
 	switch chainID {
-	case 11111:
+	case native.RollupAChainID:
 		mailboxAddr = b.GetMailboxAddresses()[0]
-	case 22222:
+	case native.RollupBChainID:
 		mailboxAddr = b.GetMailboxAddresses()[1]
 	default:
 		return nil, fmt.Errorf("unable to select mailbox addr. Unsupported \"%d\"chain id", chainID)
