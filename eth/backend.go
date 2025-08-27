@@ -413,6 +413,10 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	eth.APIBackend.sequencerKey = stack.SequencerKey()
 	eth.APIBackend.sequencerAddress = crypto.PubkeyToAddress(stack.SequencerKey().PublicKey)
 
+	if eth.APIBackend.coordinator != nil && eth.APIBackend.spClient != nil {
+		eth.APIBackend.SetSequencerCoordinator(eth.APIBackend.coordinator, eth.APIBackend.spClient)
+	}
+
 	eth.miner = miner.New(eth, eth.APIBackend, config.Miner, eth.engine)
 	eth.miner.SetExtra(makeExtraData(config.Miner.ExtraData))
 	eth.miner.SetPrioAddresses(config.TxPool.Locals)
@@ -519,12 +523,6 @@ func (s *Ethereum) Start() error {
 	// start log indexer
 	s.filterMaps.Start()
 	go s.updateFilterMapsHeads()
-
-	s.APIBackend.spClient.SetHandler(s.APIBackend.HandleSPMessage)
-
-	s.APIBackend.coordinator.SetStartCallback(s.APIBackend.StartCallbackFn(s.blockchain.Config().ChainID))
-	s.APIBackend.coordinator.SetVoteCallback(s.APIBackend.VoteCallbackFn(s.blockchain.Config().ChainID))
-	//s.APIBackend.coordinator.SetBlockCallback(s.APIBackend.BlockCallbackFn())
 
 	return nil
 }

@@ -60,6 +60,7 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 
 	spconsensus "github.com/ssvlabs/rollup-shared-publisher/x/consensus"
+	"github.com/ssvlabs/rollup-shared-publisher/x/superblock/sequencer"
 )
 
 // EthAPIBackend implements ethapi.Backend and tracers.Backend for full nodes
@@ -70,9 +71,9 @@ type EthAPIBackend struct {
 	eth                 *Ethereum
 	gpo                 *gasprice.Oracle
 
-	// SSV: Shared publisher and coordinator
+	// SSV: Shared publisher + SBCP coordinator integration
 	spClient         transport.Client
-	coordinator      spconsensus.Coordinator
+	coordinator      sequencer.Coordinator
 	sequencerClients map[string]transport.Client
 	sequencerKey     *ecdsa.PrivateKey
 	sequencerAddress common.Address
@@ -82,6 +83,11 @@ type EthAPIBackend struct {
 	pendingPutInboxTxs  []*types.Transaction
 	pendingSequencerTxs []*types.Transaction
 	sequencerTxMutex    sync.RWMutex
+
+	// SSV: Track last RequestSeal inclusion list for SBCP
+	rsMutex                 sync.RWMutex
+	lastRequestSealIncluded [][]byte
+	lastRequestSealSlot     uint64
 }
 
 // ChainConfig returns the active chain configuration.
@@ -544,30 +550,16 @@ func (b *EthAPIBackend) Genesis() *types.Block {
 // HandleSPMessage processes messages received from the shared publisher.
 // SSV
 func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *rollupv1.Message) ([]common.Hash, error) {
-	switch payload := msg.Payload.(type) {
-	case *rollupv1.Message_XtRequest:
-		hashes, err := b.handleXtRequest(ctx, msg.SenderId, payload.XtRequest)
-		if err != nil {
-			return hashes, fmt.Errorf("failed to handle xt request: %v", err)
-		}
-		return nil, nil
-	case *rollupv1.Message_Decided:
-		err := b.handleDecided(payload.Decided)
-		if err != nil {
-			return nil, fmt.Errorf("failed to handle decide: %v", err)
-		}
-		return nil, nil
-	case *rollupv1.Message_CircMessage:
-		err := b.handleCIRCMessage(payload.CircMessage)
-		if err != nil {
-			return nil, fmt.Errorf("failed to handle circ message: %v", err)
-		}
-
-		return nil, nil
-	default:
-		log.Error("[SSV] Unknown message type", "type", fmt.Sprintf("%T", payload))
-		return nil, fmt.Errorf("unknown message type: %T", payload)
+	if b.coordinator == nil {
+		return nil, fmt.Errorf("coordinator not configured")
 	}
+
+	// Everything goes through coordinator - it handles 2PC, CIRC, and SBCP
+	if err := b.coordinator.HandleMessage(ctx, msg.SenderId, msg); err != nil {
+		return nil, fmt.Errorf("coordinator failed to handle %T: %w", msg.Payload, err)
+	}
+
+	return nil, nil
 }
 
 func (b *EthAPIBackend) isCoordinator(ctx context.Context, mailboxProcessor *MailboxProcessor) error {
@@ -608,187 +600,187 @@ func (b *EthAPIBackend) isCoordinator(ctx context.Context, mailboxProcessor *Mai
 
 // handleXtRequest processes a cross-chain transaction request.
 // SSV
-func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq *rollupv1.XTRequest) ([]common.Hash, error) {
-	// Only start coordinator if this is actually a cross-chain transaction
-	if len(xtReq.Transactions) > 1 {
-		err := b.coordinator.StartTransaction(from, xtReq)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	xtID, err := xtReq.XtID()
-	if err != nil {
-		return nil, err
-	}
-
-	chainID := b.ChainConfig().ChainID
-
-	// Generate unique ID for this xTRequest (for 2PC tracking)
-	xtRequestId := fmt.Sprintf("xt_%d_%s", time.Now().UnixNano(), from)
-	log.Info("[SSV] Processing xTRequest", "id", xtRequestId, "senderID", from, "xtID", xtID.Hex())
-
-	// Process each transaction for cross-rollup coordination
-	localTxs := make([]*rollupv1.TransactionRequest, 0)
-	for _, txReq := range xtReq.Transactions {
-		txChainID := new(big.Int).SetBytes(txReq.ChainId)
-
-		if txChainID.Cmp(chainID) == 0 {
-			localTxs = append(localTxs, txReq)
-		} else {
-			log.Info("[SSV] Received cross-chain transaction", "chainID", txChainID, "senderID", from, "txCount", len(txReq.Transaction))
-		}
-	}
-	// Only proceed with coordination if we have local transactions
-	if len(localTxs) == 0 {
-		log.Info("[SSV] No local transactions to process", "xtID", xtID.Hex())
-		return nil, nil
-	}
-
-	sequencerAddr := crypto.PubkeyToAddress(b.sequencerKey.PublicKey)
-	mailboxProcessor := NewMailboxProcessor(
-		b.ChainConfig().ChainID.Uint64(),
-		b.GetMailboxAddresses(),
-		b.sequencerClients,
-		b.coordinator,
-		b.sequencerKey,
-		sequencerAddr,
-		b,
-	)
-
-	// check if sequencer is coordinator
-	if err = b.isCoordinator(ctx, mailboxProcessor); err != nil {
-		log.Error("[SSV] Sequencer is not coordinator", "err", err)
-		return nil, err
-	}
-
-	var newFulfilledDeps []CrossRollupDependency
-	historicalSentCIRCMsgs := make([]CrossRollupMessage, 0)
-	historicalCIRCDeps := make([]CrossRollupDependency, 0)
-
-	startNonce, err := b.GetPoolNonce(ctx, sequencerAddr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get nonce: %v", err)
-	}
-
-	txDone := make(map[string]interface{}, 0)
-
-	timeout := time.After(time.Minute)
-	sequencerNonce := startNonce + 1 // preserve startNonce for clear() tx
-	for {
-		// Populate mempool with new putInbox txs
-		for _, dep := range newFulfilledDeps {
-			var putInboxTx *types.Transaction
-			putInboxTx, err = mailboxProcessor.createPutInboxTx(dep, sequencerNonce)
-			if err != nil {
-				return nil, fmt.Errorf("failed to createAndSubmitPutInboxTx: %v", err)
-			}
-
-			err = b.SubmitSequencerTransaction(ctx, putInboxTx, true)
-			if err != nil {
-				return nil, fmt.Errorf("failed to SubmitSequencerTransaction (txHash=%s): %v", putInboxTx.Hash().Hex(), err)
-			}
-
-			sequencerNonce++
-		}
-
-		historicalCIRCDeps = append(historicalCIRCDeps, newFulfilledDeps...) // TODO: better refactor: use map[] or create new struct
-		newFulfilledDeps = make([]CrossRollupDependency, 0)                  // reset fullfilled dependencies
-
-		var coordinationStates []*SimulationState
-		for _, txReq := range localTxs {
-			log.Info("[SSV] Processing local transaction", "senderID", from, "chainID", b.ChainConfig().ChainID.String(), "txCount", len(txReq.Transaction))
-
-			// Process each transaction
-			for _, txBytes := range txReq.Transaction {
-				tx := new(types.Transaction)
-				if err := tx.UnmarshalBinary(txBytes); err != nil {
-					return nil, err
-				}
-
-				// SIMULATE
-				traceResult, err := b.SimulateTransaction(ctx, tx, rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber))
-				if err != nil {
-					log.Error("[SSV] Cross-chain transaction simulation failed", "txHash", tx.Hash().Hex(), "error", err)
-					return nil, fmt.Errorf("simulation failed: %w", err)
-				}
-
-				log.Info("[SSV] Transaction simulated", "txHash", tx.Hash().Hex())
-
-				// ANALYZE
-				log.Info("[SSV] Analyzing cross-rollup transaction", "txHash", tx.Hash().Hex(), "xtRequestId", xtRequestId)
-				simState, err := mailboxProcessor.AnalyzeTransaction(traceResult, historicalSentCIRCMsgs, historicalCIRCDeps, tx)
-				if err != nil {
-					log.Error("[SSV] Failed to process transaction", "error", err, "txHash", tx.Hash().Hex())
-					// Vote abort if processing fails
-					_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), false)
-					return nil, err
-				}
-				coordinationStates = append(coordinationStates, simState)
-
-				log.Info("[SSV] Transaction analyzed", "txHash", tx.Hash().Hex(), "requiresCoordination", simState.RequiresCoordination(), "dependencies", len(simState.Dependencies), "outbound", len(simState.OutboundMessages))
-			}
-		}
-
-		logSummary(xtRequestId, xtID, coordinationStates)
-
-		if requiresCoordination(coordinationStates) {
-			// Handle cross-rollup coordination for each transaction that needs it
-			for _, state := range coordinationStates {
-				// Checking if sequencer should send or await CIRCMessage
-				if state.RequiresCoordination() {
-					var sentOutboundMsgs []CrossRollupMessage
-					var fulFilledDeps []CrossRollupDependency
-					sentOutboundMsgs, fulFilledDeps, err = mailboxProcessor.handleCrossRollupCoordination(ctx, state, xtID)
-					if err != nil {
-						log.Error("[SSV] Cross-rollup coordination failed", "error", err, "xtID", xtID.Hex())
-						// Vote abort if coordination fails
-						_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), false)
-						return nil, err
-					}
-
-					newFulfilledDeps = append(newFulfilledDeps, fulFilledDeps...)
-					historicalSentCIRCMsgs = append(historicalSentCIRCMsgs, sentOutboundMsgs...)
-				}
-			}
-
-			log.Info("[SSV] Cross-rollup coordination phase completed", "xtID", xtID.Hex())
-		}
-
-		for _, state := range coordinationStates {
-			tx := state.Tx
-			_, done := txDone[tx.Hash().Hex()]
-			// Add to mempool if
-			// 1. no revert()
-			// 2. not added before
-			// 3. no CIRCMessages to be processed
-			if state.Success && !done && (len(state.Dependencies) == 0) {
-				log.Info("[SSV] Payload tx done, adding to payload mempool", "hash", tx.Hash().Hex(), "count", len(b.pendingSequencerTxs))
-				b.poolPayloadTx(tx) // user tx
-				txDone[tx.Hash().Hex()] = struct{}{}
-			}
-		}
-
-		// successful when no tx ends up with revert()
-		if successfulAll(coordinationStates) {
-			_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), true)
-			if err != nil {
-				return nil, err
-			}
-			return nil, nil
-		}
-
-		log.Info("[SSV] Transaction requires another round of simulation", "xtID", xtID.Hex())
-		select {
-		case <-timeout:
-			log.Error("[SSV] Cross-rollup coordination timeout", "error", err, "xtID", xtID.Hex())
-			// Vote abort if coordination fails
-			_, err = b.coordinator.RecordVote(xtID, chainID.Text(16), false)
-			return nil, nil
-		case <-time.After(300 * time.Millisecond):
-		}
-	}
-}
+//func (b *EthAPIBackend) handleXtRequest(ctx context.Context, from string, xtReq *rollupv1.XTRequest) ([]common.Hash, error) {
+//	// Only start coordinator if this is actually a cross-chain transaction
+//	if len(xtReq.Transactions) > 1 {
+//		err := b.coordinator.Consensus().StartTransaction(from, xtReq)
+//		if err != nil {
+//			return nil, err
+//		}
+//	}
+//
+//	xtID, err := xtReq.XtID()
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	chainID := b.ChainConfig().ChainID
+//
+//	// Generate unique ID for this xTRequest (for 2PC tracking)
+//	xtRequestId := fmt.Sprintf("xt_%d_%s", time.Now().UnixNano(), from)
+//	log.Info("[SSV] Processing xTRequest", "id", xtRequestId, "senderID", from, "xtID", xtID.Hex())
+//
+//	// Process each transaction for cross-rollup coordination
+//	localTxs := make([]*rollupv1.TransactionRequest, 0)
+//	for _, txReq := range xtReq.Transactions {
+//		txChainID := new(big.Int).SetBytes(txReq.ChainId)
+//
+//		if txChainID.Cmp(chainID) == 0 {
+//			localTxs = append(localTxs, txReq)
+//		} else {
+//			log.Info("[SSV] Received cross-chain transaction", "chainID", txChainID, "senderID", from, "txCount", len(txReq.Transaction))
+//		}
+//	}
+//	// Only proceed with coordination if we have local transactions
+//	if len(localTxs) == 0 {
+//		log.Info("[SSV] No local transactions to process", "xtID", xtID.Hex())
+//		return nil, nil
+//	}
+//
+//	sequencerAddr := crypto.PubkeyToAddress(b.sequencerKey.PublicKey)
+//	mailboxProcessor := NewMailboxProcessor(
+//		b.ChainConfig().ChainID.Uint64(),
+//		b.GetMailboxAddresses(),
+//		b.sequencerClients,
+//		b.coordinator,
+//		b.sequencerKey,
+//		sequencerAddr,
+//		b,
+//	)
+//
+//	// check if sequencer is coordinator
+//	if err = b.isCoordinator(ctx, mailboxProcessor); err != nil {
+//		log.Error("[SSV] Sequencer is not coordinator", "err", err)
+//		return nil, err
+//	}
+//
+//	var newFulfilledDeps []CrossRollupDependency
+//	historicalSentCIRCMsgs := make([]CrossRollupMessage, 0)
+//	historicalCIRCDeps := make([]CrossRollupDependency, 0)
+//
+//	startNonce, err := b.GetPoolNonce(ctx, sequencerAddr)
+//	if err != nil {
+//		return nil, fmt.Errorf("failed to get nonce: %v", err)
+//	}
+//
+//	txDone := make(map[string]interface{}, 0)
+//
+//	timeout := time.After(time.Minute)
+//	sequencerNonce := startNonce + 1 // preserve startNonce for clear() tx
+//	for {
+//		// Populate mempool with new putInbox txs
+//		for _, dep := range newFulfilledDeps {
+//			var putInboxTx *types.Transaction
+//			putInboxTx, err = mailboxProcessor.createPutInboxTx(dep, sequencerNonce)
+//			if err != nil {
+//				return nil, fmt.Errorf("failed to createAndSubmitPutInboxTx: %v", err)
+//			}
+//
+//			err = b.SubmitSequencerTransaction(ctx, putInboxTx, true)
+//			if err != nil {
+//				return nil, fmt.Errorf("failed to SubmitSequencerTransaction (txHash=%s): %v", putInboxTx.Hash().Hex(), err)
+//			}
+//
+//			sequencerNonce++
+//		}
+//
+//		historicalCIRCDeps = append(historicalCIRCDeps, newFulfilledDeps...) // TODO: better refactor: use map[] or create new struct
+//		newFulfilledDeps = make([]CrossRollupDependency, 0)                  // reset fullfilled dependencies
+//
+//		var coordinationStates []*SimulationState
+//		for _, txReq := range localTxs {
+//			log.Info("[SSV] Processing local transaction", "senderID", from, "chainID", b.ChainConfig().ChainID.String(), "txCount", len(txReq.Transaction))
+//
+//			// Process each transaction
+//			for _, txBytes := range txReq.Transaction {
+//				tx := new(types.Transaction)
+//				if err := tx.UnmarshalBinary(txBytes); err != nil {
+//					return nil, err
+//				}
+//
+//				// SIMULATE
+//				traceResult, err := b.SimulateTransaction(ctx, tx, rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber))
+//				if err != nil {
+//					log.Error("[SSV] Cross-chain transaction simulation failed", "txHash", tx.Hash().Hex(), "error", err)
+//					return nil, fmt.Errorf("simulation failed: %w", err)
+//				}
+//
+//				log.Info("[SSV] Transaction simulated", "txHash", tx.Hash().Hex())
+//
+//				// ANALYZE
+//				log.Info("[SSV] Analyzing cross-rollup transaction", "txHash", tx.Hash().Hex(), "xtRequestId", xtRequestId)
+//				simState, err := mailboxProcessor.AnalyzeTransaction(traceResult, historicalSentCIRCMsgs, historicalCIRCDeps, tx)
+//				if err != nil {
+//					log.Error("[SSV] Failed to process transaction", "error", err, "txHash", tx.Hash().Hex())
+//					// Vote abort if processing fails
+//					_, err = b.coordinator.Consensus().RecordVote(xtID, chainID.Text(16), false)
+//					return nil, err
+//				}
+//				coordinationStates = append(coordinationStates, simState)
+//
+//				log.Info("[SSV] Transaction analyzed", "txHash", tx.Hash().Hex(), "requiresCoordination", simState.RequiresCoordination(), "dependencies", len(simState.Dependencies), "outbound", len(simState.OutboundMessages))
+//			}
+//		}
+//
+//		logSummary(xtRequestId, xtID, coordinationStates)
+//
+//		if requiresCoordination(coordinationStates) {
+//			// Handle cross-rollup coordination for each transaction that needs it
+//			for _, state := range coordinationStates {
+//				// Checking if sequencer should send or await CIRCMessage
+//				if state.RequiresCoordination() {
+//					var sentOutboundMsgs []CrossRollupMessage
+//					var fulFilledDeps []CrossRollupDependency
+//					sentOutboundMsgs, fulFilledDeps, err = mailboxProcessor.handleCrossRollupCoordination(ctx, state, xtID)
+//					if err != nil {
+//						log.Error("[SSV] Cross-rollup coordination failed", "error", err, "xtID", xtID.Hex())
+//						// Vote abort if coordination fails
+//						_, err = b.coordinator.Consensus().RecordVote(xtID, chainID.Text(16), false)
+//						return nil, err
+//					}
+//
+//					newFulfilledDeps = append(newFulfilledDeps, fulFilledDeps...)
+//					historicalSentCIRCMsgs = append(historicalSentCIRCMsgs, sentOutboundMsgs...)
+//				}
+//			}
+//
+//			log.Info("[SSV] Cross-rollup coordination phase completed", "xtID", xtID.Hex())
+//		}
+//
+//		for _, state := range coordinationStates {
+//			tx := state.Tx
+//			_, done := txDone[tx.Hash().Hex()]
+//			// Add to mempool if
+//			// 1. no revert()
+//			// 2. not added before
+//			// 3. no CIRCMessages to be processed
+//			if state.Success && !done && (len(state.Dependencies) == 0) {
+//				log.Info("[SSV] Payload tx done, adding to payload mempool", "hash", tx.Hash().Hex(), "count", len(b.pendingSequencerTxs))
+//				b.poolPayloadTx(tx) // user tx
+//				txDone[tx.Hash().Hex()] = struct{}{}
+//			}
+//		}
+//
+//		// successful when no tx ends up with revert()
+//		if successfulAll(coordinationStates) {
+//			_, err = b.coordinator.Consensus().RecordVote(xtID, chainID.Text(16), true)
+//			if err != nil {
+//				return nil, err
+//			}
+//			return nil, nil
+//		}
+//
+//		log.Info("[SSV] Transaction requires another round of simulation", "xtID", xtID.Hex())
+//		select {
+//		case <-timeout:
+//			log.Error("[SSV] Cross-rollup coordination timeout", "error", err, "xtID", xtID.Hex())
+//			// Vote abort if coordination fails
+//			_, err = b.coordinator.Consensus().RecordVote(xtID, chainID.Text(16), false)
+//			return nil, nil
+//		case <-time.After(300 * time.Millisecond):
+//		}
+//	}
+//}
 
 func successfulAll(coordinationStates []*SimulationState) bool {
 	for _, s := range coordinationStates {
@@ -838,13 +830,13 @@ func requiresCoordination(coordinationStates []*SimulationState) bool {
 // handleDecided processes a Decided message received from the shared publisher.
 // SSV
 func (b *EthAPIBackend) handleDecided(xtDecision *rollupv1.Decided) error {
-	return b.coordinator.RecordDecision(xtDecision.XtId, xtDecision.GetDecision())
+	return b.coordinator.Consensus().RecordDecision(xtDecision.XtId, xtDecision.GetDecision())
 }
 
 // handleCIRCMessage processes a CIRC message received from the shared publisher.
 // SSV
 func (b *EthAPIBackend) handleCIRCMessage(circMessage *rollupv1.CIRCMessage) error {
-	return b.coordinator.RecordCIRCMessage(circMessage)
+	return b.coordinator.Consensus().RecordCIRCMessage(circMessage)
 }
 
 // StartCallbackFn returns a function that can be used to send transaction bundles to the shared publisher.
@@ -882,6 +874,21 @@ func (b *EthAPIBackend) VoteCallbackFn(chainID *big.Int) spconsensus.VoteFn {
 		spMsg := &rollupv1.Message{
 			SenderId: chainID.String(),
 			Payload:  msgVote,
+		}
+		return b.spClient.Send(ctx, spMsg)
+	}
+}
+
+// DecisionCallbackFn broadcasts final commit/abort to the shared publisher (leader path)
+// SSV
+func (b *EthAPIBackend) DecisionCallbackFn(chainID *big.Int) spconsensus.DecisionFn {
+	return func(ctx context.Context, xtID *rollupv1.XtID, decision bool) error {
+		spMsg := &rollupv1.Message{
+			SenderId: chainID.String(),
+			Payload: &rollupv1.Message_Decided{Decided: &rollupv1.Decided{
+				XtId:     xtID,
+				Decision: decision,
+			}},
 		}
 		return b.spClient.Send(ctx, spMsg)
 	}
@@ -970,9 +977,9 @@ func (b *EthAPIBackend) GetMailboxAddresses() []common.Address {
 
 func (b *EthAPIBackend) GetMailboxAddressFromChainID(chainID uint64) common.Address {
 	switch chainID {
-	case 11111:
+	case 55555:
 		return common.HexToAddress(native.RollupAMailBoxAddr)
-	case 22222:
+	case 66666:
 		return common.HexToAddress(native.RollupBMailBoxAddr)
 	default:
 		return common.Address{}
@@ -1052,18 +1059,63 @@ func (b *EthAPIBackend) ClearSequencerTransactionsAfterBlock() {
 // PrepareSequencerTransactionsForBlock prepares sequencer transactions for inclusion in a new block
 // SSV
 func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context) error {
-	// 1. Create clear transaction if we have any cross-chain activity
-	if len(b.GetPendingPutInboxTxs()) > 0 || b.shouldCreateClearTx() {
-		// Reuse existing to avoid nonce collision
-		if b.pendingClearTx == nil {
-			clearTx, err := b.createClearTransaction(ctx)
-			if err != nil {
-				log.Error("[SSV] Failed to create clear transaction", "err", err)
-				return err
-			}
+	// Check if we're in SBCP mode
+	if b.coordinator != nil {
+		currentState := b.coordinator.GetState()
+		currentSlot := b.coordinator.GetCurrentSlot()
 
-			b.SetPendingClearTx(clearTx)
-			log.Info("[SSV] Created clear transaction", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce(), "pendingPutInboxTxs", len(b.GetPendingPutInboxTxs()), "shouldCreate", b.shouldCreateClearTx())
+		log.Debug("[SSV] Preparing transactions",
+			"state", currentState.String(),
+			"slot", currentSlot)
+
+		// Only prepare sequencer transactions during appropriate states
+		switch currentState {
+		case sequencer.StateBuildingFree, sequencer.StateBuildingLocked:
+			// Let coordinator prepare any SCP-related transactions
+			if err := b.coordinator.PrepareTransactionsForBlock(ctx, currentSlot); err != nil {
+				log.Warn("[SSV] Coordinator failed to prepare transactions", "err", err)
+			}
+		case sequencer.StateSubmission:
+			// During submission, we should already have all transactions ready
+			log.Debug("[SSV] In submission state, transactions should be ready")
+		default:
+			// In Waiting state, no SBCP transactions needed
+			log.Debug("[SSV] Not in active building state, skipping SBCP prep")
+		}
+	}
+
+	// Always prepare clear transaction if we have cross-chain activity
+	hasCrossChain := len(b.GetPendingPutInboxTxs()) > 0 || len(b.GetPendingOriginalTxs()) > 0
+
+	if hasCrossChain && b.pendingClearTx == nil {
+		// Ensure this sequencer is the coordinator before creating clear()
+		// Build a mailbox processor for the check
+		if b.sequencerKey != nil && b.coordinator != nil {
+			mailboxProcessor := NewMailboxProcessor(
+				b.ChainConfig().ChainID.Uint64(),
+				b.GetMailboxAddresses(),
+				b.sequencerClients,
+				b.coordinator,
+				b.sequencerKey,
+				b.sequencerAddress,
+				b,
+			)
+			if err := b.isCoordinator(ctx, mailboxProcessor); err != nil {
+				log.Error("[SSV] Sequencer is not coordinator; skipping clear tx creation", "err", err)
+			} else {
+				clearTx, err := b.createClearTransaction(ctx)
+				if err != nil {
+					log.Error("[SSV] Failed to create clear transaction", "err", err)
+					return err
+				}
+
+				b.SetPendingClearTx(clearTx)
+				log.Info("[SSV] Created clear transaction",
+					"txHash", clearTx.Hash().Hex(),
+					"nonce", clearTx.Nonce())
+			}
+		} else {
+			log.Warn("[SSV] Missing sequencer key or coordinator; skipping clear tx creation")
 		}
 	}
 
@@ -1248,6 +1300,9 @@ func (b *EthAPIBackend) validateSequencerTransaction(tx *types.Transaction) erro
 // SSV
 func (b *EthAPIBackend) OnBlockBuildingStart(context.Context) error {
 	log.Info("[SSV] Block building started - preparing sequencer state")
+	if b.coordinator != nil {
+		_ = b.coordinator.OnBlockBuildingStart(context.Background(), b.coordinator.GetCurrentSlot())
+	}
 
 	return nil
 }
@@ -1255,41 +1310,20 @@ func (b *EthAPIBackend) OnBlockBuildingStart(context.Context) error {
 // OnBlockBuildingComplete is called when block building completes
 // SSV
 func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *types.Block, success, simulation bool) error {
-	if success && block != nil {
-
-		pendingPutInbox := b.GetPendingPutInboxTxs()
-		containsPutInbox := false
-
-		if len(pendingPutInbox) > 0 {
-			putInboxMap := make(map[common.Hash]bool)
-			for _, ptx := range pendingPutInbox {
-				putInboxMap[ptx.Hash()] = true
-			}
-
-			for _, btx := range block.Transactions() {
-				if putInboxMap[btx.Hash()] {
-					containsPutInbox = true
-					break
-				}
-			}
-		}
-
-		// Only notify coordinator for blocks with putInbox transactions
-		// TODO: add it to the new coordinator
-		if containsPutInbox && !simulation {
-			//	if err := b.coordinator.HandleBlockReady(ctx, block); err != nil {
-			//		log.Error("[SSV] Coordinator failed to handle block", "err", err, "blockHash", block.Hash().Hex())
-			//	}
-			log.Info("TODO [SSV] Coordinator notified about block with putInbox transactions", "blockHash", block.Hash().Hex())
-		}
-
-		if !simulation {
-			b.ClearSequencerTransactionsAfterBlock()
-			log.Info("[SSV] Sequencer transaction state cleared after successful block")
-		}
-
-		log.Info("[SSV] Block building completed successfully", "blockHash", block.Hash().Hex(), "simulation", simulation)
+	if !success || block == nil {
+		log.Warn("[SSV] Block building failed", "success", success, "hasBlock", block != nil)
+		return nil
 	}
+
+	// Only process for real blocks, not simulations
+	if !simulation {
+		// In coordinator-driven submission mode, the sequencer coordinator
+		// seals and submits L2Block. Avoid duplicate submission from backend.
+		// Still clear sequencer tx staging.
+		b.ClearSequencerTransactionsAfterBlock()
+		log.Info("[SSV] Block building completed", "blockHash", block.Hash().Hex())
+	}
+
 	return nil
 }
 
@@ -1504,4 +1538,234 @@ func (b *EthAPIBackend) poolPayloadTx(tx *types.Transaction) {
 	defer b.sequencerTxMutex.Unlock()
 
 	b.pendingSequencerTxs = append(b.pendingSequencerTxs, tx)
+}
+
+// SetSequencerCoordinator wires an SBCP sequencer coordinator, consensus callbacks, and SP client routing.
+// SSV
+func (b *EthAPIBackend) SetSequencerCoordinator(coord sequencer.Coordinator, sp transport.Client) {
+	b.coordinator = coord
+	b.spClient = sp
+
+	if b.spClient != nil {
+		b.spClient.SetHandler(b.HandleSPMessage)
+	}
+
+	if b.coordinator != nil {
+		// Wire consensus callbacks (existing)
+		if b.coordinator.Consensus() != nil {
+			chainID := b.ChainConfig().ChainID
+			b.coordinator.Consensus().SetStartCallback(b.StartCallbackFn(chainID))
+			b.coordinator.Consensus().SetVoteCallback(b.VoteCallbackFn(chainID))
+			b.coordinator.Consensus().SetDecisionCallback(b.DecisionCallbackFn(chainID))
+		}
+
+		// Register SBCP callbacks with simulation
+		b.coordinator.SetCallbacks(sequencer.CoordinatorCallbacks{
+			// For SBCP mode simulation during StartSC
+			SimulateAndVote: b.simulateXTRequestForSBCP,
+
+			OnVoteDecision: func(ctx context.Context, xtID *rollupv1.XtID, chainID string, vote bool) error {
+				log.Debug("[SSV] Vote decision", "xtID", xtID.Hex(), "vote", vote)
+				return nil
+			},
+
+			OnFinalDecision: func(ctx context.Context, xtID *rollupv1.XtID, decision bool) error {
+				log.Info("[SSV] Final decision", "xtID", xtID.Hex(), "decision", decision)
+				return b.handleDecided(&rollupv1.Decided{XtId: xtID, Decision: decision})
+			},
+
+			OnBlockReady: func(ctx context.Context, block *rollupv1.L2Block, xtIDs []*rollupv1.XtID) error {
+				log.Info("[SSV] SBCP block ready", "slot", block.Slot, "xtIDs", len(xtIDs))
+				return nil
+			},
+
+			OnStateTransition: func(from, to sequencer.State, slot uint64, reason string) {
+				log.Info("[SSV] SBCP state transition", "from", from.String(), "to", to.String(), "slot", slot)
+				if to == sequencer.StateWaiting {
+					b.ClearSequencerTransactionsAfterBlock()
+				}
+			},
+		})
+
+		// Set miner notifier and start
+		b.coordinator.SetMinerNotifier(b)
+
+		if err := b.coordinator.Start(context.Background()); err != nil {
+			log.Error("[SSV] Failed to start coordinator", "err", err)
+		} else {
+			log.Info("[SSV] SBCP coordinator with simulation started")
+		}
+	}
+}
+
+// MinerNotifier implementation (SBCP -> miner hooks)
+// SSV
+func (b *EthAPIBackend) NotifySlotStart(startSlot *rollupv1.StartSlot) error {
+	log.Info("[SSV] Notify miner: StartSlot", "slot", startSlot.Slot, "next_sb", startSlot.NextSuperblockNumber)
+	// Integrate with miner if needed (e.g., trigger prefetch/prep). Placeholder for now.
+	return nil
+}
+
+// SSV
+func (b *EthAPIBackend) NotifyRequestSeal(requestSeal *rollupv1.RequestSeal) error {
+	log.Info("[SSV] Notify miner: RequestSeal", "slot", requestSeal.Slot, "included_xts", len(requestSeal.IncludedXts))
+	// Record included xtIDs for this slot so OnBlockBuildingComplete can package correct L2Block
+	b.rsMutex.Lock()
+	b.lastRequestSealIncluded = make([][]byte, len(requestSeal.IncludedXts))
+	for i, xt := range requestSeal.IncludedXts {
+		// copy to avoid aliasing
+		dup := make([]byte, len(xt))
+		copy(dup, xt)
+		b.lastRequestSealIncluded[i] = dup
+	}
+	b.lastRequestSealSlot = requestSeal.Slot
+	b.rsMutex.Unlock()
+	return nil
+}
+
+// SSV
+func (b *EthAPIBackend) NotifyStateChange(from, to sequencer.State, slot uint64) error {
+	log.Debug("[SSV] SBCP state change", "from", from.String(), "to", to.String(), "slot", slot)
+	return nil
+}
+
+func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rollupv1.XTRequest, xtID *rollupv1.XtID) (bool, error) {
+	log.Info("[SSV] Simulating XT request for SBCP",
+		"xtID", xtID.Hex(),
+		"chainID", b.ChainConfig().ChainID,
+		"txCount", len(xtReq.Transactions))
+
+	chainID := b.ChainConfig().ChainID
+
+	// Extract local transactions (same as old version)
+	localTxs := make([]*rollupv1.TransactionRequest, 0)
+	for _, txReq := range xtReq.Transactions {
+		txChainID := new(big.Int).SetBytes(txReq.ChainId)
+		if txChainID.Cmp(chainID) == 0 {
+			localTxs = append(localTxs, txReq)
+		}
+	}
+
+	if len(localTxs) == 0 {
+		log.Info("[SSV] No local transactions to simulate", "xtID", xtID.Hex())
+		return true, nil
+	}
+
+	sequencerAddr := crypto.PubkeyToAddress(b.sequencerKey.PublicKey)
+	mailboxProcessor := NewMailboxProcessor(
+		b.ChainConfig().ChainID.Uint64(),
+		b.GetMailboxAddresses(),
+		b.sequencerClients,
+		b.coordinator,
+		b.sequencerKey,
+		sequencerAddr,
+		b,
+	)
+
+	// Ensure this sequencer is the coordinator before attempting coordination
+	if err := b.isCoordinator(ctx, mailboxProcessor); err != nil {
+		log.Error("[SSV] Sequencer is not coordinator for mailbox", "err", err)
+		return false, err
+	}
+
+	// Use old version's coordination logic (adapted for SBCP)
+	var newFulfilledDeps []CrossRollupDependency
+	historicalSentCIRCMsgs := make([]CrossRollupMessage, 0)
+	historicalCIRCDeps := make([]CrossRollupDependency, 0)
+
+	startNonce, err := b.GetPoolNonce(ctx, sequencerAddr)
+	if err != nil {
+		return false, fmt.Errorf("failed to get nonce: %v", err)
+	}
+
+	txDone := make(map[string]interface{}, 0)
+	timeout := time.After(30 * time.Second) // Shorter timeout for SBCP
+	sequencerNonce := startNonce + 1        // preserve startNonce for clear() tx
+
+	for {
+		// Populate mempool with new putInbox txs (same as old version)
+		for _, dep := range newFulfilledDeps {
+			putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, sequencerNonce)
+			if err != nil {
+				return false, fmt.Errorf("failed to createPutInboxTx: %v", err)
+			}
+
+			err = b.SubmitSequencerTransaction(ctx, putInboxTx, true)
+			if err != nil {
+				return false, fmt.Errorf("failed to SubmitSequencerTransaction (txHash=%s): %v", putInboxTx.Hash().Hex(), err)
+			}
+			sequencerNonce++
+		}
+
+		historicalCIRCDeps = append(historicalCIRCDeps, newFulfilledDeps...)
+		newFulfilledDeps = make([]CrossRollupDependency, 0)
+
+		var coordinationStates []*SimulationState
+		for _, txReq := range localTxs {
+			for _, txBytes := range txReq.Transaction {
+				tx := new(types.Transaction)
+				if err := tx.UnmarshalBinary(txBytes); err != nil {
+					return false, err
+				}
+
+				traceResult, err := b.SimulateTransaction(ctx, tx, rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber))
+				if err != nil {
+					log.Error("[SSV] Cross-chain transaction simulation failed", "txHash", tx.Hash().Hex(), "error", err)
+					return false, fmt.Errorf("simulation failed: %w", err)
+				}
+
+				simState, err := mailboxProcessor.AnalyzeTransaction(traceResult, historicalSentCIRCMsgs, historicalCIRCDeps, tx)
+				if err != nil {
+					log.Error("[SSV] Failed to process transaction", "error", err, "txHash", tx.Hash().Hex())
+					return false, err
+				}
+				coordinationStates = append(coordinationStates, simState)
+
+				log.Info("[SSV] Transaction analyzed", "txHash", tx.Hash().Hex(), "requiresCoordination", simState.RequiresCoordination(), "dependencies", len(simState.Dependencies), "outbound", len(simState.OutboundMessages))
+			}
+		}
+
+		if requiresCoordination(coordinationStates) {
+			// Handle cross-rollup coordination for each transaction that needs it
+			for _, state := range coordinationStates {
+				if state.RequiresCoordination() {
+					var sentOutboundMsgs []CrossRollupMessage
+					var fulFilledDeps []CrossRollupDependency
+					sentOutboundMsgs, fulFilledDeps, err = mailboxProcessor.handleCrossRollupCoordination(ctx, state, xtID)
+					if err != nil {
+						log.Error("[SSV] Cross-rollup coordination failed", "error", err, "xtID", xtID.Hex())
+						return false, err
+					}
+
+					newFulfilledDeps = append(newFulfilledDeps, fulFilledDeps...)
+					historicalSentCIRCMsgs = append(historicalSentCIRCMsgs, sentOutboundMsgs...)
+				}
+			}
+			log.Info("[SSV] Cross-rollup coordination phase completed", "xtID", xtID.Hex())
+		}
+
+		for _, state := range coordinationStates {
+			tx := state.Tx
+			_, done := txDone[tx.Hash().Hex()]
+			// Add to mempool if: 1. no revert() 2. not added before 3. no CIRCMessages to be processed
+			if state.Success && !done && (len(state.Dependencies) == 0) {
+				log.Info("[SSV] Payload tx done, adding to payload mempool", "hash", tx.Hash().Hex(), "count", len(b.pendingSequencerTxs))
+				b.poolPayloadTx(tx) // user tx
+				txDone[tx.Hash().Hex()] = struct{}{}
+			}
+		}
+
+		// successful when no tx ends up with revert()
+		if successfulAll(coordinationStates) {
+			return true, nil
+		}
+
+		log.Info("[SSV] Transaction requires another round of simulation", "xtID", xtID.Hex())
+		select {
+		case <-timeout:
+			log.Error("[SSV] Cross-rollup coordination timeout", "xtID", xtID.Hex())
+			return false, fmt.Errorf("coordination timeout")
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }

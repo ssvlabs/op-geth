@@ -18,7 +18,7 @@ import (
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/log"
 	rollupv1 "github.com/ssvlabs/rollup-shared-publisher/proto/rollup/v1"
-	spconsensus "github.com/ssvlabs/rollup-shared-publisher/x/consensus"
+	"github.com/ssvlabs/rollup-shared-publisher/x/superblock/sequencer"
 	"github.com/ssvlabs/rollup-shared-publisher/x/transport"
 
 	"math/big"
@@ -78,24 +78,24 @@ func (s SimulationState) RequiresCoordination() bool {
 }
 
 type MailboxProcessor struct {
-	chainID          uint64
-	mailboxAddresses []common.Address
-	sequencerClients map[string]transport.Client
-	coordinator      spconsensus.Coordinator
-	backend          interface{}
-	sequencerKey     *ecdsa.PrivateKey
-	sequencerAddr    common.Address
+	chainID              uint64
+	mailboxAddresses     []common.Address
+	sequencerClients     map[string]transport.Client
+	sequencerCoordinator sequencer.Coordinator
+	backend              interface{}
+	sequencerKey         *ecdsa.PrivateKey
+	sequencerAddr        common.Address
 }
 
-func NewMailboxProcessor(chainID uint64, mailboxAddrs []common.Address, sequencerClients map[string]transport.Client, coordinator spconsensus.Coordinator, sequencerKey *ecdsa.PrivateKey, sequencerAddr common.Address, backend *EthAPIBackend) *MailboxProcessor {
+func NewMailboxProcessor(chainID uint64, mailboxAddrs []common.Address, sequencerClients map[string]transport.Client, coordinator sequencer.Coordinator, sequencerKey *ecdsa.PrivateKey, sequencerAddr common.Address, backend *EthAPIBackend) *MailboxProcessor {
 	return &MailboxProcessor{
-		chainID:          chainID,
-		mailboxAddresses: mailboxAddrs,
-		sequencerClients: sequencerClients,
-		coordinator:      coordinator,
-		backend:          backend,
-		sequencerKey:     sequencerKey,
-		sequencerAddr:    sequencerAddr,
+		chainID:              chainID,
+		mailboxAddresses:     mailboxAddrs,
+		sequencerClients:     sequencerClients,
+		sequencerCoordinator: coordinator,
+		backend:              backend,
+		sequencerKey:         sequencerKey,
+		sequencerAddr:        sequencerAddr,
 	}
 }
 
@@ -473,7 +473,7 @@ func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *rollup
 		case <-timeout.C:
 			return nil, fmt.Errorf("timeout waiting for CIRC message from chain %s", sourceChainID)
 		case <-ticker.C:
-			circMsg, err := mp.coordinator.ConsumeCIRCMessage(xtID, sourceChainID)
+			circMsg, err := mp.sequencerCoordinator.Consensus().ConsumeCIRCMessage(xtID, sourceChainID)
 			if err != nil {
 				continue // Keep waiting
 			}
@@ -494,6 +494,7 @@ func (mp *MailboxProcessor) getCoordinatorAddress(ctx context.Context, addr comm
 		return common.Address{}, err
 	}
 
+	// The Mailbox ABI exposes the coordinator under the "coordinator" view
 	callData, err := parsedABI.Pack("coordinator")
 	if err != nil {
 		return common.Address{}, err

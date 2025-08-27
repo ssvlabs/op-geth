@@ -170,7 +170,7 @@ func (miner *Miner) generateWork(params *generateParams, witness bool) *newPaylo
 			log.Error("[SSV] Failed to prepare sequencer transactions", "err", err)
 		}
 	} else {
-		log.Error("[SSV] backend API doesnt support BackendWithSequencerTransactions", "err", err)
+		log.Error("[SSV] backend API doesnt support BackendWithSequencerTransactions")
 	}
 
 	for _, tx := range params.txs {

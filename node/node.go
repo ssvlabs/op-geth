@@ -82,6 +82,7 @@ type Node struct {
 	ipc           *ipcServer  // Stores information about the ipc http server
 	inprocHandler *rpc.Server // In-process RPC request handler to process the API requests
 
+	spServer             transport.Server
 	coordinator          consensus.Coordinator
 	spClient             transport.Client
 	sequencerClients     map[string]transport.Client
@@ -187,16 +188,19 @@ func New(conf *Config) (*Node, error) {
 	node.ws = newHTTPServer(node.log, rpc.DefaultHTTPTimeouts)
 	node.wsAuth = newHTTPServer(node.log, rpc.DefaultHTTPTimeouts)
 	node.ipc = newIPCServer(node.log, conf.IPCEndpoint())
+	serverCfg := tcp.DefaultServerConfig()
+	serverCfg.ListenAddr = conf.SPListenAddr
+	node.spServer = tcp.NewServer(serverCfg, ssvLogger)
 
 	var authManager auth.Manager
 	if conf.SequencerKey != "" {
 		privKey := parsePrivateKey(conf.SequencerKey)
-		authManager = auth.NewManager(privKey)
+		//authManager = auth.NewManager(privKey)
 		node.sequencerKey = privKey
 
 		ssvLogger.Info().
-			Str("public_key", fmt.Sprintf("%x", authManager.PublicKeyBytes())).
-			Str("address", authManager.Address()).
+			//Str("public_key", fmt.Sprintf("%x", authManager.PublicKeyBytes())).
+			//Str("address", authManager.Address()).
 			Msg("Sequencer initialized with key")
 	}
 
@@ -209,10 +213,10 @@ func New(conf *Config) (*Node, error) {
 		chainID = 22222
 	}
 
-	if authManager != nil {
-		myChainID := fmt.Sprintf("%d", chainID)
-		setupSequencerAuth(myChainID, authManager)
-	}
+	//if authManager != nil {
+	//	myChainID := fmt.Sprintf("%d", chainID)
+	//	setupSequencerAuth(myChainID, authManager)
+	//}
 
 	// TODO: make configurable after POC
 	clientConfig := tcp.ClientConfig{
@@ -227,9 +231,9 @@ func New(conf *Config) (*Node, error) {
 	}
 
 	tcpClient := tcp.NewClient(clientConfig, ssvLogger)
-	if authManager != nil {
-		tcpClient = tcpClient.WithAuth(authManager)
-	}
+	//if authManager != nil {
+	//	tcpClient = tcpClient.WithAuth(authManager)
+	//}
 	node.spClient = tcpClient
 
 	clients, addrs := generateClients(conf.SequencerAddrs, authManager)
@@ -240,9 +244,10 @@ func New(conf *Config) (*Node, error) {
 	// Initialize consensus coordinator for 2PC protocol
 	nodeID := fmt.Sprintf("sequencer-%d", time.Now().UnixNano())
 	coordinatorConfig := consensus.Config{
-		NodeID:  nodeID,
-		Role:    consensus.Follower,
-		Timeout: 3 * time.Minute,
+		NodeID:   nodeID,
+		Role:     consensus.Follower,
+		Timeout:  3 * time.Minute,
+		IsLeader: false,
 	}
 	node.coordinator = consensus.New(ssvLogger, coordinatorConfig)
 
@@ -374,10 +379,6 @@ func generateClients(addrs string, authManager auth.Manager) (map[string]transpo
 
 		slog := ssvlog.New("info", true)
 		tcpClient := tcp.NewClient(clientConfig, slog.Logger)
-		if authManager != nil {
-			tcpClient = tcpClient.WithAuth(authManager)
-		}
-
 		clients[chainID] = tcpClient
 	}
 	return clients, addresses
@@ -496,21 +497,35 @@ func (n *Node) openEndpoints() error {
 		return convertFileLockError(err)
 	}
 
-	// Connect to shared publisher - pass the address
-	err := n.spClient.Connect(context.Background(), n.config.SPAddr)
-	if err != nil {
+	if err := n.spServer.Start(context.Background()); err != nil {
 		return err
 	}
+
+	//// Connect to shared publisher - pass the address
+	//err := n.spClient.Connect(context.Background(), n.config.SPAddr)
+	//if err != nil {
+	//	return err
+	//}
+
+	go func() {
+		if err := n.spClient.ConnectWithRetry(context.Background(), n.config.SPAddr, 5); err != nil {
+			n.log.Error("Failed to connect to shared publisher", "err", err)
+		}
+	}()
 
 	// Connect to sequencer clients - each has their own address stored
 	for chainID, c := range n.sequencerClients {
 		// Get the address from the client config or store it separately
 		addr := n.sequencerAddrs[chainID]
-		_ = c.Connect(context.Background(), addr)
+		n.log.Info("Connecting to sequencer", "id", chainID, "addr", addr)
+		go func(client transport.Client, address, id string) {
+			if err := client.ConnectWithRetry(context.Background(), address, 5); err != nil {
+				n.log.Error("Failed to connect to sequencer", "id", id, "addr", address, "err", err)
+			}
+		}(c, addr, chainID)
 	}
-
 	// start RPC endpoints
-	err = n.startRPC()
+	err := n.startRPC()
 	if err != nil {
 		n.stopRPC()
 		n.server.Stop()
@@ -528,6 +543,12 @@ func (n *Node) stopServices(running []Lifecycle) error {
 	for i := len(running) - 1; i >= 0; i-- {
 		if err := running[i].Stop(); err != nil {
 			failure.Services[reflect.TypeOf(running[i])] = err
+		}
+	}
+
+	if n.spServer != nil {
+		if err := n.spServer.Stop(context.Background()); err != nil {
+			failure.Services[reflect.TypeOf(n.spServer)] = err
 		}
 	}
 
@@ -904,11 +925,11 @@ func (n *Node) SPClient() transport.Client {
 	return n.spClient
 }
 
-func (n *Node) Coordinator() consensus.Coordinator {
+func (n *Node) Coordinator() sequencer.Coordinator {
 	n.lock.Lock()
 	defer n.lock.Unlock()
 
-	return n.coordinator
+	return n.sequencerCoordinator
 }
 
 func (n *Node) SequencerClients() map[string]transport.Client {

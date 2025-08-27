@@ -28,7 +28,7 @@ type SSVTraceResult struct {
 
 // ssvOperationMarshaling provides field overrides for JSON marshaling
 type ssvOperationMarshaling struct {
-	TypeString   string `json:"type"`
-	CallData     hexutil.Bytes
-	Gas          hexutil.Uint64
+	TypeString string `json:"type"`
+	CallData   hexutil.Bytes
+	Gas        hexutil.Uint64
 }
