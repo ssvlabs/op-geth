@@ -574,7 +574,8 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *sptypes.Messag
 }
 
 func (b *EthAPIBackend) isCoordinator(ctx context.Context, mailboxProcessor *MailboxProcessor) error {
-	mailboxAddr := b.GetMailboxAddressFromChainID(b.ChainConfig().ChainID.Uint64())
+	chainID := b.ChainConfig().ChainID.Uint64()
+	mailboxAddr := b.GetMailboxAddressFromChainID(chainID)
 
 	// Fetch the full block for the current head before creating a state view
 	head := b.eth.blockchain.CurrentBlock()
@@ -594,7 +595,7 @@ func (b *EthAPIBackend) isCoordinator(ctx context.Context, mailboxProcessor *Mai
 
 	mailboxCode := stateDB.GetCode(mailboxAddr)
 	if len(mailboxCode) == 0 {
-		return fmt.Errorf("mailbox code not found at address %s", mailboxAddr.String())
+		return fmt.Errorf("mailbox code not found at address %s for %d chain id", mailboxAddr.String(), chainID)
 	}
 
 	coordinatorAddr, err := mailboxProcessor.getCoordinatorAddress(ctx, mailboxAddr)
