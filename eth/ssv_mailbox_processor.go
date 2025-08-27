@@ -538,9 +538,9 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 
 	var mailboxAddr common.Address
 	switch mp.chainID {
-	case 11111:
+	case 55555:
 		mailboxAddr = mp.mailboxAddresses[0]
-	case 22222:
+	case 66666:
 		mailboxAddr = mp.mailboxAddresses[1]
 	default:
 		return nil, fmt.Errorf("unable to select mailbox addr. Unsupported \"%d\"chain id", mp.chainID)
