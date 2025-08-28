@@ -354,11 +354,11 @@ func (sc *SequencerCoordinator) handleStartSC(ctx context.Context, from string, 
 					Msg("Failed to initialize consensus state for StartSC")
 				return err
 			}
-			sc.log.Debug().
-				Str("xt_id", xtID.Hex()).
-				Msg("Initialized consensus state for StartSC")
-		}
-	}
+            sc.log.Info().
+                Str("xt_id", xtID.Hex()).
+                Msg("Initialized consensus state for StartSC")
+        }
+    }
 	// TODO:REMOVE
 	sc.log.Info().
 		Str("xt_id", xtID.Hex()).

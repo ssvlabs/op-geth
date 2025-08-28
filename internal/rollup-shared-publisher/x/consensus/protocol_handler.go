@@ -1,11 +1,12 @@
 package consensus
 
 import (
-	"context"
-	"fmt"
+    "context"
+    "fmt"
+    "math/big"
 
-	"github.com/rs/zerolog"
-	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
+    "github.com/rs/zerolog"
+    pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 )
 
 // ProtocolHandler defines the interface for SCP protocol message handling
@@ -61,9 +62,29 @@ func (h *protocolHandler) Handle(ctx context.Context, from string, msg *pb.Messa
 		decided := msg.GetDecided()
 		return h.coordinator.RecordDecision(decided.XtId, decided.Decision)
 
-	case MsgCIRCMessage:
-		circMsg := msg.GetCircMessage()
-		return h.coordinator.RecordCIRCMessage(circMsg)
+    case MsgCIRCMessage:
+        circMsg := msg.GetCircMessage()
+        var xtHex string
+        if circMsg.GetXtId() != nil {
+            xtHex = circMsg.GetXtId().Hex()
+        }
+        src := new(big.Int).SetBytes(circMsg.GetSourceChain()).String()
+        dst := new(big.Int).SetBytes(circMsg.GetDestinationChain()).String()
+        h.log.Info().
+            Str("xt_id", xtHex).
+            Str("source_chain", src).
+            Str("dest_chain", dst).
+            Msg("SCP: received CIRC message")
+
+        err := h.coordinator.RecordCIRCMessage(circMsg)
+        if err != nil {
+            h.log.Warn().
+                Err(err).
+                Str("xt_id", xtHex).
+                Str("source_chain", src).
+                Msg("Failed to record CIRC message")
+        }
+        return err
 
 	case MsgUnknown:
 		return fmt.Errorf("unhandled SCP message type %s from %s", msgType.String(), from)

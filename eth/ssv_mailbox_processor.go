@@ -466,30 +466,36 @@ func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollu
 }
 
 func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *rollupv1.XtID, sourceChainID string) (*rollupv1.CIRCMessage, error) {
-	// Wait for CIRC message with timeout
-	timeout := time.NewTimer(2 * time.Minute)
-	defer timeout.Stop()
+    // Wait for CIRC message with timeout
+    timeout := time.NewTimer(2 * time.Minute)
+    defer timeout.Stop()
 
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
+    ticker := time.NewTicker(100 * time.Millisecond)
+    defer ticker.Stop()
+    ticks := 0
 
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-timeout.C:
-			return nil, fmt.Errorf("timeout waiting for CIRC message from chain %s", sourceChainID)
-		case <-ticker.C:
-			backend := mp.backend.(*EthAPIBackend)
-			circMsg, err := backend.coordinator.Consensus().ConsumeCIRCMessage(xtID, sourceChainID)
-			if err != nil {
-				continue // Keep waiting
-			}
+    for {
+        select {
+        case <-ctx.Done():
+            return nil, ctx.Err()
+        case <-timeout.C:
+            return nil, fmt.Errorf("timeout waiting for CIRC message from chain %s", sourceChainID)
+        case <-ticker.C:
+            backend := mp.backend.(*EthAPIBackend)
+            circMsg, err := backend.coordinator.Consensus().ConsumeCIRCMessage(xtID, sourceChainID)
+            if err != nil {
+                // Periodic debug to confirm we're still waiting
+                ticks++
+                if ticks%20 == 0 { // ~2s interval
+                    log.Debug("[SSV] Still waiting for CIRC message", "xtID", xtID.Hex(), "from", sourceChainID, "err", err.Error())
+                }
+                continue // Keep waiting
+            }
 
-			log.Info("[SSV] Consumed CIRC message",
-				"from", sourceChainID,
-				"dataLen", len(circMsg.Data[0]),
-			)
+            log.Info("[SSV] Consumed CIRC message",
+                "from", sourceChainID,
+                "dataLen", len(circMsg.Data[0]),
+            )
 
 			return circMsg, nil
 		}
