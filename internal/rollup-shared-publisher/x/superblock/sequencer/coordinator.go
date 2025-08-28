@@ -147,6 +147,7 @@ func (sc *SequencerCoordinator) handleStartSlot(startSlot *pb.StartSlot) error {
 		Uint64("slot", startSlot.Slot).
 		Uint64("superblock_number", startSlot.NextSuperblockNumber).
 		Int("l2_requests", len(startSlot.L2BlocksRequest)).
+		Str("chain_id", fmt.Sprintf("%x", sc.chainID)).
 		Msg("Received StartSlot")
 
 	// Check if we have a slot regression
@@ -171,9 +172,17 @@ func (sc *SequencerCoordinator) handleStartSlot(startSlot *pb.StartSlot) error {
 	atomic.StoreUint64(&sc.currentSlot, startSlot.Slot)
 
 	if ourRequest == nil {
+		// Collect SP-provided chain IDs for diagnostics
+		spChains := make([]string, 0, len(startSlot.L2BlocksRequest))
+		for _, r := range startSlot.L2BlocksRequest {
+			spChains = append(spChains, fmt.Sprintf("%x", r.ChainId))
+		}
+
 		sc.log.Info().
 			Uint64("slot", startSlot.Slot).
-			Msg("Not participating in this slot")
+			Str("our_chain_id", fmt.Sprintf("%x", sc.chainID)).
+			Strs("sp_chain_ids", spChains).
+			Msg("Not participating in this slot (no matching ChainID)")
 		return nil
 	}
 
@@ -240,9 +249,17 @@ func (sc *SequencerCoordinator) handleRollBackAndStartSlot(
 	}
 
 	if ourRequest == nil {
+		// Collect SP-provided chain IDs for diagnostics
+		spChains := make([]string, 0, len(rb.L2BlocksRequest))
+		for _, r := range rb.L2BlocksRequest {
+			spChains = append(spChains, fmt.Sprintf("%x", r.ChainId))
+		}
+
 		sc.log.Info().
 			Uint64("slot", rb.CurrentSlot).
-			Msg("Not participating in this rollback slot")
+			Str("our_chain_id", fmt.Sprintf("%x", sc.chainID)).
+			Strs("sp_chain_ids", spChains).
+			Msg("Not participating in this rollback slot (no matching ChainID)")
 		return nil
 	}
 
