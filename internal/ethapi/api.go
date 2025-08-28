@@ -21,11 +21,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"google.golang.org/protobuf/proto"
 	gomath "math"
 	"math/big"
 	"strings"
 	"time"
+
+	rollupv1 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ethereum/go-ethereum"
@@ -49,8 +51,6 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethereum/go-ethereum/trie"
-
-	sptypes "github.com/ethereum/go-ethereum/internal/sp/proto"
 )
 
 // estimateGasErrorRatio is the amount of overestimation eth_estimateGas is
@@ -1762,14 +1762,16 @@ func (api *TransactionAPI) SendTransaction(ctx context.Context, args Transaction
 	return SubmitTransaction(ctx, api.b, signed)
 }
 
+// SendXTransaction processes a transaction request encapsulated in a hex-encoded protocol message.
+// SSV
 func (api *TransactionAPI) SendXTransaction(ctx context.Context, input hexutil.Bytes) ([]common.Hash, error) {
-	var msg sptypes.Message
+	var msg rollupv1.Message
 	if err := proto.Unmarshal(input, &msg); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal xtReq input: %v", err)
 	}
 
 	switch payload := msg.Payload.(type) {
-	case *sptypes.Message_XtRequest:
+	case *rollupv1.Message_XtRequest:
 		ctx = context.WithValue(ctx, "forward", true)
 		return api.b.HandleSPMessage(ctx, &msg)
 	default:

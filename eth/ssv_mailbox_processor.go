@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -16,15 +17,17 @@ import (
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/eth/tracers/native"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
-	network "github.com/ethereum/go-ethereum/internal/publisherapi/spnetwork"
-	spconsensus "github.com/ethereum/go-ethereum/internal/sp/consensus"
-	sptypes "github.com/ethereum/go-ethereum/internal/sp/proto"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/rpc"
+	rollupv1 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
+	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/sequencer"
+	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
+
 	"math/big"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 const mailboxABI = `[{"type":"constructor","inputs":[{"name":"_coordinator","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"clear","inputs":[],"outputs":[],"stateMutability":"nonpayable"},{"type":"function","name":"coordinator","inputs":[],"outputs":[{"name":"","type":"address","internalType":"address"}],"stateMutability":"view"},{"type":"function","name":"getKey","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"stateMutability":"pure"},{"type":"function","name":"inbox","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"keyListInbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"keyListOutbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"outbox","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"putInbox","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"function","name":"read","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"write","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"error","name":"InvalidCoordinator","inputs":[]}]`
@@ -76,24 +79,24 @@ func (s SimulationState) RequiresCoordination() bool {
 }
 
 type MailboxProcessor struct {
-	chainID          uint64
-	mailboxAddresses []common.Address
-	sequencerClients map[string]network.Client
-	coordinator      *spconsensus.Coordinator
-	backend          interface{}
-	sequencerKey     *ecdsa.PrivateKey
-	sequencerAddr    common.Address
+	chainID              uint64
+	mailboxAddresses     []common.Address
+	sequencerClients     map[string]transport.Client
+	sequencerCoordinator sequencer.Coordinator
+	backend              interface{}
+	sequencerKey         *ecdsa.PrivateKey
+	sequencerAddr        common.Address
 }
 
-func NewMailboxProcessor(chainID uint64, mailboxAddrs []common.Address, sequencerClients map[string]network.Client, coordinator *spconsensus.Coordinator, sequencerKey *ecdsa.PrivateKey, sequencerAddr common.Address, backend *EthAPIBackend) *MailboxProcessor {
+func NewMailboxProcessor(chainID uint64, mailboxAddrs []common.Address, sequencerClients map[string]transport.Client, coordinator sequencer.Coordinator, sequencerKey *ecdsa.PrivateKey, sequencerAddr common.Address, backend *EthAPIBackend) *MailboxProcessor {
 	return &MailboxProcessor{
-		chainID:          chainID,
-		mailboxAddresses: mailboxAddrs,
-		sequencerClients: sequencerClients,
-		coordinator:      coordinator,
-		backend:          backend,
-		sequencerKey:     sequencerKey,
-		sequencerAddr:    sequencerAddr,
+		chainID:              chainID,
+		mailboxAddresses:     mailboxAddrs,
+		sequencerClients:     sequencerClients,
+		sequencerCoordinator: coordinator,
+		backend:              backend,
+		sequencerKey:         sequencerKey,
+		sequencerAddr:        sequencerAddr,
 	}
 }
 
@@ -398,7 +401,7 @@ func (mp *MailboxProcessor) parseWriteCall(data []byte) (*MailboxCall, error) {
 	}, nil
 }
 
-func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, simState *SimulationState, xtID *sptypes.XtID) ([]CrossRollupMessage, []CrossRollupDependency, error) {
+func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, simState *SimulationState, xtID *rollupv1.XtID) ([]CrossRollupMessage, []CrossRollupDependency, error) {
 	sentMsgs := make([]CrossRollupMessage, 0)
 	// Send outbound CIRC messages
 	for _, outMsg := range simState.OutboundMessages {
@@ -429,14 +432,14 @@ func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, s
 	return sentMsgs, circDeps, nil
 }
 
-func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollupMessage, xtID *sptypes.XtID) error {
+func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollupMessage, xtID *rollupv1.XtID) error {
 	destChainStr := strconv.FormatUint(msg.DestChainID, 10)
 	client, exists := mp.sequencerClients[destChainStr]
 	if !exists {
 		return fmt.Errorf("no client for destination chain %d", msg.DestChainID)
 	}
 
-	circMsg := &sptypes.CIRCMessage{
+	circMsg := &rollupv1.CIRCMessage{
 		SourceChain:      new(big.Int).SetUint64(msg.SourceChainID).Bytes(),
 		DestinationChain: new(big.Int).SetUint64(msg.DestChainID).Bytes(),
 		Source:           [][]byte{msg.Sender.Bytes()},
@@ -446,9 +449,9 @@ func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollu
 		Data:             [][]byte{msg.Data},
 	}
 
-	spMsg := &sptypes.Message{
+	spMsg := &rollupv1.Message{
 		SenderId: strconv.FormatUint(mp.chainID, 10),
-		Payload: &sptypes.Message_CircMessage{
+		Payload: &rollupv1.Message_CircMessage{
 			CircMessage: circMsg,
 		},
 	}
@@ -456,7 +459,7 @@ func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollu
 	return client.Send(ctx, spMsg)
 }
 
-func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *sptypes.XtID, sourceChainID string) (*sptypes.CIRCMessage, error) {
+func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *rollupv1.XtID, sourceChainID string) (*rollupv1.CIRCMessage, error) {
 	// Wait for CIRC message with timeout
 	timeout := time.NewTimer(2 * time.Minute)
 	defer timeout.Stop()
@@ -471,7 +474,7 @@ func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *sptype
 		case <-timeout.C:
 			return nil, fmt.Errorf("timeout waiting for CIRC message from chain %s", sourceChainID)
 		case <-ticker.C:
-			circMsg, err := mp.coordinator.ConsumeCIRCMessage(xtID, sourceChainID)
+			circMsg, err := mp.sequencerCoordinator.Consensus().ConsumeCIRCMessage(xtID, sourceChainID)
 			if err != nil {
 				continue // Keep waiting
 			}
@@ -492,6 +495,7 @@ func (mp *MailboxProcessor) getCoordinatorAddress(ctx context.Context, addr comm
 		return common.Address{}, err
 	}
 
+	// The Mailbox ABI exposes the coordinator under the "coordinator" view
 	callData, err := parsedABI.Pack("coordinator")
 	if err != nil {
 		return common.Address{}, err

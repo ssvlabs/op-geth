@@ -10,14 +10,13 @@ import (
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/ethclient"
+	rollupv1 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rpc"
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
-
-	spproto "github.com/ethereum/go-ethereum/internal/sp/proto"
 )
 
 const (
@@ -127,8 +126,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	xtRequest := &spproto.XTRequest{
-		Transactions: []*spproto.TransactionRequest{
+	xtRequest := &rollupv1.XTRequest{
+		Transactions: []*rollupv1.TransactionRequest{
 			{
 				ChainId: chainAId.Bytes(),
 				Transaction: [][]byte{
@@ -144,9 +143,9 @@ func main() {
 		},
 	}
 
-	spMsg := &spproto.Message{
+	spMsg := &rollupv1.Message{
 		SenderId: "client",
-		Payload: &spproto.Message_XtRequest{
+		Payload: &rollupv1.Message_XtRequest{
 			XtRequest: xtRequest,
 		},
 	}
