@@ -840,6 +840,23 @@ func (b *EthAPIBackend) handleCIRCMessage(circMessage *rollupv1.CIRCMessage) err
 	return b.coordinator.Consensus().RecordCIRCMessage(circMessage)
 }
 
+// handleSequencerMessage processes messages received from sequencer clients (peer-to-peer).
+// SSV
+func (b *EthAPIBackend) handleSequencerMessage(ctx context.Context, chainID string, msg *rollupv1.Message) ([]common.Hash, error) {
+	if b.coordinator == nil {
+		return nil, fmt.Errorf("coordinator not configured for sequencer message from chainID %s", chainID)
+	}
+
+	log.Debug("[SSV] Handling message from sequencer", "chainID", chainID, "senderID", msg.SenderId, "type", fmt.Sprintf("%T", msg.Payload))
+
+	if err := b.coordinator.HandleMessage(ctx, msg.SenderId, msg); err != nil {
+		log.Error("[SSV] Failed to handle message from sequencer", "chainID", chainID, "err", err)
+		return nil, fmt.Errorf("coordinator failed to handle %T from sequencer %s: %w", msg.Payload, chainID, err)
+	}
+
+	return nil, nil
+}
+
 // StartCallbackFn returns a function that can be used to send transaction bundles to the shared publisher.
 // SSV
 func (b *EthAPIBackend) StartCallbackFn(chainID *big.Int) spconsensus.StartFn {
@@ -1547,6 +1564,17 @@ func (b *EthAPIBackend) SetSequencerCoordinator(coord sequencer.Coordinator, sp 
 
 	if b.spClient != nil {
 		b.spClient.SetHandler(b.HandleSPMessage)
+	}
+
+	// Set handlers for sequencer clients to receive CIRC messages
+	for chainID, client := range b.sequencerClients {
+		if client != nil {
+			// Capture chainID in closure to avoid loop variable issues
+			chainID := chainID
+			client.SetHandler(func(ctx context.Context, msg *rollupv1.Message) ([]common.Hash, error) {
+				return b.handleSequencerMessage(ctx, chainID, msg)
+			})
+		}
 	}
 
 	if b.coordinator != nil {
