@@ -35,7 +35,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/core/ssv"
-	rollupv1 "github.com/ssvlabs/rollup-shared-publisher/proto/rollup/v1"
+	rollupv1 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/internal/ethapi/override"

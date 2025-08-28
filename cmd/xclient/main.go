@@ -7,7 +7,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/ethclient"
-	rollupv1 "github.com/ssvlabs/rollup-shared-publisher/proto/rollup/v1"
+	rollupv1 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 
 	"log"
 	"math/big"

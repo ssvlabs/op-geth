@@ -25,8 +25,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/crypto"
-	rollupv1 "github.com/ssvlabs/rollup-shared-publisher/proto/rollup/v1"
-	"github.com/ssvlabs/rollup-shared-publisher/x/transport"
+	rollupv1 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
+	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
 
 	"math/big"
 	"strings"
@@ -59,8 +59,8 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rpc"
 
-	spconsensus "github.com/ssvlabs/rollup-shared-publisher/x/consensus"
-	"github.com/ssvlabs/rollup-shared-publisher/x/superblock/sequencer"
+	spconsensus "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/consensus"
+	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/sequencer"
 )
 
 // EthAPIBackend implements ethapi.Backend and tracers.Backend for full nodes
