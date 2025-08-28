@@ -480,7 +480,8 @@ func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *rollup
 		case <-timeout.C:
 			return nil, fmt.Errorf("timeout waiting for CIRC message from chain %s", sourceChainID)
 		case <-ticker.C:
-			circMsg, err := mp.sequencerCoordinator.Consensus().ConsumeCIRCMessage(xtID, sourceChainID)
+			backend := mp.backend.(*EthAPIBackend)
+			circMsg, err := backend.coordinator.Consensus().ConsumeCIRCMessage(xtID, sourceChainID)
 			if err != nil {
 				continue // Keep waiting
 			}
