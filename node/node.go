@@ -204,19 +204,66 @@ func New(conf *Config) (*Node, error) {
 			Msg("Sequencer initialized with key")
 	}
 
-	// TODO: make configurable after POC
-	var chainID int
-	addrss := strings.Split(conf.SequencerAddrs, ",")
-	if strings.Contains(addrss[0], ":9898") {
-		chainID = 11111
-	} else if strings.Contains(addrss[0], ":10898") {
-		chainID = 22222
-	}
-
 	//if authManager != nil {
 	//	myChainID := fmt.Sprintf("%d", chainID)
 	//	setupSequencerAuth(myChainID, authManager)
 	//}
+
+	// Determine our ChainID
+	// Priority:
+	// 1) Match our listen port against entries in --sequencer.addrs (format: chainID:host:port)
+	// 2) Fallback to the first entry's chainID if no direct match
+	var chainIDInt64 int64
+
+	// Extract our listen port (may be ":9898" -> host empty, port 9898)
+	_, listenPort, err := net.SplitHostPort(conf.SPListenAddr)
+	if err != nil {
+		node.log.Warn("Failed to parse sp.listen.addr; falling back to first sequencer addr", "err", err, "listen", conf.SPListenAddr)
+	}
+
+	entries := strings.Split(conf.SequencerAddrs, ",")
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+
+		parts := strings.Split(entry, ":")
+		if len(parts) != 3 {
+			node.log.Error("Invalid sequencer address format, expected id:host:port", "entry", entry)
+			continue
+		}
+
+		idStr := strings.TrimSpace(parts[0])
+		//host := strings.TrimSpace(parts[1])
+		port := strings.TrimSpace(parts[2])
+
+		// Try exact port match first
+		if listenPort != "" && port == listenPort {
+			if idBig, ok := new(big.Int).SetString(idStr, 10); ok {
+				chainIDInt64 = idBig.Int64()
+				ssvLogger.Info().
+					Str("matched_entry", entry).
+					Str("listen_port", listenPort).
+					Msg("Detected ChainID from sequencer.addrs")
+				break
+			}
+			node.log.Warn("Invalid chainID in sequencer.addrs entry", "entry", entry)
+		}
+
+		// As a backup, if we didn't find any match yet, remember the first well-formed id
+		if chainIDInt64 == 0 {
+			if idBig, ok := new(big.Int).SetString(idStr, 10); ok {
+				chainIDInt64 = idBig.Int64()
+			}
+		}
+	}
+
+	if chainIDInt64 == 0 {
+		// Absolute fallback for legacy defaults
+		chainIDInt64 = 11111
+		node.log.Warn("No ChainID detected from sequencer.addrs; using default", "chainID", chainIDInt64)
+	}
 
 	// TODO: make configurable after POC
 	clientConfig := tcp.ClientConfig{
@@ -251,7 +298,7 @@ func New(conf *Config) (*Node, error) {
 	}
 	node.coordinator = consensus.New(ssvLogger, coordinatorConfig)
 
-	chainIDBytes := big.NewInt(int64(chainID)).Bytes()
+	chainIDBytes := big.NewInt(chainIDInt64).Bytes()
 	sequencerConfig := sequencer.Config{
 		ChainID: chainIDBytes,
 		Slot: slot.Config{
@@ -274,7 +321,7 @@ func New(conf *Config) (*Node, error) {
 
 	ssvLogger.Info().
 		Str("node_id", nodeID).
-		Int("chain_id", chainID).
+		Int64("chain_id", chainIDInt64).
 		Str("sp_addr", conf.SPAddr).
 		Msg("Node initialized with superblock protocol support")
 
