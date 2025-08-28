@@ -17,10 +17,10 @@ import (
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/eth/tracers/native"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
-	"github.com/ethereum/go-ethereum/log"
 	rollupv1 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/sequencer"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
+	"github.com/ethereum/go-ethereum/log"
 
 	"math/big"
 	"strconv"
@@ -433,12 +433,7 @@ func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, s
 }
 
 func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollupMessage, xtID *rollupv1.XtID) error {
-	destChainStr := strconv.FormatUint(msg.DestChainID, 10)
-	client, exists := mp.sequencerClients[destChainStr]
-	if !exists {
-		return fmt.Errorf("no client for destination chain %d", msg.DestChainID)
-	}
-
+	// Build CIRC payload
 	circMsg := &rollupv1.CIRCMessage{
 		SourceChain:      new(big.Int).SetUint64(msg.SourceChainID).Bytes(),
 		DestinationChain: new(big.Int).SetUint64(msg.DestChainID).Bytes(),
@@ -456,7 +451,18 @@ func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollu
 		},
 	}
 
-	return client.Send(ctx, spMsg)
+	backend, ok := mp.backend.(*EthAPIBackend)
+	if !ok {
+		return fmt.Errorf("backend not available")
+	}
+
+	destChainID := strconv.FormatUint(msg.DestChainID, 10)
+	sequencerClient := backend.sequencerClients[destChainID]
+	if sequencerClient == nil {
+		return fmt.Errorf("no client for destination chain %s", destChainID)
+	}
+
+	return sequencerClient.Send(ctx, spMsg)
 }
 
 func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *rollupv1.XtID, sourceChainID string) (*rollupv1.CIRCMessage, error) {
