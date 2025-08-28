@@ -342,6 +342,24 @@ func (sc *SequencerCoordinator) handleStartSC(ctx context.Context, from string, 
 
 	xtID := &pb.XtID{Hash: startSC.XtId}
 
+	// TODO:REMOVE
+	// Ensure consensus (2PC) state exists for this XT so CIRC/votes can be recorded
+	if sc.consensusCoord != nil {
+		if _, err := sc.consensusCoord.GetTransactionState(xtID); err != nil {
+			if err := sc.consensusCoord.StartTransaction(from, startSC.XtRequest); err != nil {
+				// If we cannot create the state, further coordination (incl. CIRC) won't work
+				sc.log.Error().
+					Err(err).
+					Str("xt_id", xtID.Hex()).
+					Msg("Failed to initialize consensus state for StartSC")
+				return err
+			}
+			sc.log.Debug().
+				Str("xt_id", xtID.Hex()).
+				Msg("Initialized consensus state for StartSC")
+		}
+	}
+	// TODO:REMOVE
 	sc.log.Info().
 		Str("xt_id", xtID.Hex()).
 		Uint64("sequence", startSC.XtSequenceNumber).
