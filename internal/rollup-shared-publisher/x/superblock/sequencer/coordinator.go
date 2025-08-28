@@ -7,11 +7,11 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/rs/zerolog"
 	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/consensus"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/protocol"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
+	"github.com/rs/zerolog"
 )
 
 // SequencerCoordinator coordinates sequencer SBCP operations
@@ -150,9 +150,10 @@ func (sc *SequencerCoordinator) handleStartSlot(startSlot *pb.StartSlot) error {
 		Msg("Received StartSlot")
 
 	// Check if we have a slot regression
-	if sc.currentSlot >= startSlot.Slot {
+	prevSlot := atomic.LoadUint64(&sc.currentSlot)
+	if prevSlot >= startSlot.Slot {
 		sc.log.Warn().
-			Uint64("current_slot", sc.currentSlot).
+			Uint64("current_slot", prevSlot).
 			Uint64("new_slot", startSlot.Slot).
 			Msg("Ignoring old or duplicate slot")
 		return nil
@@ -161,11 +162,13 @@ func (sc *SequencerCoordinator) handleStartSlot(startSlot *pb.StartSlot) error {
 	// Find our L2BlockRequest
 	var ourRequest *pb.L2BlockRequest
 	for _, req := range startSlot.L2BlocksRequest {
-		if string(req.ChainId) == string(sc.chainID) {
+		if bytes.Equal(req.ChainId, sc.chainID) {
 			ourRequest = req
 			break
 		}
 	}
+
+	atomic.StoreUint64(&sc.currentSlot, startSlot.Slot)
 
 	if ourRequest == nil {
 		sc.log.Info().
@@ -179,8 +182,6 @@ func (sc *SequencerCoordinator) handleStartSlot(startSlot *pb.StartSlot) error {
 		Str("parent_hash", fmt.Sprintf("%x", ourRequest.ParentHash)).
 		Msg("Participating in slot - starting block building")
 
-	// Update current context
-	atomic.StoreUint64(&sc.currentSlot, startSlot.Slot)
 	sc.currentRequest = ourRequest
 
 	// Start block builder
@@ -226,10 +227,13 @@ func (sc *SequencerCoordinator) handleRollBackAndStartSlot(
 		Int("l2_requests", len(rb.L2BlocksRequest)).
 		Msg("Handling RollBackAndStartSlot - resetting draft and state")
 
+	// Record the slot value so later SBCP messages see the right slot, even if we don't participate
+	atomic.StoreUint64(&sc.currentSlot, rb.CurrentSlot)
+
 	// Find our L2BlockRequest
 	var ourRequest *pb.L2BlockRequest
 	for _, req := range rb.L2BlocksRequest {
-		if string(req.ChainId) == string(sc.chainID) {
+		if bytes.Equal(req.ChainId, sc.chainID) {
 			ourRequest = req
 			break
 		}
@@ -242,8 +246,6 @@ func (sc *SequencerCoordinator) handleRollBackAndStartSlot(
 		return nil
 	}
 
-	// Update current context
-	atomic.StoreUint64(&sc.currentSlot, rb.CurrentSlot)
 	sc.currentRequest = ourRequest
 
 	// Reset builder and start new draft from requested parent
@@ -410,6 +412,15 @@ func (sc *SequencerCoordinator) handleRequestSeal(ctx context.Context, from stri
 			Uint64("msg_slot", requestSeal.Slot).
 			Uint64("current_slot", sc.currentSlot).
 			Msg("RequestSeal for wrong slot")
+		return nil
+	}
+
+	// If we are not participating in this slot (no current request/draft), ignore the seal politely
+	if sc.currentRequest == nil {
+		sc.log.Info().
+			Uint64("slot", requestSeal.Slot).
+			Int("included_xts", len(requestSeal.IncludedXts)).
+			Msg("Ignoring RequestSeal: not participating in this slot")
 		return nil
 	}
 
