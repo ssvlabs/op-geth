@@ -402,26 +402,26 @@ func (mp *MailboxProcessor) parseWriteCall(data []byte) (*MailboxCall, error) {
 }
 
 func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, simState *SimulationState, xtID *rollupv1.XtID) ([]CrossRollupMessage, []CrossRollupDependency, error) {
-	sentMsgs := make([]CrossRollupMessage, 0)
-	// Send outbound CIRC messages
-	for _, outMsg := range simState.OutboundMessages {
-		log.Info("[SSV] Send CIRC message", "xtID", xtID.Hex(), "srcChain", outMsg.SourceChainID, "destChain", outMsg.DestChainID, "sessionId", outMsg.SessionID)
-		if err := mp.sendCIRCMessage(ctx, &outMsg, xtID); err != nil {
-			return nil, nil, fmt.Errorf("failed to send CIRC message: %w", err)
-		}
+    sentMsgs := make([]CrossRollupMessage, 0)
+    // Send outbound CIRC messages
+    for _, outMsg := range simState.OutboundMessages {
+        log.Info("[SSV] Send CIRC message", "xtID", xtID.Hex(), "srcChain", outMsg.SourceChainID, "destChain", outMsg.DestChainID, "sessionId", outMsg.SessionID)
+        if err := mp.sendCIRCMessage(ctx, &outMsg, xtID); err != nil {
+            return nil, nil, fmt.Errorf("failed to send CIRC message: %w", err)
+        }
 
-		sentMsgs = append(sentMsgs, outMsg)
-	}
+        sentMsgs = append(sentMsgs, outMsg)
+    }
 
 	circDeps := make([]CrossRollupDependency, 0)
 	// Wait for required CIRC messages and create putInbox transactions
 	for _, dep := range simState.Dependencies {
-		log.Info("[SSV] Await for CIRC message", "srcChain", dep.SourceChainID, "destChain", dep.DestChainID, "sessionId", dep.SessionID)
+        log.Info("[SSV] Await for CIRC message", "srcChain", dep.SourceChainID, "destChain", dep.DestChainID, "sessionId", dep.SessionID)
 
-		circMsg, err := mp.waitForCIRCMessage(ctx, xtID, hex.EncodeToString(new(big.Int).SetUint64(dep.SourceChainID).Bytes()))
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to wait for CIRC message: %w", err)
-		}
+        circMsg, err := mp.waitForCIRCMessage(ctx, xtID, hex.EncodeToString(new(big.Int).SetUint64(dep.SourceChainID).Bytes()))
+        if err != nil {
+            return nil, nil, fmt.Errorf("failed to wait for CIRC message: %w", err)
+        }
 
 		// populate dependency with data
 		dep.Data = circMsg.Data[0]
@@ -456,13 +456,16 @@ func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollu
 		return fmt.Errorf("backend not available")
 	}
 
-	destChainID := strconv.FormatUint(msg.DestChainID, 10)
-	sequencerClient := backend.sequencerClients[destChainID]
-	if sequencerClient == nil {
-		return fmt.Errorf("no client for destination chain %s", destChainID)
-	}
-
-	return sequencerClient.Send(ctx, spMsg)
+    destChainID := strconv.FormatUint(msg.DestChainID, 10)
+    sequencerClient := backend.sequencerClients[destChainID]
+    if sequencerClient == nil {
+        return fmt.Errorf("no client for destination chain %s", destChainID)
+    }
+    if err := sequencerClient.Send(ctx, spMsg); err != nil {
+        return err
+    }
+    log.Info("[SSV] CIRC message sent to peer", "xtID", xtID.Hex(), "destChainID", destChainID)
+    return nil
 }
 
 func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *rollupv1.XtID, sourceChainID string) (*rollupv1.CIRCMessage, error) {
@@ -484,10 +487,10 @@ func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *rollup
             backend := mp.backend.(*EthAPIBackend)
             circMsg, err := backend.coordinator.Consensus().ConsumeCIRCMessage(xtID, sourceChainID)
             if err != nil {
-                // Periodic debug to confirm we're still waiting
+                // Periodic info to confirm we're still waiting
                 ticks++
                 if ticks%20 == 0 { // ~2s interval
-                    log.Debug("[SSV] Still waiting for CIRC message", "xtID", xtID.Hex(), "from", sourceChainID, "err", err.Error())
+                    log.Info("[SSV] Still waiting for CIRC message", "xtID", xtID.Hex(), "from", sourceChainID, "err", err.Error())
                 }
                 continue // Keep waiting
             }

@@ -1574,6 +1574,8 @@ func (b *EthAPIBackend) SetSequencerCoordinator(coord sequencer.Coordinator, sp 
 			client.SetHandler(func(ctx context.Context, msg *rollupv1.Message) ([]common.Hash, error) {
 				return b.handleSequencerMessage(ctx, chainID, msg)
 			})
+
+			log.Info("[SSV] Sequencer client handler set", "peerChainID", chainID)
 		}
 	}
 
