@@ -1098,39 +1098,16 @@ func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context
 		}
 	}
 
-	// Always prepare clear transaction if we have cross-chain activity
+	// Always prepare clear transaction if we have cross-chain activity.
 	hasCrossChain := len(b.GetPendingPutInboxTxs()) > 0 || len(b.GetPendingOriginalTxs()) > 0
-
 	if hasCrossChain && b.pendingClearTx == nil {
-		// Ensure this sequencer is the coordinator before creating clear()
-		// Build a mailbox processor for the check
-		if b.sequencerKey != nil && b.coordinator != nil {
-			mailboxProcessor := NewMailboxProcessor(
-				b.ChainConfig().ChainID.Uint64(),
-				b.GetMailboxAddresses(),
-				b.sequencerClients,
-				b.coordinator,
-				b.sequencerKey,
-				b.sequencerAddress,
-				b,
-			)
-			if err := b.isCoordinator(ctx, mailboxProcessor); err != nil {
-				log.Error("[SSV] Sequencer is not coordinator; skipping clear tx creation", "err", err)
-			} else {
-				clearTx, err := b.createClearTransaction(ctx)
-				if err != nil {
-					log.Error("[SSV] Failed to create clear transaction", "err", err)
-					return err
-				}
-
-				b.SetPendingClearTx(clearTx)
-				log.Info("[SSV] Created clear transaction",
-					"txHash", clearTx.Hash().Hex(),
-					"nonce", clearTx.Nonce())
-			}
-		} else {
-			log.Warn("[SSV] Missing sequencer key or coordinator; skipping clear tx creation")
+		clearTx, err := b.createClearTransaction(ctx)
+		if err != nil {
+			log.Error("[SSV] Failed to create clear transaction", "err", err)
+			return err
 		}
+		b.SetPendingClearTx(clearTx)
+		log.Info("[SSV] Created clear transaction", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce())
 	}
 
 	return nil
