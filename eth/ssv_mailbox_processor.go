@@ -611,7 +611,7 @@ func (mp *MailboxProcessor) traceTransaction(callData []byte, mailboxAddr common
 		Data:  (*hexutil.Bytes)(&callData),
 		From:  &mp.sequencerAddr,
 		To:    &mailboxAddr,
-		Value: (*hexutil.Big)(big.NewInt(1000))},
+		Value: (*hexutil.Big)(big.NewInt(0))},
 		rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber),
 		nil,
 	)
