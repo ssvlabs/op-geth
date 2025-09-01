@@ -86,7 +86,6 @@ type Node struct {
 
 	coordinator          consensus.Coordinator
 	spClient             transport.Client
-	sequencerClients     map[string]transport.Client
 	sequencerAddrs       map[string]string // Map of sequencer chain IDs to their addresses
 	sequencerKey         *ecdsa.PrivateKey
 	sequencerCoordinator *sequencer.SequencerCoordinator
@@ -260,8 +259,7 @@ func New(conf *Config) (*Node, error) {
 		}
 	}
 
-	clients, addrs := generateClients(conf.SequencerAddrs, authManager)
-	node.sequencerClients = clients
+	_, addrs := generateClients(conf.SequencerAddrs, authManager)
 	node.sequencerAddrs = addrs
 	node.sequencerKey = parsePrivateKey(conf.SequencerKey)
 
@@ -940,7 +938,10 @@ func (n *Node) SequencerClients() map[string]transport.Client {
 	n.lock.Lock()
 	defer n.lock.Unlock()
 
-	return n.sequencerClients
+	if n.sequencerRuntime != nil {
+		return n.sequencerRuntime.Peers
+	}
+	return make(map[string]transport.Client)
 }
 
 func (n *Node) SequencerKey() *ecdsa.PrivateKey {

@@ -191,6 +191,11 @@ func (c *coordinator) GetActiveTransactions() []*pb.XtID {
 	return c.stateManager.GetAllActiveIDs()
 }
 
+// GetState retrieves a transaction state
+func (c *coordinator) GetState(xtID *pb.XtID) (*TwoPCState, bool) {
+	return c.stateManager.GetState(xtID)
+}
+
 // RecordCIRCMessage records a CIRC message for a transaction
 func (c *coordinator) RecordCIRCMessage(circMessage *pb.CIRCMessage) error {
 	xtID := circMessage.XtId

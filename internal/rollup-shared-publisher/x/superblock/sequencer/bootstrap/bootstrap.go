@@ -139,20 +139,27 @@ func Setup(ctx context.Context, cfg Config) (*Runtime, error) {
 		return coord.HandleMessage(c, from, msg)
 	})
 
+	log.Info().Interface("peer_addrs", cfg.PeerAddrs).Msg("Setting up peer clients")
+
 	peers := make(map[string]transport.Client)
 	for id, addr := range cfg.PeerAddrs {
 		if strings.TrimSpace(addr) == "" {
+			log.Warn().Str("chain_id", id).Msg("Skipping peer with empty address")
 			continue
 		}
 		key := normalizeChainIDKey(id)
 		if key == "" {
+			log.Warn().Str("chain_id", id).Msg("Skipping peer with invalid chain ID format")
 			continue
 		}
+		log.Info().Str("chain_id", id).Str("normalized_key", key).Str("addr", addr).Msg("Creating peer client")
 		cc := tcp.DefaultClientConfig()
 		cc.ServerAddr = addr
 		cc.ClientID = fmt.Sprintf("peer-%s", key)
 		peers[key] = tcp.NewClient(cc, log)
 	}
+
+	log.Info().Int("peer_count", len(peers)).Interface("peer_keys", getPeerKeys(peers)).Msg("Peer clients created")
 
 	rt := &Runtime{
 		Coordinator: coord,
@@ -181,10 +188,33 @@ func (r *Runtime) Start(ctx context.Context) error {
 		return fmt.Errorf("connect SP: %w", err)
 	}
 
+	r.log.Info().
+		Int("peer_count", len(r.Peers)).
+		Interface("peer_keys", getPeerKeys(r.Peers)).
+		Msg("Starting peer connections")
+
 	for key, c := range r.Peers {
-		addr := ""
-		if err := c.ConnectWithRetry(ctx, addr, 5); err != nil {
-			r.log.Warn().Str("peer", key).Err(err).Msg("Failed to connect to peer")
+		if addr, exists := r.cfg.PeerAddrs[key]; exists && strings.TrimSpace(addr) != "" {
+			r.log.Info().
+				Str("peer", key).
+				Str("addr", addr).
+				Msg("Attempting to connect to peer")
+			if err := c.ConnectWithRetry(ctx, addr, 5); err != nil {
+				r.log.Error().
+					Str("peer", key).
+					Str("addr", addr).Err(err).
+					Msg("Failed to connect to peer after retries")
+			} else {
+				r.log.Info().
+					Str("peer", key).
+					Str("addr", addr).
+					Msg("Successfully connected to peer")
+			}
+		} else {
+			r.log.Error().
+				Str("peer", key).
+				Interface("configured_addrs", r.cfg.PeerAddrs).
+				Msg("No valid address configured for peer")
 		}
 	}
 	return nil
@@ -207,14 +237,31 @@ func (r *Runtime) Stop(ctx context.Context) error {
 // SendCIRC sends a CIRC message to the peer indicated by DestinationChain.
 func (r *Runtime) SendCIRC(ctx context.Context, circ *pb.CIRCMessage) error {
 	destKey := consensus.ChainKeyBytes(circ.DestinationChain)
+	r.log.Info().Str("dest_key", destKey).Str("xt_id", circ.XtId.Hex()).Msg("Sending CIRC message to peer")
+
 	peer, ok := r.Peers[destKey]
 	if !ok || peer == nil {
+		r.log.Error().
+			Str("dest_key", destKey).
+			Str("xt_id", circ.XtId.Hex()).
+			Interface("available_peers", getPeerKeys(r.Peers)).
+			Msg("No peer client found for destination chain")
 		return fmt.Errorf("no peer for destination chain %s", destKey)
 	}
 
 	msg := &pb.Message{Payload: &pb.Message_CircMessage{CircMessage: circ}}
 
-	return peer.Send(ctx, msg)
+	if err := peer.Send(ctx, msg); err != nil {
+		r.log.Error().
+			Err(err).
+			Str("dest_key", destKey).
+			Str("xt_id", circ.XtId.Hex()).
+			Msg("Failed to send CIRC message to peer")
+		return err
+	}
+
+	r.log.Info().Str("dest_key", destKey).Str("xt_id", circ.XtId.Hex()).Msg("CIRC message sent successfully")
+	return nil
 }
 
 // normalizeChainIDKey accepts decimal or hex chainID strings and returns the
@@ -244,4 +291,13 @@ func normalizeChainIDKey(s string) string {
 
 	// Already hex string; lower-case normalize by decoding/encoding not needed for key
 	return strings.ToLower(s)
+}
+
+// getPeerKeys returns a slice of available peer keys for logging
+func getPeerKeys(peers map[string]transport.Client) []string {
+	keys := make([]string, 0, len(peers))
+	for key := range peers {
+		keys = append(keys, key)
+	}
+	return keys
 }
