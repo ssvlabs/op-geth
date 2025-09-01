@@ -90,8 +90,8 @@ type Node struct {
 	sequencerAddrs       map[string]string // Map of sequencer chain IDs to their addresses
 	sequencerKey         *ecdsa.PrivateKey
 	sequencerCoordinator *sequencer.SequencerCoordinator
-	sequencerRuntime     *bootstrap.Runtime
 	ssvLogger            zerolog.Logger
+	sequencerRuntime     *bootstrap.Runtime
 
 	databases map[*closeTrackingDB]struct{} // All open databases
 }
@@ -299,8 +299,6 @@ func New(conf *Config) (*Node, error) {
 	}
 	node.sequencerRuntime = rt
 	node.spClient = rt.SPClient
-	node.sequencerClients = rt.Peers
-
 	if sc, ok := rt.Coordinator.(*sequencer.SequencerCoordinator); ok {
 		node.sequencerCoordinator = sc
 	} else {
