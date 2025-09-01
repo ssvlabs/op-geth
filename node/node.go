@@ -260,30 +260,12 @@ func New(conf *Config) (*Node, error) {
 		}
 	}
 
-	// TODO: make configurable after POC
-	clientConfig := tcp.ClientConfig{
-		ServerAddr:      conf.SPAddr,
-		ConnectTimeout:  10 * time.Second,
-		ReadTimeout:     30 * time.Second,
-		WriteTimeout:    30 * time.Second,
-		ReconnectDelay:  5 * time.Second,
-		MaxMessageSize:  10 * 1024 * 1024,
-		KeepAlive:       true,
-		KeepAlivePeriod: 30 * time.Second,
-	}
-
-	tcpClient := tcp.NewClient(clientConfig, ssvLogger)
-	//if authManager != nil {
-	//	tcpClient = tcpClient.WithAuth(authManager)
-	//}
-	node.spClient = tcpClient
-
 	clients, addrs := generateClients(conf.SequencerAddrs, authManager)
 	node.sequencerClients = clients
 	node.sequencerAddrs = addrs
 	node.sequencerKey = parsePrivateKey(conf.SequencerKey)
 
-	// Bootstrap SBCP runtime (coordinator, SP client, P2P)
+	// Bootstrap SBCP runtime (coordinator, SP client, P2P) - handles all connections
 	chainIDBytes := big.NewInt(chainIDInt64).Bytes()
 	rt, err := bootstrap.Setup(context.Background(), bootstrap.Config{
 		ChainID:         chainIDBytes,
