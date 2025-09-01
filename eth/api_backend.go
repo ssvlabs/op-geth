@@ -974,6 +974,16 @@ func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *type
 
 	if isPutInbox {
 		b.AddPendingPutInboxTx(tx)
+
+		if b.GetPendingClearTx() == nil {
+			clearTx, cerr := b.createClearTransaction(ctx)
+			if cerr != nil {
+				log.Warn("[SSV] Failed to auto-create clear transaction on first putInbox", "err", cerr)
+			} else {
+				b.SetPendingClearTx(clearTx)
+				log.Info("[SSV] Auto-created clear transaction for sequencer block", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce())
+			}
+		}
 	} else {
 		b.SetPendingClearTx(tx)
 		log.Info("[SSV] Set clear transaction to mempool", "txHash", tx.Hash().Hex())
