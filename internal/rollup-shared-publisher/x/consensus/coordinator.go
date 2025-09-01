@@ -1,7 +1,6 @@
 package consensus
 
 import (
-	"encoding/hex"
 	"fmt"
 	"math/big"
 	"time"
@@ -54,10 +53,12 @@ func (c *coordinator) StartTransaction(from string, xtReq *pb.XTRequest) error {
 		return err
 	}
 
-	// Set timeout timer
-	state.Timer = time.AfterFunc(c.config.Timeout, func() {
-		c.handleTimeout(xtID)
-	})
+	// Timeout only for leader; followers rely on the SP decision
+	if c.config.Role == Leader {
+		state.Timer = time.AfterFunc(c.config.Timeout, func() {
+			c.handleTimeout(xtID)
+		})
+	}
 
 	c.metrics.RecordTransactionStarted(len(chains))
 
@@ -192,27 +193,20 @@ func (c *coordinator) GetActiveTransactions() []*pb.XtID {
 
 // RecordCIRCMessage records a CIRC message for a transaction
 func (c *coordinator) RecordCIRCMessage(circMessage *pb.CIRCMessage) error {
-    xtID := circMessage.XtId
-    state, exists := c.stateManager.GetState(xtID)
-    if !exists {
-        c.log.Warn().
-            Str("xt_id", xtID.Hex()).
-            Msg("CIRC received for unknown transaction")
-        return fmt.Errorf("transaction %s not found", xtID.Hex())
-    }
+	xtID := circMessage.XtId
+	state, exists := c.stateManager.GetState(xtID)
+	if !exists {
+		return fmt.Errorf("transaction %s not found", xtID.Hex())
+	}
 
-	sourceChainID := hex.EncodeToString(circMessage.SourceChain)
+	sourceChainID := ChainKeyBytes(circMessage.SourceChain)
 
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
-    if _, isParticipant := state.ParticipatingChains[sourceChainID]; !isParticipant {
-        c.log.Warn().
-            Str("xt_id", xtID.Hex()).
-            Str("chain_id_hex", sourceChainID).
-            Msg("CIRC received from non-participating chain")
-        return fmt.Errorf("chain %s not participating in transaction %s", sourceChainID, xtID.Hex())
-    }
+	if _, isParticipant := state.ParticipatingChains[sourceChainID]; !isParticipant {
+		return fmt.Errorf("chain %s not participating in transaction %s", sourceChainID, xtID.Hex())
+	}
 
 	// Add message to queue
 	messages, ok := state.CIRCMessages[sourceChainID]
@@ -223,43 +217,32 @@ func (c *coordinator) RecordCIRCMessage(circMessage *pb.CIRCMessage) error {
 	state.CIRCMessages[sourceChainID] = messages
 
 	sourceChainIDInt := new(big.Int).SetBytes(circMessage.SourceChain)
-    c.log.Info().
-        Str("xt_id", xtID.Hex()).
-        Str("chain_id", sourceChainIDInt.String()).
-        Msg("Recorded CIRC message")
+	c.log.Info().
+		Str("xt_id", xtID.Hex()).
+		Str("chain_id", sourceChainIDInt.String()).
+		Msg("Recorded CIRC message")
 
 	return nil
 }
 
 // ConsumeCIRCMessage consumes a CIRC message from the queue
 func (c *coordinator) ConsumeCIRCMessage(xtID *pb.XtID, sourceChainID string) (*pb.CIRCMessage, error) {
-    state, exists := c.stateManager.GetState(xtID)
-    if !exists {
-        c.log.Debug().
-            Str("xt_id", xtID.Hex()).
-            Msg("ConsumeCIRC for unknown transaction")
-        return nil, fmt.Errorf("transaction %s not found", xtID.Hex())
-    }
+	state, exists := c.stateManager.GetState(xtID)
+	if !exists {
+		return nil, fmt.Errorf("transaction %s not found", xtID.Hex())
+	}
 
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
-    if _, isParticipant := state.ParticipatingChains[sourceChainID]; !isParticipant {
-        c.log.Debug().
-            Str("xt_id", xtID.Hex()).
-            Str("chain_id_hex", sourceChainID).
-            Msg("ConsumeCIRC for non-participating chain")
-        return nil, fmt.Errorf("chain %s not participating in transaction %s", sourceChainID, xtID.Hex())
-    }
+	if _, isParticipant := state.ParticipatingChains[sourceChainID]; !isParticipant {
+		return nil, fmt.Errorf("chain %s not participating in transaction %s", sourceChainID, xtID.Hex())
+	}
 
 	messages, ok := state.CIRCMessages[sourceChainID]
-    if !ok || len(messages) == 0 {
-        c.log.Debug().
-            Str("xt_id", xtID.Hex()).
-            Str("chain_id_hex", sourceChainID).
-            Msg("No CIRC messages available yet")
-        return nil, fmt.Errorf("no messages available for chain %s in transaction %s", sourceChainID, xtID.Hex())
-    }
+	if !ok || len(messages) == 0 {
+		return nil, fmt.Errorf("no messages available for chain %s in transaction %s", sourceChainID, xtID.Hex())
+	}
 
 	// Pop first message
 	message := messages[0]

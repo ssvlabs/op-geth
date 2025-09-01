@@ -18,6 +18,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth/tracers/native"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	rollupv1 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
+	spconsensus "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/consensus"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/sequencer"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
 	"github.com/ethereum/go-ethereum/log"
@@ -402,26 +403,27 @@ func (mp *MailboxProcessor) parseWriteCall(data []byte) (*MailboxCall, error) {
 }
 
 func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, simState *SimulationState, xtID *rollupv1.XtID) ([]CrossRollupMessage, []CrossRollupDependency, error) {
-    sentMsgs := make([]CrossRollupMessage, 0)
-    // Send outbound CIRC messages
-    for _, outMsg := range simState.OutboundMessages {
-        log.Info("[SSV] Send CIRC message", "xtID", xtID.Hex(), "srcChain", outMsg.SourceChainID, "destChain", outMsg.DestChainID, "sessionId", outMsg.SessionID)
-        if err := mp.sendCIRCMessage(ctx, &outMsg, xtID); err != nil {
-            return nil, nil, fmt.Errorf("failed to send CIRC message: %w", err)
-        }
+	sentMsgs := make([]CrossRollupMessage, 0)
+	// Send outbound CIRC messages
+	for _, outMsg := range simState.OutboundMessages {
+		log.Info("[SSV] Send CIRC message", "xtID", xtID.Hex(), "srcChain", outMsg.SourceChainID, "destChain", outMsg.DestChainID, "sessionId", outMsg.SessionID)
+		if err := mp.sendCIRCMessage(ctx, &outMsg, xtID); err != nil {
+			return nil, nil, fmt.Errorf("failed to send CIRC message: %w", err)
+		}
 
-        sentMsgs = append(sentMsgs, outMsg)
-    }
+		sentMsgs = append(sentMsgs, outMsg)
+	}
 
 	circDeps := make([]CrossRollupDependency, 0)
 	// Wait for required CIRC messages and create putInbox transactions
 	for _, dep := range simState.Dependencies {
-        log.Info("[SSV] Await for CIRC message", "srcChain", dep.SourceChainID, "destChain", dep.DestChainID, "sessionId", dep.SessionID)
+		log.Info("[SSV] Await for CIRC message", "srcChain", dep.SourceChainID, "destChain", dep.DestChainID, "sessionId", dep.SessionID)
 
-        circMsg, err := mp.waitForCIRCMessage(ctx, xtID, hex.EncodeToString(new(big.Int).SetUint64(dep.SourceChainID).Bytes()))
-        if err != nil {
-            return nil, nil, fmt.Errorf("failed to wait for CIRC message: %w", err)
-        }
+		sourceKey := spconsensus.ChainKeyUint64(dep.SourceChainID)
+		circMsg, err := mp.waitForCIRCMessage(ctx, xtID, sourceKey)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to wait for CIRC message: %w", err)
+		}
 
 		// populate dependency with data
 		dep.Data = circMsg.Data[0]
@@ -456,49 +458,49 @@ func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollu
 		return fmt.Errorf("backend not available")
 	}
 
-    destChainID := strconv.FormatUint(msg.DestChainID, 10)
-    sequencerClient := backend.sequencerClients[destChainID]
-    if sequencerClient == nil {
-        return fmt.Errorf("no client for destination chain %s", destChainID)
-    }
-    if err := sequencerClient.Send(ctx, spMsg); err != nil {
-        return err
-    }
-    log.Info("[SSV] CIRC message sent to peer", "xtID", xtID.Hex(), "destChainID", destChainID)
-    return nil
+	destChainID := spconsensus.ChainKeyUint64(msg.DestChainID)
+	sequencerClient := backend.sequencerClients[destChainID]
+	if sequencerClient == nil {
+		return fmt.Errorf("no client for destination chain %s", destChainID)
+	}
+	if err := sequencerClient.Send(ctx, spMsg); err != nil {
+		return err
+	}
+	log.Info("[SSV] CIRC message sent to peer", "xtID", xtID.Hex(), "destChainID", destChainID)
+	return nil
 }
 
 func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *rollupv1.XtID, sourceChainID string) (*rollupv1.CIRCMessage, error) {
-    // Wait for CIRC message with timeout
-    timeout := time.NewTimer(2 * time.Minute)
-    defer timeout.Stop()
+	// Wait for CIRC message with timeout
+	timeout := time.NewTimer(2 * time.Minute)
+	defer timeout.Stop()
 
-    ticker := time.NewTicker(100 * time.Millisecond)
-    defer ticker.Stop()
-    ticks := 0
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	ticks := 0
 
-    for {
-        select {
-        case <-ctx.Done():
-            return nil, ctx.Err()
-        case <-timeout.C:
-            return nil, fmt.Errorf("timeout waiting for CIRC message from chain %s", sourceChainID)
-        case <-ticker.C:
-            backend := mp.backend.(*EthAPIBackend)
-            circMsg, err := backend.coordinator.Consensus().ConsumeCIRCMessage(xtID, sourceChainID)
-            if err != nil {
-                // Periodic info to confirm we're still waiting
-                ticks++
-                if ticks%20 == 0 { // ~2s interval
-                    log.Info("[SSV] Still waiting for CIRC message", "xtID", xtID.Hex(), "from", sourceChainID, "err", err.Error())
-                }
-                continue // Keep waiting
-            }
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timeout.C:
+			return nil, fmt.Errorf("timeout waiting for CIRC message from chain %s", sourceChainID)
+		case <-ticker.C:
+			backend := mp.backend.(*EthAPIBackend)
+			circMsg, err := backend.coordinator.Consensus().ConsumeCIRCMessage(xtID, sourceChainID)
+			if err != nil {
+				// Periodic info to confirm we're still waiting
+				ticks++
+				if ticks%20 == 0 { // ~2s interval
+					log.Info("[SSV] Still waiting for CIRC message", "xtID", xtID.Hex(), "from", sourceChainID, "err", err.Error())
+				}
+				continue // Keep waiting
+			}
 
-            log.Info("[SSV] Consumed CIRC message",
-                "from", sourceChainID,
-                "dataLen", len(circMsg.Data[0]),
-            )
+			log.Info("[SSV] Consumed CIRC message",
+				"from", sourceChainID,
+				"dataLen", len(circMsg.Data[0]),
+			)
 
 			return circMsg, nil
 		}

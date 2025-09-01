@@ -62,6 +62,21 @@ func (si *SCPIntegration) HandleStartSC(ctx context.Context, startSC *pb.StartSC
 	si.mu.Lock()
 	defer si.mu.Unlock()
 
+	// Ensure local consensus state exists for this xT so CIRC
+	// messages can be recorded/consumed by the sequencer's coordinator
+	if err := si.consensus.StartTransaction("sequencer", startSC.XtRequest); err != nil {
+		// Do not fail the flow – log and continue to avoid blocking SBCP.
+		// CIRC Record/Consume will clearly error if state is missing.
+		si.log.Error().
+			Err(err).
+			Str("xt_id", xtIDStr).
+			Msg("Failed to start local 2PC state for StartSC")
+	} else {
+		si.log.Debug().
+			Str("xt_id", xtIDStr).
+			Msg("Initialized local 2PC state for StartSC")
+	}
+
 	// Create SCP context
 	scpCtx := &SCPContext{
 		XtID:           xtID,

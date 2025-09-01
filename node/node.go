@@ -39,7 +39,9 @@ import (
 	ssvlog "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/log"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/auth"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/consensus"
+	spconsensus "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/consensus"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/sequencer"
+	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/sequencer/bootstrap"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/slot"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport/tcp"
@@ -82,7 +84,6 @@ type Node struct {
 	ipc           *ipcServer  // Stores information about the ipc http server
 	inprocHandler *rpc.Server // In-process RPC request handler to process the API requests
 
-	spServer             transport.Server
 	coordinator          consensus.Coordinator
 	spClient             transport.Client
 	sequencerClients     map[string]transport.Client
@@ -90,6 +91,7 @@ type Node struct {
 	sequencerKey         *ecdsa.PrivateKey
 	sequencerCoordinator *sequencer.SequencerCoordinator
 	ssvLogger            zerolog.Logger
+	sequencerRuntime     *bootstrap.Runtime
 
 	databases map[*closeTrackingDB]struct{} // All open databases
 }
@@ -190,7 +192,6 @@ func New(conf *Config) (*Node, error) {
 	node.ipc = newIPCServer(node.log, conf.IPCEndpoint())
 	serverCfg := tcp.DefaultServerConfig()
 	serverCfg.ListenAddr = conf.SPListenAddr
-	node.spServer = tcp.NewServer(serverCfg, ssvLogger)
 
 	var authManager auth.Manager
 	if conf.SequencerKey != "" {
@@ -259,12 +260,6 @@ func New(conf *Config) (*Node, error) {
 		}
 	}
 
-	if chainIDInt64 == 0 {
-		// Absolute fallback for legacy defaults
-		chainIDInt64 = 11111
-		node.log.Warn("No ChainID detected from sequencer.addrs; using default", "chainID", chainIDInt64)
-	}
-
 	// TODO: make configurable after POC
 	clientConfig := tcp.ClientConfig{
 		ServerAddr:      conf.SPAddr,
@@ -288,42 +283,32 @@ func New(conf *Config) (*Node, error) {
 	node.sequencerAddrs = addrs
 	node.sequencerKey = parsePrivateKey(conf.SequencerKey)
 
-	// Initialize consensus coordinator for 2PC protocol
-	nodeID := fmt.Sprintf("sequencer-%d", time.Now().UnixNano())
-	coordinatorConfig := consensus.Config{
-		NodeID:   nodeID,
-		Role:     consensus.Follower,
-		Timeout:  3 * time.Minute,
-		IsLeader: false,
-	}
-	node.coordinator = consensus.New(ssvLogger, coordinatorConfig)
-
+	// Bootstrap SBCP runtime (coordinator, SP client, P2P)
 	chainIDBytes := big.NewInt(chainIDInt64).Bytes()
-	sequencerConfig := sequencer.Config{
-		ChainID: chainIDBytes,
-		Slot: slot.Config{
-			Duration:    12 * time.Second, // Ethereum slot duration
-			SealCutover: 2.0 / 3.0,        // Seal at 2/3 through slot
-			GenesisTime: time.Now(),       // Will be set by SP
-		},
-		BlockTimeout:         30 * time.Second,
-		MaxLocalTxs:          1000,
-		SCPTimeout:           10 * time.Second,
-		EnableCIRCValidation: true,
+	rt, err := bootstrap.Setup(context.Background(), bootstrap.Config{
+		ChainID:         chainIDBytes,
+		SPAddr:          conf.SPAddr,
+		PeerAddrs:       addrs,
+		P2PListenAddr:   conf.SPListenAddr,
+		Log:             ssvLogger,
+		SlotDuration:    12 * time.Second,
+		SlotSealCutover: 2.0 / 3.0,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap setup failed: %w", err)
 	}
-
-	node.sequencerCoordinator = sequencer.NewSequencerCoordinator(
-		node.coordinator,
-		sequencerConfig,
-		tcpClient,
-		ssvLogger,
-	)
+	node.sequencerRuntime = rt
+	node.spClient = rt.SPClient
+	if sc, ok := rt.Coordinator.(*sequencer.SequencerCoordinator); ok {
+		node.sequencerCoordinator = sc
+	} else {
+		node.sequencerCoordinator = sequencer.NewSequencerCoordinator(rt.Coordinator.Consensus(), sequencer.Config{ChainID: chainIDBytes, Slot: slot.Config{Duration: 12 * time.Second, SealCutover: 2.0 / 3.0, GenesisTime: time.Now()}}, rt.SPClient, ssvLogger)
+	}
 
 	ssvLogger.Info().
-		Str("node_id", nodeID).
 		Int64("chain_id", chainIDInt64).
 		Str("sp_addr", conf.SPAddr).
-		Msg("Node initialized with superblock protocol support")
+		Msg("Node initialized with SBCP runtime")
 
 	return node, nil
 }
@@ -400,17 +385,27 @@ func generateClients(addrs string, authManager auth.Manager) (map[string]transpo
 			continue
 		}
 
-		chainID := strings.TrimSpace(parts[0])
+		rawID := strings.TrimSpace(parts[0])
 		host := strings.TrimSpace(parts[1])
 		port := strings.TrimSpace(parts[2])
 
-		if chainID == "" || host == "" || port == "" {
+		if rawID == "" || host == "" || port == "" {
 			log.Error("Empty component in sequencer address", "entry", entry)
 			continue
 		}
 
 		serverAddr := net.JoinHostPort(host, port)
-		addresses[chainID] = serverAddr
+		// Normalize chain ID key: accept decimal or hex and store canonical hex key
+		var key string
+		if bi, ok := new(big.Int).SetString(rawID, 10); ok {
+			key = spconsensus.ChainKeyUint64(bi.Uint64())
+		} else {
+			// Assume hex; strip optional 0x and lowercase
+			rid := strings.ToLower(strings.TrimPrefix(rawID, "0x"))
+			key = rid
+		}
+
+		addresses[key] = serverAddr
 
 		clientConfig := tcp.ClientConfig{
 			ServerAddr:      serverAddr,
@@ -421,12 +416,12 @@ func generateClients(addrs string, authManager auth.Manager) (map[string]transpo
 			MaxMessageSize:  10 * 1024 * 1024,
 			KeepAlive:       true,
 			KeepAlivePeriod: 30 * time.Second,
-			ClientID:        chainID,
+			ClientID:        key,
 		}
 
 		slog := ssvlog.New("info", true)
 		tcpClient := tcp.NewClient(clientConfig, slog.Logger)
-		clients[chainID] = tcpClient
+		clients[key] = tcpClient
 	}
 	return clients, addresses
 }
@@ -544,9 +539,7 @@ func (n *Node) openEndpoints() error {
 		return convertFileLockError(err)
 	}
 
-	if err := n.spServer.Start(context.Background()); err != nil {
-		return err
-	}
+	// P2P server is managed by SBCP runtime; do not start a separate server here
 
 	//// Connect to shared publisher - pass the address
 	//err := n.spClient.Connect(context.Background(), n.config.SPAddr)
@@ -554,23 +547,14 @@ func (n *Node) openEndpoints() error {
 	//	return err
 	//}
 
-	go func() {
-		if err := n.spClient.ConnectWithRetry(context.Background(), n.config.SPAddr, 5); err != nil {
-			n.log.Error("Failed to connect to shared publisher", "err", err)
+	// Start SBCP runtime (SP client, P2P server, and peers)
+	if n.sequencerRuntime != nil {
+		if err := n.sequencerRuntime.Start(context.Background()); err != nil {
+			n.log.Error("Failed to start SBCP runtime", "err", err)
 		}
-	}()
-
-	// Connect to sequencer clients - each has their own address stored
-	for chainID, c := range n.sequencerClients {
-		// Get the address from the client config or store it separately
-		addr := n.sequencerAddrs[chainID]
-		n.log.Info("Connecting to sequencer", "id", chainID, "addr", addr)
-		go func(client transport.Client, address, id string) {
-			if err := client.ConnectWithRetry(context.Background(), address, 5); err != nil {
-				n.log.Error("Failed to connect to sequencer", "id", id, "addr", address, "err", err)
-			}
-		}(c, addr, chainID)
 	}
+
+	// SBCP runtime connects peers; no manual dialing needed here
 	// start RPC endpoints
 	err := n.startRPC()
 	if err != nil {
@@ -593,28 +577,19 @@ func (n *Node) stopServices(running []Lifecycle) error {
 		}
 	}
 
-	if n.spServer != nil {
-		if err := n.spServer.Stop(context.Background()); err != nil {
-			failure.Services[reflect.TypeOf(n.spServer)] = err
-		}
+	if n.sequencerRuntime != nil {
+		_ = n.sequencerRuntime.Stop(context.Background())
 	}
 
 	// Stop p2p networking.
 	n.server.Stop()
 
-	err := n.spClient.Disconnect(context.Background())
-	if err != nil {
-		return err
+	if n.spClient != nil {
+		_ = n.spClient.Disconnect(context.Background())
 	}
-
-	for _, c := range n.sequencerClients {
-		err = c.Disconnect(context.Background())
-		if err != nil {
-			return err
-		}
+	if n.coordinator != nil {
+		n.coordinator.Shutdown()
 	}
-
-	n.coordinator.Shutdown()
 
 	if len(failure.Services) > 0 {
 		return failure

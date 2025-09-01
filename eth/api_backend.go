@@ -1618,12 +1618,6 @@ func (b *EthAPIBackend) SetSequencerCoordinator(coord sequencer.Coordinator, sp 
 
 		// Set miner notifier and start
 		b.coordinator.SetMinerNotifier(b)
-
-		if err := b.coordinator.Start(context.Background()); err != nil {
-			log.Error("[SSV] Failed to start coordinator", "err", err)
-		} else {
-			log.Info("[SSV] SBCP coordinator with simulation started")
-		}
 	}
 }
 
