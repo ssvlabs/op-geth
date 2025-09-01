@@ -7,11 +7,11 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/rs/zerolog"
 	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/consensus"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/protocol"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
+	"github.com/rs/zerolog"
 )
 
 // SequencerCoordinator coordinates sequencer SBCP operations
@@ -671,7 +671,13 @@ func (sc *SequencerCoordinator) OnBlockBuildingComplete(ctx context.Context, blo
 			for i, xtBytes := range block.IncludedXts {
 				xtIDs[i] = &pb.XtID{Hash: xtBytes}
 			}
-			return sc.callbacks.OnBlockReady(ctx, block, xtIDs)
+			if err := sc.callbacks.OnBlockReady(ctx, block, xtIDs); err != nil {
+				return err
+			}
+		}
+		// Inform consensus layer that a block committed (mark included XTs)
+		if sc.consensusCoord != nil {
+			_ = sc.consensusCoord.OnL2BlockCommitted(ctx, block)
 		}
 	} else {
 		sc.log.Warn().

@@ -1,10 +1,13 @@
 package consensus
 
 import (
+	"context"
 	"fmt"
 	"math/big"
+	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/rs/zerolog"
 
 	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
@@ -17,6 +20,10 @@ type coordinator struct {
 	callbackMgr  *CallbackManager
 	metrics      *Metrics
 	log          zerolog.Logger
+
+	// Track committed xTs already sent with a block to avoid duplicates
+	sentMu  sync.Mutex
+	sentMap map[string]bool
 }
 
 // New creates a new coordinator instance
@@ -33,7 +40,73 @@ func New(log zerolog.Logger, config Config) Coordinator {
 		callbackMgr:  NewCallbackManager(30*time.Second, logger),
 		metrics:      NewMetrics(),
 		log:          logger,
+		sentMap:      make(map[string]bool),
 	}
+}
+
+// OnBlockCommitted selects committed xTs not yet sent and invokes block callback.
+// Used by execution-integrated path (geth types.Block).
+func (c *coordinator) OnBlockCommitted(ctx context.Context, block *types.Block) error {
+	// Gather committed xTs that haven't been sent yet
+	active := c.stateManager.GetAllActiveIDs()
+	xtIDs := make([]*pb.XtID, 0)
+
+	for _, id := range active {
+		state, ok := c.stateManager.GetState(id)
+		if !ok {
+			continue
+		}
+		if state.GetDecision() != StateCommit {
+			continue
+		}
+		idStr := id.Hex()
+		c.sentMu.Lock()
+		already := c.sentMap[idStr]
+		c.sentMu.Unlock()
+		if already {
+			continue
+		}
+		xtIDs = append(xtIDs, id)
+	}
+
+	if len(xtIDs) == 0 {
+		return nil
+	}
+
+	// Invoke block callback
+	c.callbackMgr.InvokeBlock(ctx, block, xtIDs)
+
+	// Mark as sent
+	c.sentMu.Lock()
+	for _, id := range xtIDs {
+		c.sentMap[id.Hex()] = true
+	}
+	c.sentMu.Unlock()
+
+	c.log.Info().
+		Int("xt_count", len(xtIDs)).
+		Str("block_hash", block.Hash().Hex()).
+		Msg("OnBlockCommitted sent committed xTs")
+
+	return nil
+}
+
+// OnL2BlockCommitted marks included xTs from a pb.L2Block as sent in consensus state.
+// Used by SBCP sequencer path (no geth types.Block available).
+func (c *coordinator) OnL2BlockCommitted(ctx context.Context, block *pb.L2Block) error {
+	if block == nil || len(block.IncludedXts) == 0 {
+		return nil
+	}
+	c.sentMu.Lock()
+	for _, xt := range block.IncludedXts {
+		c.sentMap[fmt.Sprintf("%x", xt)] = true
+	}
+	c.sentMu.Unlock()
+	c.log.Info().
+		Int("xt_count", len(block.IncludedXts)).
+		Uint64("slot", block.Slot).
+		Msg("OnL2BlockCommitted marked committed xTs")
+	return nil
 }
 
 // StartTransaction initiates a new 2PC transaction
@@ -273,6 +346,11 @@ func (c *coordinator) SetVoteCallback(fn VoteFn) {
 // SetDecisionCallback sets the decision callback
 func (c *coordinator) SetDecisionCallback(fn DecisionFn) {
 	c.callbackMgr.SetDecisionCallback(fn)
+}
+
+// SetBlockCallback sets the block callback
+func (c *coordinator) SetBlockCallback(fn BlockFn) {
+	c.callbackMgr.SetBlockCallback(fn)
 }
 
 // handleCommit handles a commit decision

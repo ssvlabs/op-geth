@@ -974,16 +974,6 @@ func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *type
 
 	if isPutInbox {
 		b.AddPendingPutInboxTx(tx)
-
-		if b.GetPendingClearTx() == nil {
-			clearTx, cerr := b.createClearTransaction(ctx)
-			if cerr != nil {
-				log.Warn("[SSV] Failed to auto-create clear transaction on first putInbox", "err", cerr)
-			} else {
-				b.SetPendingClearTx(clearTx)
-				log.Info("[SSV] Auto-created clear transaction for sequencer block", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce())
-			}
-		}
 	} else {
 		b.SetPendingClearTx(tx)
 		log.Info("[SSV] Set clear transaction to mempool", "txHash", tx.Hash().Hex())
@@ -1316,13 +1306,37 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *type
 		return nil
 	}
 
-	// Only process for real blocks, not simulations
-	if !simulation {
-		// In coordinator-driven submission mode, the sequencer coordinator
-		// seals and submits L2Block. Avoid duplicate submission from backend.
-		// Still clear sequencer tx staging.
+	if simulation {
+		return nil
+	}
+
+	// Detect whether any staged putInbox txs were actually included
+	putInbox := b.GetPendingPutInboxTxs()
+	hasher := make(map[common.Hash]struct{}, len(putInbox))
+	for _, tx := range putInbox {
+		hasher[tx.Hash()] = struct{}{}
+	}
+	containsPutInbox := false
+	if len(hasher) > 0 {
+		for _, btx := range block.Transactions() {
+			if _, ok := hasher[btx.Hash()]; ok {
+				containsPutInbox = true
+				break
+			}
+		}
+	}
+
+	// Only notify + clear when the block actually included our sequencer txs
+	if containsPutInbox {
+		if b.coordinator != nil && b.coordinator.Consensus() != nil {
+			if err := b.coordinator.Consensus().OnBlockCommitted(ctx, block); err != nil {
+				log.Error("[SSV] Consensus OnBlockCommitted failed", "err", err, "blockHash", block.Hash().Hex())
+			}
+		}
 		b.ClearSequencerTransactionsAfterBlock()
-		log.Info("[SSV] Block building completed", "blockHash", block.Hash().Hex())
+		log.Info("[SSV] Block building completed (sequencer txs included)", "blockHash", block.Hash().Hex())
+	} else {
+		log.Info("[SSV] Block building completed (no sequencer txs included)", "blockHash", block.Hash().Hex())
 	}
 
 	return nil

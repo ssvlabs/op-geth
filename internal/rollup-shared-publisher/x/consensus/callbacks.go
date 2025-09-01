@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/rs/zerolog"
 
 	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
@@ -14,6 +15,7 @@ type CallbackManager struct {
 	startFn    StartFn
 	voteFn     VoteFn
 	decisionFn DecisionFn
+	blockFn    BlockFn
 
 	timeout time.Duration
 	log     zerolog.Logger
@@ -40,6 +42,11 @@ func (cm *CallbackManager) SetVoteCallback(fn VoteFn) {
 // SetDecisionCallback sets the decision callback
 func (cm *CallbackManager) SetDecisionCallback(fn DecisionFn) {
 	cm.decisionFn = fn
+}
+
+// SetBlockCallback sets the block callback
+func (cm *CallbackManager) SetBlockCallback(fn BlockFn) {
+	cm.blockFn = fn
 }
 
 // InvokeStart calls the start callback with timeout and error handling
@@ -84,6 +91,23 @@ func (cm *CallbackManager) InvokeDecision(xtID *pb.XtID, decision bool, duration
 	cm.invokeCallback("decision", xtID, func(ctx context.Context) error {
 		return cm.decisionFn(ctx, xtID, decision)
 	})
+}
+
+// InvokeBlock calls the block callback with timeout and error handling
+func (cm *CallbackManager) InvokeBlock(ctx context.Context, block *types.Block, xtIDs []*pb.XtID) {
+	if cm.blockFn == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(ctx, cm.timeout)
+		defer cancel()
+		if err := cm.blockFn(ctx, block, xtIDs); err != nil {
+			cm.log.Error().
+				Err(err).
+				Int("xt_count", len(xtIDs)).
+				Msg("Block callback failed")
+		}
+	}()
 }
 
 // invokeCallback is a helper to invoke callbacks with error handling and timeout

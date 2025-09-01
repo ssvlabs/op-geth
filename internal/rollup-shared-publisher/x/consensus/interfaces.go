@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/ethereum/go-ethereum/core/types"
 	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 )
 
@@ -25,6 +26,14 @@ type Coordinator interface {
 	SetStartCallback(fn StartFn)
 	SetVoteCallback(fn VoteFn)
 	SetDecisionCallback(fn DecisionFn)
+	SetBlockCallback(fn BlockFn)
+
+	// OnBlockCommitted is called by the execution layer when a new L2 block is committed and available
+	// Implementations should gather committed xTs and trigger any registered BlockFn callback
+	OnBlockCommitted(ctx context.Context, block *types.Block) error
+
+	// OnL2BlockCommitted is called by sequencer SBCP path when a pb.L2Block is sealed and submitted
+	OnL2BlockCommitted(ctx context.Context, block *pb.L2Block) error
 
 	// Lifecycle
 	Shutdown() error
@@ -34,6 +43,9 @@ type Coordinator interface {
 type StartFn func(ctx context.Context, from string, xtReq *pb.XTRequest) error
 type VoteFn func(ctx context.Context, xtID *pb.XtID, vote bool) error
 type DecisionFn func(ctx context.Context, xtID *pb.XtID, decision bool) error
+
+// BlockFn sends a block plus committed xTs to the SP layer
+type BlockFn func(ctx context.Context, block *types.Block, xtIDs []*pb.XtID) error
 
 // Config holds coordinator configuration
 type Config struct {
