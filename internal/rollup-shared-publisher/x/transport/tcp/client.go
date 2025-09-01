@@ -4,14 +4,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/auth"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
-	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/auth"
 
 	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
@@ -344,16 +345,35 @@ func (c *client) Reconnect(ctx context.Context) error {
 	return c.Connect(ctx, "")
 }
 
-// ConnectWithRetry connects with automatic retry logic
+// ConnectWithRetry connects with automatic retry logic using exponential backoff with jitter.
 func (c *client) ConnectWithRetry(ctx context.Context, addr string, maxRetries int) error {
 	var lastErr error
+	delay := c.config.ReconnectDelay
+	const maxDelay = time.Minute // Sensible max delay
+
+	// For jitter. Using time.Now() is generally fine for this use case.
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
+			jitter := time.Duration(rng.Int63n(int64(delay / 2)))
+			waitTime := delay + jitter
+
 			c.log.Info().
 				Int("attempt", attempt+1).
 				Int("max_retries", maxRetries+1).
+				Dur("delay", waitTime).
 				Msg("Retrying connection")
+
+			select {
+			case <-time.After(waitTime):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
 		}
 
 		if err := c.Connect(ctx, addr); err == nil {
@@ -364,14 +384,6 @@ func (c *client) ConnectWithRetry(ctx context.Context, addr string, maxRetries i
 				Err(err).
 				Int("attempt", attempt+1).
 				Msg("Connection failed")
-		}
-
-		if attempt < maxRetries {
-			select {
-			case <-time.After(c.config.ReconnectDelay):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
 		}
 	}
 
@@ -429,32 +441,47 @@ func (c *client) connectionMonitor(ctx context.Context) {
 			if !c.connected.Load() {
 				c.log.Info().Msg("Connection lost, attempting to reconnect")
 
-				// Try to reconnect with backoff
-				for attempt := 1; attempt <= 3; attempt++ {
+				// Try to reconnect with exponential backoff
+				const maxAttempts = 3
+				delay := c.config.ReconnectDelay
+				const maxDelay = time.Minute
+				rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+				for attempt := 1; attempt <= maxAttempts; attempt++ {
 					select {
 					case <-ctx.Done():
 						return
 					default:
-						delay := time.Duration(attempt) * c.config.ReconnectDelay
+						// Add jitter: delay + random(0, delay/2)
+						jitter := time.Duration(rng.Int63n(int64(delay / 2)))
+						waitTime := delay + jitter
+
 						c.log.Info().
 							Int("attempt", attempt).
-							Dur("delay", delay).
+							Int("max_attempts", maxAttempts).
+							Dur("delay", waitTime).
 							Msg("Reconnecting...")
 
-						time.Sleep(delay)
+						time.Sleep(waitTime)
 
 						if err := c.Connect(context.Background(), ""); err != nil {
 							c.log.Warn().
 								Err(err).
 								Int("attempt", attempt).
 								Msg("Reconnection failed")
+
+							// Exponentially increase backoff
+							delay *= 2
+							if delay > maxDelay {
+								delay = maxDelay
+							}
 						} else {
 							c.log.Info().Msg("Successfully reconnected")
-							return
+							return // Exit monitor, new one will be started
 						}
 					}
 				}
-				c.log.Error().Msg("Failed to reconnect after 3 attempts")
+				c.log.Error().Msg("Failed to reconnect after max attempts")
 			}
 		}
 	}

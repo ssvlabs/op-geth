@@ -184,7 +184,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 		}
 	}()
 
-	if err := r.SPClient.ConnectWithRetry(ctx, "", 5); err != nil {
+	if err := r.SPClient.ConnectWithRetry(ctx, "", 10); err != nil {
 		return fmt.Errorf("connect SP: %w", err)
 	}
 
