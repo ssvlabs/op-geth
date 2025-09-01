@@ -979,10 +979,6 @@ func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *type
 		log.Info("[SSV] Set clear transaction to mempool", "txHash", tx.Hash().Hex())
 	}
 
-	// Send to local txpool so miner can include it.
-	if err := b.sendTx(ctx, tx); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -1706,26 +1702,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 	txDone := make(map[string]interface{}, 0)
 	timeout := time.After(30 * time.Second) // Shorter timeout for SBCP
 
-	// Ensure clear() is created and submitted at startNonce before any putInbox to avoid nonce gaps
-	if b.GetPendingClearTx() == nil {
-		clearTx, cerr := b.createClearTransaction(ctx)
-		if cerr != nil {
-			log.Error("[SSV] Failed to create clear transaction", "err", cerr)
-			return false, cerr
-		}
-		if clearTx.Nonce() != startNonce {
-			log.Warn("[SSV] Clear tx nonce mismatch; overriding to startNonce",
-				"expected", startNonce, "got", clearTx.Nonce())
-		}
-		// Submit clear() first
-		if err := b.SubmitSequencerTransaction(ctx, clearTx, false); err != nil {
-			log.Error("[SSV] Failed to submit clear transaction", "err", err, "txHash", clearTx.Hash().Hex())
-			return false, err
-		}
-		log.Info("[SSV] Submitted clear transaction", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce())
-	}
-
-	sequencerNonce := startNonce + 1 // preserve startNonce for clear() tx
+	sequencerNonce := startNonce + 1 // reserve startNonce for clear() tx
 
 	for {
 		// Populate mempool with new putInbox txs (same as old version)
