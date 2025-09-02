@@ -860,19 +860,9 @@ func (b *EthAPIBackend) handleSequencerMessage(ctx context.Context, chainID stri
 // StartCallbackFn returns a function that can be used to send transaction bundles to the shared publisher.
 // SSV
 func (b *EthAPIBackend) StartCallbackFn(chainID *big.Int) spconsensus.StartFn {
+	_ = chainID
 	return func(ctx context.Context, from string, xtReq *rollupv1.XTRequest) error {
-		if from != "shared-publisher" {
-			spMsg := &rollupv1.Message{
-				SenderId: chainID.String(),
-				Payload: &rollupv1.Message_XtRequest{
-					XtRequest: xtReq,
-				},
-			}
-			err := b.spClient.Send(ctx, spMsg)
-			if err != nil {
-				log.Error("Failed to send transaction bundle to shared publisher", "err", err)
-			}
-		}
+		log.Warn("[SSV] Suppressing StartCallback XTRequest forward (SBCP-only)", "from", from)
 		return nil
 	}
 }
