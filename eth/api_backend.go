@@ -554,11 +554,28 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *rollupv1.Messa
 		return nil, fmt.Errorf("coordinator not configured")
 	}
 
-	// Everything goes through coordinator - it handles 2PC, CIRC, and SBCP
+	// If this call originates from local RPC (SendXTransaction) we set ctx value "forward".
+	// Forward XTRequest to the SP over transport instead of handling locally.
+	if forward, _ := ctx.Value("forward").(bool); forward {
+		switch msg.Payload.(type) {
+		case *rollupv1.Message_XtRequest:
+			if b.spClient == nil {
+				return nil, fmt.Errorf("shared publisher client not configured")
+			}
+			if msg.SenderId == "" {
+				msg.SenderId = b.ChainConfig().ChainID.String()
+			}
+			if err := b.spClient.Send(ctx, msg); err != nil {
+				return nil, fmt.Errorf("failed to forward XTRequest to shared publisher: %w", err)
+			}
+			return nil, nil
+		}
+	}
+
+	// Default path: route inbound messages (from SP or peers) to the SBCP coordinator
 	if err := b.coordinator.HandleMessage(ctx, msg.SenderId, msg); err != nil {
 		return nil, fmt.Errorf("coordinator failed to handle %T: %w", msg.Payload, err)
 	}
-
 	return nil, nil
 }
 
