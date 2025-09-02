@@ -151,8 +151,10 @@ func (sc *SequencerCoordinator) handleStartSlot(startSlot *pb.StartSlot) error {
 		Msg("Received StartSlot")
 
 	// Check if we have a slot regression
+	// TODO: Implement proper slot state persistence to handle restarts gracefully
+	// Currently allowing slot resets after restart as temporary fix
 	prevSlot := atomic.LoadUint64(&sc.currentSlot)
-	if prevSlot >= startSlot.Slot {
+	if prevSlot > 0 && prevSlot >= startSlot.Slot {
 		sc.log.Warn().
 			Uint64("current_slot", prevSlot).
 			Uint64("new_slot", startSlot.Slot).
