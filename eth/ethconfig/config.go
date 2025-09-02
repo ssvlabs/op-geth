@@ -73,7 +73,7 @@ var Defaults = Config{
 
 	SPListenAddr:   ":9898",
 	SPServerAddr:   "localhost:18080",
-	SequencerAddrs: "55555:localhost:9898,66666:localhost:10898",
+	SequencerAddrs: "77777:localhost:9898,88888:localhost:10898",
 }
 
 //go:generate go run github.com/fjl/gencodec -type Config -formats toml -out gen_config.go

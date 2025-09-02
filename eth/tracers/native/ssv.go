@@ -19,8 +19,8 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
-const RollupAChainID = 55555
-const RollupBChainID = 66666
+const RollupAChainID = 77777
+const RollupBChainID = 88888
 
 const RollupAMailBoxAddr = "0x33C061304de440B89BC829bD4dC4eF688E5d1Cef"
 const RollupBMailBoxAddr = "0xbB6A1eCF93641122E5c76b6978bb4B7304879Dd5"
