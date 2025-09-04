@@ -1894,6 +1894,97 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 					return true, nil
 				}
 			}
+
+			// Check if we received CIRC messages asynchronously and need to re-simulate
+			// This handles the case where sequencer88888 receives CIRC messages from sequencer77777
+			// but hasn't created putInbox transactions yet in this simulation loop
+			if b.coordinator != nil && b.coordinator.Consensus() != nil {
+				for _, state := range coordinationStates {
+					if !state.RequiresCoordination() {
+						continue
+					}
+
+					// Check if any dependencies can now be fulfilled by available CIRC messages
+					newFulfilledDeps := make([]CrossRollupDependency, 0)
+					for _, dep := range state.Dependencies {
+						sourceKey := spconsensus.ChainKeyUint64(dep.SourceChainID)
+						circMsg, err := b.coordinator.Consensus().ConsumeCIRCMessage(xtID, sourceKey)
+						if err == nil && circMsg != nil {
+							// Found available CIRC message for this dependency
+							log.Info("[SSV] Found available CIRC message for dependency",
+								"xtID", xtID.Hex(),
+								"sourceChain", dep.SourceChainID,
+								"destChain", dep.DestChainID)
+
+							// Populate dependency with CIRC data
+							if len(circMsg.Source) > 0 {
+								dep.Sender = common.BytesToAddress(circMsg.Source[0])
+							}
+							if len(circMsg.Receiver) > 0 {
+								dep.Receiver = common.BytesToAddress(circMsg.Receiver[0])
+							}
+							dep.Data = circMsg.Data[0]
+							newFulfilledDeps = append(newFulfilledDeps, dep)
+						}
+					}
+
+					// If we found new dependencies to fulfill, create putInbox transactions
+					if len(newFulfilledDeps) > 0 {
+						log.Info("[SSV] Creating putInbox transactions for newly found dependencies", "count", len(newFulfilledDeps))
+
+						// Ensure clear() tx is prepared
+						if b.GetPendingClearTx() == nil {
+							clearTx, err := b.createClearTransactionWithNonce(ctx, startNonce)
+							if err != nil {
+								log.Error("[SSV] Failed to create clear transaction for async CIRC", "err", err)
+							} else {
+								b.SetPendingClearTx(clearTx)
+								log.Info("[SSV] Created clear transaction for async CIRC", "txHash", clearTx.Hash().Hex())
+							}
+						}
+
+						for _, dep := range newFulfilledDeps {
+							putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, sequencerNonce)
+							if err != nil {
+								log.Error("[SSV] Failed to create putInbox for async CIRC", "err", err)
+								continue
+							}
+							if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
+								log.Error("[SSV] Failed to submit putInbox for async CIRC", "err", err)
+								continue
+							}
+							sequencerNonce++
+						}
+
+						historicalCIRCDeps = append(historicalCIRCDeps, newFulfilledDeps...)
+
+						// Wait for putInbox to be processed, then re-simulate for ACK detection
+						if err := b.waitForPutInboxTransactionsToBeProcessed(); err != nil {
+							log.Warn("[SSV] Waiting for async putInbox failed", "error", err)
+						}
+
+						// Re-simulate the transaction to detect ACK writes
+						if state.Tx != nil {
+							newOutboundMsgs, err := mailboxProcessor.reSimulateForACKMessages(ctx, state.Tx, xtID, historicalSentCIRCMsgs)
+							if err != nil {
+								log.Warn("[SSV] Failed to re-simulate for ACK after async putInbox", "error", err, "xtID", xtID.Hex())
+							} else if len(newOutboundMsgs) > 0 {
+								historicalSentCIRCMsgs = append(historicalSentCIRCMsgs, newOutboundMsgs...)
+								log.Info("[SSV] Successfully sent ACK CIRC messages after async putInbox", "count", len(newOutboundMsgs), "xtID", xtID.Hex())
+							}
+						}
+
+						// Re-evaluate if transaction now passes
+						if state.Tx != nil {
+							okLocal, err := b.reSimulateTransaction(ctx, state.Tx, rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber), xtID)
+							if err == nil && okLocal {
+								log.Info("[SSV] Transaction now passes after async putInbox", "xtID", xtID.Hex())
+								return true, nil
+							}
+						}
+					}
+				}
+			}
 		}
 
 		for _, state := range coordinationStates {

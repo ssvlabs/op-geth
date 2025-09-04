@@ -400,6 +400,7 @@ func (mp *MailboxProcessor) parseWriteCall(data []byte) (*MailboxCall, error) {
 	return &MailboxCall{
 		ChainSrc:  new(big.Int).SetUint64(mp.chainID),
 		ChainDest: values[0].(*big.Int),
+		Sender:    mp.sequencerAddr,
 		Receiver:  values[1].(common.Address),
 		SessionId: values[2].(*big.Int),
 		Label:     values[3].([]byte),
@@ -442,12 +443,6 @@ func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, s
 		}
 		dep.Data = circMsg.Data[0]
 		circDeps = append(circDeps, dep)
-	}
-
-	// Defer the ACK detection re-simulation to the caller (after putInbox submission).
-	if len(circDeps) > 0 {
-		log.Info("[SSV] CIRC messages consumed; deferring ACK detection until putInbox is submitted",
-			"xtID", xtID.Hex(), "putInboxCount", len(circDeps))
 	}
 
 	log.Info("[SSV] Cross-rollup coordination completed", "xtID", xtID.Hex(), "sent", len(sentMsgs), "received", len(circDeps))
