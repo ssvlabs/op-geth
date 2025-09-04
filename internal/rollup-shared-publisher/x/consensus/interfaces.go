@@ -27,6 +27,7 @@ type Coordinator interface {
 	SetVoteCallback(fn VoteFn)
 	SetDecisionCallback(fn DecisionFn)
 	SetBlockCallback(fn BlockFn)
+	SetCIRCCallback(fn CIRCFn)
 
 	// OnBlockCommitted is called by the execution layer when a new L2 block is committed and available
 	// Implementations should gather committed xTs and trigger any registered BlockFn callback
@@ -43,6 +44,7 @@ type Coordinator interface {
 type StartFn func(ctx context.Context, from string, xtReq *pb.XTRequest) error
 type VoteFn func(ctx context.Context, xtID *pb.XtID, vote bool) error
 type DecisionFn func(ctx context.Context, xtID *pb.XtID, decision bool) error
+type CIRCFn func(ctx context.Context, xtID *pb.XtID, circMessage *pb.CIRCMessage) error
 
 // BlockFn sends a block plus committed xTs to the SP layer
 type BlockFn func(ctx context.Context, block *types.Block, xtIDs []*pb.XtID) error

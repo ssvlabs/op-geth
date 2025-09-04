@@ -16,6 +16,7 @@ type CallbackManager struct {
 	voteFn     VoteFn
 	decisionFn DecisionFn
 	blockFn    BlockFn
+	circFn     CIRCFn
 
 	timeout time.Duration
 	log     zerolog.Logger
@@ -47,6 +48,11 @@ func (cm *CallbackManager) SetDecisionCallback(fn DecisionFn) {
 // SetBlockCallback sets the block callback
 func (cm *CallbackManager) SetBlockCallback(fn BlockFn) {
 	cm.blockFn = fn
+}
+
+// SetCIRCCallback sets the CIRC callback
+func (cm *CallbackManager) SetCIRCCallback(fn CIRCFn) {
+	cm.circFn = fn
 }
 
 // InvokeStart calls the start callback with timeout and error handling
@@ -108,6 +114,17 @@ func (cm *CallbackManager) InvokeBlock(ctx context.Context, block *types.Block, 
 				Msg("Block callback failed")
 		}
 	}()
+}
+
+// InvokeCIRC calls the CIRC callback with timeout and error handling
+func (cm *CallbackManager) InvokeCIRC(xtID *pb.XtID, circMessage *pb.CIRCMessage) {
+	if cm.circFn == nil {
+		return
+	}
+
+	cm.invokeCallback("circ", xtID, func(ctx context.Context) error {
+		return cm.circFn(ctx, xtID, circMessage)
+	})
 }
 
 // invokeCallback is a helper to invoke callbacks with error handling and timeout

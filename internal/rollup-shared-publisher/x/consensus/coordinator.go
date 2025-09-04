@@ -300,6 +300,9 @@ func (c *coordinator) RecordCIRCMessage(circMessage *pb.CIRCMessage) error {
 		Str("chain_id", sourceChainIDInt.String()).
 		Msg("Recorded CIRC message")
 
+	// Trigger CIRC callback to notify sequencer of new message
+	c.callbackMgr.InvokeCIRC(xtID, circMessage)
+
 	return nil
 }
 
@@ -351,6 +354,11 @@ func (c *coordinator) SetDecisionCallback(fn DecisionFn) {
 // SetBlockCallback sets the block callback
 func (c *coordinator) SetBlockCallback(fn BlockFn) {
 	c.callbackMgr.SetBlockCallback(fn)
+}
+
+// SetCIRCCallback sets the CIRC callback
+func (c *coordinator) SetCIRCCallback(fn CIRCFn) {
+	c.callbackMgr.SetCIRCCallback(fn)
 }
 
 // handleCommit handles a commit decision
