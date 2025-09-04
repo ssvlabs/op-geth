@@ -31,11 +31,12 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
-const mailboxABI = `[{"type":"constructor","inputs":[{"name":"_coordinator","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"clear","inputs":[],"outputs":[],"stateMutability":"nonpayable"},{"type":"function","name":"coordinator","inputs":[],"outputs":[{"name":"","type":"address","internalType":"address"}],"stateMutability":"view"},{"type":"function","name":"getKey","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"stateMutability":"pure"},{"type":"function","name":"inbox","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"keyListInbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"keyListOutbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"outbox","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"putInbox","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"function","name":"read","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"write","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"error","name":"InvalidCoordinator","inputs":[]}]`
+const mailboxABI = `[{"type":"constructor","inputs":[{"name":"_coordinator","type":"address","internalType":"address"},{"name":"_chainId","type":"uint256","internalType":"uint256"}],"stateMutability":"nonpayable"},{"type":"function","name":"chainId","inputs":[],"outputs":[{"name":"","type":"uint256","internalType":"uint256"}],"stateMutability":"view"},{"type":"function","name":"clear","inputs":[],"outputs":[],"stateMutability":"nonpayable"},{"type":"function","name":"coordinator","inputs":[],"outputs":[{"name":"","type":"address","internalType":"address"}],"stateMutability":"view"},{"type":"function","name":"createdKeys","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"used","type":"bool","internalType":"bool"}],"stateMutability":"view"},{"type":"function","name":"getKey","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"stateMutability":"pure"},{"type":"function","name":"inbox","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"inboxRoot","inputs":[],"outputs":[{"name":"","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"keyListInbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"keyListOutbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"outbox","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"outboxRoot","inputs":[],"outputs":[{"name":"","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"putInbox","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"function","name":"read","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"write","inputs":[{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"error","name":"InvalidCoordinator","inputs":[]},{"type":"error","name":"MessageNotFound","inputs":[]}]`
 
 type MailboxCall struct {
 	ChainSrc  *big.Int
 	ChainDest *big.Int
+	Sender    common.Address
 	Receiver  common.Address
 	SessionId *big.Int
 	Data      []byte
@@ -47,6 +48,7 @@ type MailboxCall struct {
 type CrossRollupDependency struct {
 	SourceChainID uint64
 	DestChainID   uint64
+	Sender        common.Address
 	Receiver      common.Address
 	SessionID     *big.Int
 	Label         []byte
@@ -187,6 +189,7 @@ func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, 
 					dep := CrossRollupDependency{
 						SourceChainID: call.ChainSrc.Uint64(),
 						DestChainID:   call.ChainDest.Uint64(),
+						Sender:        call.Sender,
 						Receiver:      call.Receiver,
 						SessionID:     call.SessionId,
 						Label:         call.Label,
@@ -262,7 +265,7 @@ func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, 
 
 	log.Info("[SSV] Transaction analysis complete",
 		"txHash", txHashHex,
-		"requiresCoordination", simState.RequiresCoordination,
+		"requiresCoordination", simState.RequiresCoordination(),
 		"dependencies", len(simState.Dependencies),
 		"outboundMessages", len(simState.OutboundMessages))
 
@@ -312,6 +315,7 @@ func containsDependency(deps []CrossRollupDependency, dep CrossRollupDependency)
 	for _, d := range deps {
 		if d.SourceChainID == dep.SourceChainID &&
 			d.DestChainID == dep.DestChainID &&
+			d.Sender == dep.Sender &&
 			d.Receiver == dep.Receiver &&
 			d.SessionID.Cmp(dep.SessionID) == 0 &&
 			bytes.Equal(d.Label, dep.Label) &&
@@ -378,7 +382,8 @@ func (mp *MailboxProcessor) parseReadCall(data []byte) (*MailboxCall, error) {
 
 	return &MailboxCall{
 		ChainSrc:  values[0].(*big.Int),
-		ChainDest: values[1].(*big.Int),
+		ChainDest: new(big.Int).SetUint64(mp.chainID),
+		Sender:    values[1].(common.Address),
 		Receiver:  values[2].(common.Address),
 		SessionId: values[3].(*big.Int),
 		Label:     values[4].([]byte),
@@ -393,12 +398,12 @@ func (mp *MailboxProcessor) parseWriteCall(data []byte) (*MailboxCall, error) {
 	}
 
 	return &MailboxCall{
-		ChainSrc:  values[0].(*big.Int),
-		ChainDest: values[1].(*big.Int),
-		Receiver:  values[2].(common.Address),
-		SessionId: values[3].(*big.Int),
+		ChainSrc:  new(big.Int).SetUint64(mp.chainID),
+		ChainDest: values[0].(*big.Int),
+		Receiver:  values[1].(common.Address),
+		SessionId: values[2].(*big.Int),
+		Label:     values[3].([]byte),
 		Data:      values[4].([]byte),
-		Label:     values[5].([]byte),
 	}, nil
 }
 
@@ -425,9 +430,24 @@ func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, s
 			return nil, nil, fmt.Errorf("failed to wait for CIRC message: %w", err)
 		}
 
-		// populate dependency with data
+		// Populate dependency with authoritative fields from the CIRC message.
+		// The Mailbox key uses (chainSrc, chainId, sender, receiver, sessionId, label),
+		// where 'sender' in the outbox is msg.sender of the contract that performed write(...).
+		// Ensure we mirror exactly what the source chain wrote so putInbox matches read(...).
+		if len(circMsg.Source) > 0 {
+			dep.Sender = common.BytesToAddress(circMsg.Source[0])
+		}
+		if len(circMsg.Receiver) > 0 {
+			dep.Receiver = common.BytesToAddress(circMsg.Receiver[0])
+		}
 		dep.Data = circMsg.Data[0]
 		circDeps = append(circDeps, dep)
+	}
+
+	// Defer the ACK detection re-simulation to the caller (after putInbox submission).
+	if len(circDeps) > 0 {
+		log.Info("[SSV] CIRC messages consumed; deferring ACK detection until putInbox is submitted",
+			"xtID", xtID.Hex(), "putInboxCount", len(circDeps))
 	}
 
 	log.Info("[SSV] Cross-rollup coordination completed", "xtID", xtID.Hex(), "sent", len(sentMsgs), "received", len(circDeps))
@@ -549,11 +569,11 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 
 	callData, err := parsedABI.Pack("putInbox",
 		new(big.Int).SetUint64(dep.SourceChainID),
-		new(big.Int).SetUint64(dep.DestChainID),
+		dep.Sender,
 		dep.Receiver,
 		dep.SessionID,
-		dep.Data,
 		dep.Label,
+		dep.Data,
 	)
 	if err != nil {
 		return nil, err
@@ -641,4 +661,53 @@ func (mp *MailboxProcessor) isMailboxAddress(addr common.Address) bool {
 		}
 	}
 	return false
+}
+
+// reSimulateForACKMessages re-simulates the transaction after putInbox creation
+func (mp *MailboxProcessor) reSimulateForACKMessages(ctx context.Context, tx *types.Transaction, xtID *rollupv1.XtID, alreadySentMsgs []CrossRollupMessage) ([]CrossRollupMessage, error) {
+	backend, ok := mp.backend.(*EthAPIBackend)
+	if !ok {
+		return nil, fmt.Errorf("backend not available for re-simulation")
+	}
+
+	log.Debug("[SSV] Re-simulating transaction for ACK detection", "txHash", tx.Hash().Hex(), "xtID", xtID.Hex())
+
+	// Re-simulate the transaction against pending state (which now includes putInbox transactions)
+	blockNrOrHash := rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber)
+	traceResult, err := backend.SimulateTransaction(ctx, tx, blockNrOrHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to re-simulate transaction: %w", err)
+	}
+
+	// Analyze the re-simulation result for new outbound messages
+	emptyDeps := make([]CrossRollupDependency, 0) // No dependencies needed for re-simulation
+	simState, err := mp.analyzeTransaction(traceResult, alreadySentMsgs, emptyDeps, tx.Hash().Hex())
+	if err != nil {
+		return nil, fmt.Errorf("failed to analyze re-simulation: %w", err)
+	}
+
+	newOutboundMsgs := make([]CrossRollupMessage, 0)
+
+	// Send any new outbound messages detected in re-simulation
+	for _, outMsg := range simState.OutboundMessages {
+		log.Info("[SSV] Detected new ACK message in re-simulation",
+			"xtID", xtID.Hex(),
+			"srcChain", outMsg.SourceChainID,
+			"destChain", outMsg.DestChainID,
+			"sessionId", outMsg.SessionID,
+			"label", string(outMsg.Label))
+
+		if err := mp.sendCIRCMessage(ctx, &outMsg, xtID); err != nil {
+			log.Error("[SSV] Failed to send ACK CIRC message", "error", err, "xtID", xtID.Hex())
+			return nil, fmt.Errorf("failed to send ACK CIRC message: %w", err)
+		}
+
+		newOutboundMsgs = append(newOutboundMsgs, outMsg)
+	}
+
+	if len(newOutboundMsgs) > 0 {
+		log.Info("[SSV] Successfully sent ACK CIRC messages", "xtID", xtID.Hex(), "count", len(newOutboundMsgs))
+	}
+
+	return newOutboundMsgs, nil
 }

@@ -642,19 +642,21 @@ func (sc *SequencerCoordinator) OnBlockBuildingStart(ctx context.Context, slot u
 	sc.mu.RLock()
 	defer sc.mu.RUnlock()
 
-	sc.log.Debug().Uint64("slot", slot).Msg("Block building started")
-
-	// Check for active SCP instances
+	active := 0
 	if sc.scpIntegration != nil {
-		activeContexts := sc.scpIntegration.GetActiveContexts()
-		if len(activeContexts) > 0 {
-			sc.log.Info().
-				Int("active_scp", len(activeContexts)).
-				Uint64("slot", slot).
-				Msg("Block building with active SCP instances")
-		}
+		active = sc.scpIntegration.GetActiveCount()
 	}
+	sc.log.Info().
+		Uint64("slot", slot).
+		Str("state", sc.stateMachine.GetCurrentState().String()).
+		Int("active_scp_instances", active).
+		Msg("Block building started")
 
+	if active > 0 {
+		sc.log.Info().
+			Uint64("slot", slot).
+			Msg("Building with in-flight SCP instances")
+	}
 	return nil
 }
 

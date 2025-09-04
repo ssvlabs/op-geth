@@ -985,7 +985,11 @@ func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *type
 		b.SetPendingClearTx(tx)
 		log.Info("[SSV] Set clear transaction to mempool", "txHash", tx.Hash().Hex())
 	}
-
+	// Also inject into the local txpool so that PENDING state reflects these txs
+	// and re-simulation against rpc.PendingBlockNumber can observe mailbox effects.
+	if err := b.sendTx(ctx, tx); err != nil {
+		log.Warn("[SSV] Failed to inject sequencer tx into txpool (continuing with staged include)", "err", err, "txHash", tx.Hash().Hex())
+	}
 	return nil
 }
 
@@ -1085,9 +1089,12 @@ func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context
 		currentState := b.coordinator.GetState()
 		currentSlot := b.coordinator.GetCurrentSlot()
 
-		log.Debug("[SSV] Preparing transactions",
+		log.Info("[SSV] Preparing sequencer transactions",
 			"state", currentState.String(),
-			"slot", currentSlot)
+			"slot", currentSlot,
+			"have_clear", b.GetPendingClearTx() != nil,
+			"putInbox_count", len(b.GetPendingPutInboxTxs()),
+			"original_count", len(b.GetPendingOriginalTxs()))
 
 		// Only prepare sequencer transactions during appropriate states
 		switch currentState {
@@ -1115,6 +1122,10 @@ func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context
 		}
 		b.SetPendingClearTx(clearTx)
 		log.Info("[SSV] Created clear transaction", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce())
+	} else if hasCrossChain && b.pendingClearTx != nil {
+		log.Info("[SSV] Reusing existing clear transaction", "txHash", b.pendingClearTx.Hash().Hex(), "nonce", b.pendingClearTx.Nonce())
+	} else {
+		log.Info("[SSV] No cross-chain activity detected for this block")
 	}
 
 	return nil
@@ -1134,6 +1145,52 @@ func (b *EthAPIBackend) createClearTransaction(ctx context.Context) (*types.Tran
 		return nil, err
 	}
 
+	parsedABI, err := abi.JSON(strings.NewReader(mailboxABI))
+	if err != nil {
+		return nil, err
+	}
+
+	callData, err := parsedABI.Pack("clear")
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare calldata for \"clear\" method: %v", err)
+	}
+
+	var mailboxAddr common.Address
+	chainID := b.ChainConfig().ChainID.Int64()
+	switch chainID {
+	case native.RollupAChainID:
+		mailboxAddr = b.GetMailboxAddresses()[0]
+	case native.RollupBChainID:
+		mailboxAddr = b.GetMailboxAddresses()[1]
+	default:
+		return nil, fmt.Errorf("unable to select mailbox addr. Unsupported \"%d\"chain id", chainID)
+	}
+
+	txData := &types.DynamicFeeTx{
+		ChainID:    b.ChainConfig().ChainID,
+		Nonce:      nonce,
+		GasTipCap:  big.NewInt(1000000000),
+		GasFeeCap:  big.NewInt(20000000000),
+		Gas:        300000,
+		To:         &mailboxAddr,
+		Value:      big.NewInt(0),
+		Data:       callData,
+		AccessList: nil,
+	}
+
+	tx := types.NewTx(txData)
+	signedTx, err := types.SignTx(tx, types.NewLondonSigner(b.ChainConfig().ChainID), b.sequencerKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign tx %v", err)
+	}
+
+	return signedTx, nil
+}
+
+// createClearTransactionWithNonce creates a clear() tx using a specific nonce (to preserve ordering
+// ahead of any subsequently-created putInbox transactions).
+// SSV
+func (b *EthAPIBackend) createClearTransactionWithNonce(ctx context.Context, nonce uint64) (*types.Transaction, error) {
 	parsedABI, err := abi.JSON(strings.NewReader(mailboxABI))
 	if err != nil {
 		return nil, err
@@ -1297,7 +1354,22 @@ func (b *EthAPIBackend) validateSequencerTransaction(tx *types.Transaction) erro
 // OnBlockBuildingStart is called when block building starts
 // SSV
 func (b *EthAPIBackend) OnBlockBuildingStart(context.Context) error {
-	log.Info("[SSV] Block building started - preparing sequencer state")
+	clearPresent := b.GetPendingClearTx() != nil
+	putInbox := b.GetPendingPutInboxTxs()
+	original := b.GetPendingOriginalTxs()
+	log.Info("[SSV] Block building started - preparing sequencer state",
+		"clear_present", clearPresent,
+		"putInbox_count", len(putInbox),
+		"original_count", len(original))
+	if len(putInbox) > 0 {
+		max := len(putInbox)
+		if max > 3 {
+			max = 3
+		}
+		for i := 0; i < max; i++ {
+			log.Info("[SSV] Pending putInbox", "index", i, "txHash", putInbox[i].Hash().Hex(), "nonce", putInbox[i].Nonce())
+		}
+	}
 	if b.coordinator != nil {
 		_ = b.coordinator.OnBlockBuildingStart(context.Background(), b.coordinator.GetCurrentSlot())
 	}
@@ -1592,6 +1664,7 @@ func (b *EthAPIBackend) SetSequencerCoordinator(coord sequencer.Coordinator, sp 
 			b.coordinator.Consensus().SetStartCallback(b.StartCallbackFn(chainID))
 			b.coordinator.Consensus().SetVoteCallback(b.VoteCallbackFn(chainID))
 			b.coordinator.Consensus().SetDecisionCallback(b.DecisionCallbackFn(chainID))
+			b.coordinator.Consensus().SetBlockCallback(b.BlockCallbackFn())
 		}
 
 		// Register SBCP callbacks with simulation
@@ -1616,9 +1689,9 @@ func (b *EthAPIBackend) SetSequencerCoordinator(coord sequencer.Coordinator, sp 
 
 			OnStateTransition: func(from, to sequencer.State, slot uint64, reason string) {
 				log.Info("[SSV] SBCP state transition", "from", from.String(), "to", to.String(), "slot", slot)
-				if to == sequencer.StateWaiting {
-					b.ClearSequencerTransactionsAfterBlock()
-				}
+				// Do not clear staged sequencer txs on generic Waiting transitions.
+				// They are cleared explicitly in OnBlockBuildingComplete once we know
+				// whether they were included.
 			},
 		})
 
@@ -1697,8 +1770,6 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 		return false, err
 	}
 
-	// Use old version's coordination logic (adapted for SBCP)
-	var newFulfilledDeps []CrossRollupDependency
 	historicalSentCIRCMsgs := make([]CrossRollupMessage, 0)
 	historicalCIRCDeps := make([]CrossRollupDependency, 0)
 
@@ -1713,23 +1784,6 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 	sequencerNonce := startNonce + 1 // reserve startNonce for clear() tx
 
 	for {
-		// Populate mempool with new putInbox txs (same as old version)
-		for _, dep := range newFulfilledDeps {
-			putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, sequencerNonce)
-			if err != nil {
-				return false, fmt.Errorf("failed to createPutInboxTx: %v", err)
-			}
-
-			err = b.SubmitSequencerTransaction(ctx, putInboxTx, true)
-			if err != nil {
-				return false, fmt.Errorf("failed to SubmitSequencerTransaction (txHash=%s): %v", putInboxTx.Hash().Hex(), err)
-			}
-			sequencerNonce++
-		}
-
-		historicalCIRCDeps = append(historicalCIRCDeps, newFulfilledDeps...)
-		newFulfilledDeps = make([]CrossRollupDependency, 0)
-
 		var coordinationStates []*SimulationState
 		for _, txReq := range localTxs {
 			for _, txBytes := range txReq.Transaction {
@@ -1767,11 +1821,79 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 						return false, err
 					}
 
-					newFulfilledDeps = append(newFulfilledDeps, fulFilledDeps...)
+					// Immediately create and submit putInbox transactions for newly-fulfilled deps
+					if len(fulFilledDeps) > 0 {
+						log.Info("[SSV] Creating putInbox transactions for fulfilled dependencies", "count", len(fulFilledDeps))
+
+						// Ensure clear() tx is prepared with reserved nonce before any putInbox
+						if b.GetPendingClearTx() == nil {
+							clearTx, err := b.createClearTransactionWithNonce(ctx, startNonce)
+							if err != nil {
+								log.Error("[SSV] Failed to create reserved clear transaction", "err", err)
+							} else {
+								b.SetPendingClearTx(clearTx)
+								log.Info("[SSV] Reserved clear transaction created", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce())
+							}
+						}
+						for _, dep := range fulFilledDeps {
+							putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, sequencerNonce)
+							if err != nil {
+								return false, fmt.Errorf("failed to createPutInboxTx: %v", err)
+							}
+							if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
+								return false, fmt.Errorf("failed to SubmitSequencerTransaction (txHash=%s): %v", putInboxTx.Hash().Hex(), err)
+							}
+							sequencerNonce++
+						}
+						// Track these deps for future simulations
+						historicalCIRCDeps = append(historicalCIRCDeps, fulFilledDeps...)
+						// After submitting putInbox, detect any ACK writes via targeted re-simulation per tx
+						if err := b.waitForPutInboxTransactionsToBeProcessed(); err != nil {
+							log.Warn("[SSV] Waiting for putInbox txs failed", "error", err)
+						}
+						allLocalPass := true
+						for _, s := range coordinationStates {
+							if s.Tx == nil {
+								continue
+							}
+							// Quick success probe: did local tx pass after putInbox?
+							okLocal, err := b.reSimulateTransaction(ctx, s.Tx, rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber), xtID)
+							if err != nil || !okLocal {
+								allLocalPass = false
+							}
+							newOutboundMsgs, err := mailboxProcessor.reSimulateForACKMessages(ctx, s.Tx, xtID, historicalSentCIRCMsgs)
+							if err != nil {
+								log.Warn("[SSV] Failed to re-simulate for ACK messages", "error", err, "xtID", xtID.Hex())
+								continue
+							}
+							if len(newOutboundMsgs) > 0 {
+								historicalSentCIRCMsgs = append(historicalSentCIRCMsgs, newOutboundMsgs...)
+								log.Info("[SSV] Successfully sent ACK CIRC messages after putInbox", "count", len(newOutboundMsgs), "xtID", xtID.Hex())
+							}
+						}
+						// If all local re-simulations succeed now that putInbox is in, vote early by returning success
+						if allLocalPass {
+							log.Info("[SSV] All local transactions pass after putInbox; returning early for vote", "xtID", xtID.Hex())
+							return true, nil
+						}
+					}
 					historicalSentCIRCMsgs = append(historicalSentCIRCMsgs, sentOutboundMsgs...)
 				}
 			}
 			log.Info("[SSV] Cross-rollup coordination phase completed", "xtID", xtID.Hex())
+
+			// Re-simulate immediately against pending state after populating mailbox
+			// so the destination rollup can observe its ACK write and emit CIRC back.
+			// This mirrors the old flow and prevents getting stuck waiting.
+			if len(historicalCIRCDeps) > 0 {
+				ok, err := b.reSimulateAfterMailboxPopulation(ctx, xtReq, xtID, coordinationStates)
+				if err != nil {
+					log.Error("[SSV] Re-simulation after mailbox population failed", "error", err, "xtID", xtID.Hex())
+				}
+				if ok {
+					return true, nil
+				}
+			}
 		}
 
 		for _, state := range coordinationStates {
