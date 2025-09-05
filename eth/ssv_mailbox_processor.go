@@ -380,13 +380,27 @@ func (mp *MailboxProcessor) parseReadCall(data []byte) (*MailboxCall, error) {
 		return nil, err
 	}
 
+	// read(chainSrc, sender, receiver, sessionId, label)
+	chainSrc := values[0].(*big.Int)
+	sender := values[1].(common.Address)
+	receiver := values[2].(common.Address)
+	sessionId := values[3].(*big.Int)
+	label := values[4].([]byte)
+
+	log.Info("[SSV] DEBUG parseReadCall",
+		"chainSrc", chainSrc,
+		"sender", sender.Hex(),
+		"receiver", receiver.Hex(),
+		"sessionId", sessionId,
+		"label", string(label))
+
 	return &MailboxCall{
-		ChainSrc:  values[0].(*big.Int),
-		ChainDest: new(big.Int).SetUint64(mp.chainID),
-		Sender:    values[1].(common.Address),
-		Receiver:  values[2].(common.Address),
-		SessionId: values[3].(*big.Int),
-		Label:     values[4].([]byte),
+		ChainSrc:  chainSrc,
+		ChainDest: new(big.Int).SetUint64(mp.chainID), // destination is our chain
+		Sender:    sender,
+		Receiver:  receiver,
+		SessionId: sessionId,
+		Label:     label,
 	}, nil
 }
 
@@ -397,14 +411,30 @@ func (mp *MailboxProcessor) parseWriteCall(data []byte) (*MailboxCall, error) {
 		return nil, err
 	}
 
+	// write(chainDest, receiver, sessionId, label, data)
+	chainDest := values[0].(*big.Int)
+	receiver := values[1].(common.Address)
+	sessionId := values[2].(*big.Int)
+	label := values[3].([]byte)
+	dataBytes := values[4].([]byte)
+
+	log.Info("[SSV] DEBUG parseWriteCall",
+		"chainSrc", mp.chainID,
+		"chainDest", chainDest,
+		"sender", mp.sequencerAddr.Hex(), // msg.sender in the contract
+		"receiver", receiver.Hex(),
+		"sessionId", sessionId,
+		"label", string(label),
+		"dataLen", len(data))
+
 	return &MailboxCall{
-		ChainSrc:  new(big.Int).SetUint64(mp.chainID),
-		ChainDest: values[0].(*big.Int),
-		Sender:    mp.sequencerAddr,
-		Receiver:  values[1].(common.Address),
-		SessionId: values[2].(*big.Int),
-		Label:     values[3].([]byte),
-		Data:      values[4].([]byte),
+		ChainSrc:  new(big.Int).SetUint64(mp.chainID), // source is our chain
+		ChainDest: chainDest,
+		Sender:    mp.sequencerAddr, // msg.sender becomes the sender
+		Receiver:  receiver,
+		SessionId: sessionId,
+		Label:     label,
+		Data:      dataBytes,
 	}, nil
 }
 
