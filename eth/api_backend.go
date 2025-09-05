@@ -1413,11 +1413,17 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *type
 	slot := b.lastRequestSealSlot
 	b.rsMutex.RUnlock()
 
-	if slot == 0 {
-		// We didn't receive RequestSeal yet; do not send an L2Block.
-		log.Warn("[SSV] Skipping L2Block submission: no RequestSeal recorded for current slot", "blockHash", block.Hash().Hex())
-		return nil
-	}
+    if slot == 0 {
+        // Fallback: no RequestSeal recorded (e.g., SP sealed quickly or message delayed).
+        // Submit an L2Block tied to the coordinator's current slot with an empty inclusion list.
+        if b.coordinator != nil {
+            slot = b.coordinator.GetCurrentSlot()
+        }
+        included = nil
+        log.Info("[SSV] No RequestSeal recorded; submitting L2Block with empty inclusion list",
+            "slot", slot,
+            "blockHash", block.Hash().Hex())
+    }
 
 	// RLP encode the block
 	var buf bytes.Buffer

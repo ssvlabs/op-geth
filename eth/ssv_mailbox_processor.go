@@ -419,7 +419,9 @@ func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, s
 	for _, dep := range simState.Dependencies {
 		log.Info("[SSV] Await for CIRC message", "srcChain", dep.SourceChainID, "destChain", dep.DestChainID, "sessionId", dep.SessionID)
 
-		sourceKey := spconsensus.ChainKeyUint64(dep.SourceChainID)
+		sourceBytes := new(big.Int).SetUint64(dep.SourceChainID).Bytes()
+		sourceKey := spconsensus.ChainKeyBytes(sourceBytes)
+		log.Info("[SSV] Waiting for CIRC message", "xtID", xtID.Hex(), "from", sourceKey)
 		circMsg, err := mp.waitForCIRCMessage(ctx, xtID, sourceKey)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to wait for CIRC message: %w", err)
@@ -477,8 +479,8 @@ func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollu
 }
 
 func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *rollupv1.XtID, sourceChainID string) (*rollupv1.CIRCMessage, error) {
-	// Wait for CIRC message with timeout
-	timeout := time.NewTimer(2 * time.Minute)
+	// Wait for CIRC message with a tighter timeout to avoid stalling slot progress
+	timeout := time.NewTimer(10 * time.Second)
 	defer timeout.Stop()
 
 	ticker := time.NewTicker(100 * time.Millisecond)
