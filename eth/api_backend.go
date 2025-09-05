@@ -892,68 +892,7 @@ func (b *EthAPIBackend) CIRCCallbackFn(chainID *big.Int) spconsensus.CIRCFn {
 			"xtID", xtID.Hex(),
 			"sourceChain", new(big.Int).SetBytes(circMessage.SourceChain).String())
 
-		// Trigger async re-simulation to detect ACK writes
-		go func() {
-			// Give a short delay to allow putInbox transactions to be processed
-			time.Sleep(100 * time.Millisecond)
-
-			// Create a mailbox processor for this re-simulation
-			mailboxAddresses := b.GetMailboxAddresses()
-			sequencerClients := make(map[string]transport.Client)
-			for key, client := range b.sequencerClients {
-				sequencerClients[key] = client
-			}
-
-			mailboxProcessor := NewMailboxProcessor(
-				chainID.Uint64(),
-				mailboxAddresses,
-				sequencerClients,
-				b.coordinator,
-				b.sequencerKey,
-				b.sequencerAddress,
-				b,
-			)
-
-			// Re-simulate all pending transactions to see if any now detect ACK writes
-			// This is a simplified approach - we'll trigger a re-simulation of any pending transactions
-			log.Info("[SSV] Re-simulating transactions for ACK detection after CIRC callback", "xtID", xtID.Hex())
-
-			// Get pending transactions
-			txs := b.GetPendingPutInboxTxs()
-			if len(txs) == 0 {
-				log.Debug("[SSV] No pending putInbox transactions for re-simulation", "xtID", xtID.Hex())
-				return
-			}
-
-			// Re-simulate each transaction to see if any now have ACK writes
-			for _, tx := range txs {
-				result, err := b.SimulateTransaction(ctx, tx, rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber))
-				if err != nil {
-					log.Warn("[SSV] Failed to re-simulate transaction after CIRC callback", "error", err, "txHash", tx.Hash().Hex())
-					continue
-				}
-
-				// Analyze the simulation result for new outbound messages
-				simState, err := mailboxProcessor.AnalyzeTransaction(result, []CrossRollupMessage{}, []CrossRollupDependency{}, tx)
-				if err != nil {
-					log.Warn("[SSV] Failed to analyze transaction after CIRC callback", "error", err, "txHash", tx.Hash().Hex())
-					continue
-				}
-				if len(simState.OutboundMessages) > 0 {
-					log.Info("[SSV] Found ACK messages to send after CIRC callback", "count", len(simState.OutboundMessages), "xtID", xtID.Hex())
-
-					// Send the CIRC messages
-					for _, msg := range simState.OutboundMessages {
-						err := mailboxProcessor.sendCIRCMessage(ctx, &msg, xtID)
-						if err != nil {
-							log.Error("[SSV] Failed to send CIRC message via callback", "error", err, "xtID", xtID.Hex())
-						} else {
-							log.Info("[SSV] Successfully sent CIRC message via callback", "destChain", msg.DestChainID, "xtID", xtID.Hex())
-						}
-					}
-				}
-			}
-		}()
+		log.Info("[SSV] CIRC callback completed - main simulation loop will detect new messages", "xtID", xtID.Hex())
 
 		return nil
 	}
@@ -2030,6 +1969,23 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 								continue
 							}
 							sequencerNonce++
+						}
+
+						// Re-simulate original transactions to detect ACK writes after putInbox creation
+						for _, state := range coordinationStates {
+							if !state.RequiresCoordination() || state.Tx == nil {
+								continue
+							}
+
+							newOutboundMsgs, err := mailboxProcessor.reSimulateForACKMessages(ctx, state.Tx, xtID, historicalSentCIRCMsgs)
+							if err != nil {
+								log.Error("[SSV] Failed to re-simulate for ACK after async CIRC", "error", err, "txHash", state.Tx.Hash().Hex())
+								continue
+							}
+							if len(newOutboundMsgs) > 0 {
+								historicalSentCIRCMsgs = append(historicalSentCIRCMsgs, newOutboundMsgs...)
+								log.Info("[SSV] Successfully sent ACK CIRC messages after async putInbox", "count", len(newOutboundMsgs), "xtID", xtID.Hex())
+							}
 						}
 
 						historicalCIRCDeps = append(historicalCIRCDeps, newFulfilledDeps...)
