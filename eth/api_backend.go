@@ -1932,9 +1932,6 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 								"destChain", dep.DestChainID)
 
 							// Populate dependency with CIRC data
-							if len(circMsg.Source) > 0 {
-								dep.Sender = common.BytesToAddress(circMsg.Source[0])
-							}
 							if len(circMsg.Receiver) > 0 {
 								dep.Receiver = common.BytesToAddress(circMsg.Receiver[0])
 							}
