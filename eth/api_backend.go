@@ -1441,22 +1441,30 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *type
 		Payload:  &rollupv1.Message_L2Block{L2Block: l2},
 	}
 
-	if err := b.spClient.Send(ctx, msg); err != nil {
-		log.Error("[SSV] Failed to send L2Block to shared publisher", "err", err, "slot", slot)
-		return err
-	}
+    if err := b.spClient.Send(ctx, msg); err != nil {
+        log.Error("[SSV] Failed to send L2Block to shared publisher", "err", err, "slot", slot)
+        return err
+    }
 	log.Info("[SSV] Submitted L2Block to shared publisher",
 		"slot", slot,
 		"blockNumber", l2.BlockNumber,
 		"blockHash", block.Hash().Hex(),
 		"included_xts", len(included))
 
-	// Mark included xTs as sent in consensus layer (SBCP path)
-	if b.coordinator != nil && b.coordinator.Consensus() != nil {
-		if err := b.coordinator.Consensus().OnL2BlockCommitted(ctx, l2); err != nil {
-			log.Warn("[SSV] Consensus OnL2BlockCommitted warning", "err", err, "slot", slot)
-		}
-	}
+    // Mark included xTs as sent in consensus layer (SBCP path)
+    if b.coordinator != nil && b.coordinator.Consensus() != nil {
+        if err := b.coordinator.Consensus().OnL2BlockCommitted(ctx, l2); err != nil {
+            log.Warn("[SSV] Consensus OnL2BlockCommitted warning", "err", err, "slot", slot)
+        }
+    }
+
+    // Notify sequencer coordinator to complete the block lifecycle and
+    // transition state back to Waiting.
+    if b.coordinator != nil {
+        if err := b.coordinator.OnBlockBuildingComplete(ctx, l2, true); err != nil {
+            log.Warn("[SSV] Coordinator OnBlockBuildingComplete warning", "err", err, "slot", slot)
+        }
+    }
 
 	// Clear staged sequencer transactions after successful block
 	b.ClearSequencerTransactionsAfterBlock()

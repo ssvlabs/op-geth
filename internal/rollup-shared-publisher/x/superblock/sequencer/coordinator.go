@@ -209,15 +209,15 @@ func (sc *SequencerCoordinator) handleStartSlot(startSlot *pb.StartSlot) error {
 	// Reset SCP per-slot tracking
 	sc.scpIntegration.ResetForSlot(startSlot.Slot)
 
-	// Transition to Building-Free
-	err := sc.stateMachine.TransitionTo(
-		StateBuildingFree,
-		startSlot.Slot,
-		"received StartSlot",
-	)
-	if err != nil {
-		return err
-	}
+    // Per spec, StartSlot should be processed regardless of current state.
+    // If not in Waiting, first reset to Waiting; then move to Building-Free.
+    curr := sc.stateMachine.GetCurrentState()
+    if curr != StateWaiting {
+        _ = sc.stateMachine.TransitionTo(StateWaiting, startSlot.Slot, "reset by StartSlot")
+    }
+    if err := sc.stateMachine.TransitionTo(StateBuildingFree, startSlot.Slot, "received StartSlot"); err != nil {
+        return err
+    }
 
 	// Notify miner about slot start for block building coordination
 	if sc.minerNotifier != nil {
@@ -279,17 +279,16 @@ func (sc *SequencerCoordinator) handleRollBackAndStartSlot(
 		return fmt.Errorf("failed to start block builder on rollback: %w", err)
 	}
 
-	// Reset SCP per-slot tracking
-	sc.scpIntegration.ResetForSlot(rb.CurrentSlot)
+    // Reset SCP per-slot tracking
+    sc.scpIntegration.ResetForSlot(rb.CurrentSlot)
 
-	// Transition to Building-Free regardless of previous state
-	if err := sc.stateMachine.TransitionTo(
-		StateBuildingFree,
-		rb.CurrentSlot,
-		"received RollBackAndStartSlot",
-	); err != nil {
-		return err
-	}
+    // Transition to Building-Free regardless of previous state
+    if sc.stateMachine.GetCurrentState() != StateWaiting {
+        _ = sc.stateMachine.TransitionTo(StateWaiting, rb.CurrentSlot, "reset by RollBackAndStartSlot")
+    }
+    if err := sc.stateMachine.TransitionTo(StateBuildingFree, rb.CurrentSlot, "received RollBackAndStartSlot"); err != nil {
+        return err
+    }
 
 	// Notify miner about slot start for block building coordination (optional)
 	if sc.minerNotifier != nil {
@@ -684,12 +683,12 @@ func (sc *SequencerCoordinator) OnBlockBuildingStart(ctx context.Context, slot u
 
 // OnBlockBuildingComplete is called when block building completes
 func (sc *SequencerCoordinator) OnBlockBuildingComplete(ctx context.Context, block *pb.L2Block, success bool) error {
-	if success && block != nil {
-		sc.log.Info().
-			Uint64("slot", block.Slot).
-			Uint64("block_number", block.BlockNumber).
-			Str("block_hash", fmt.Sprintf("%x", block.BlockHash)).
-			Msg("Block building completed successfully")
+    if success && block != nil {
+        sc.log.Info().
+            Uint64("slot", block.Slot).
+            Uint64("block_number", block.BlockNumber).
+            Str("block_hash", fmt.Sprintf("%x", block.BlockHash)).
+            Msg("Block building completed successfully")
 
 		// Execute block ready callback
 		if sc.callbacks.OnBlockReady != nil {
@@ -701,16 +700,28 @@ func (sc *SequencerCoordinator) OnBlockBuildingComplete(ctx context.Context, blo
 				return err
 			}
 		}
-		// Inform consensus layer that a block committed (mark included XTs)
-		if sc.consensusCoord != nil {
-			_ = sc.consensusCoord.OnL2BlockCommitted(ctx, block)
-		}
-	} else {
-		sc.log.Warn().
-			Bool("success", success).
-			Msg("Block building completed with issues")
-	}
-	return nil
+        // Inform consensus layer that a block committed (mark included XTs)
+        if sc.consensusCoord != nil {
+            _ = sc.consensusCoord.OnL2BlockCommitted(ctx, block)
+        }
+
+        // Transition back to Waiting after successful sealing
+        if sc.stateMachine.GetCurrentState() == StateSubmission {
+            if err := sc.stateMachine.TransitionTo(StateWaiting, block.Slot, "L2 block submitted"); err != nil {
+                sc.log.Error().Err(err).Msg("Failed to transition to Waiting after block submission")
+            }
+        }
+
+        // Reset block builder for next slot
+        if sc.blockBuilder != nil {
+            sc.blockBuilder.Reset()
+        }
+    } else {
+        sc.log.Warn().
+            Bool("success", success).
+            Msg("Block building completed with issues")
+    }
+    return nil
 }
 
 // OnConsensusDecision is invoked when the underlying 2PC (SCP) reaches a
