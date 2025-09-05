@@ -512,16 +512,22 @@ func (sc *SequencerCoordinator) handleRequestSeal(ctx context.Context, from stri
 		}
 	}
 
-	// Transition to Submission; real block sealing/submission will be handled
-	// by the miner and EthAPIBackend once the block is actually built.
-	if err := sc.stateMachine.TransitionTo(
-		StateSubmission,
-		requestSeal.Slot,
-		"received RequestSeal",
-	); err != nil {
-		return err
-	}
-	return nil
+    // Transition to Submission if not already there; real block sealing/submission
+    // will be handled by the miner and EthAPIBackend once the block is actually built.
+    if sc.stateMachine.GetCurrentState() != StateSubmission {
+        if err := sc.stateMachine.TransitionTo(
+            StateSubmission,
+            requestSeal.Slot,
+            "received RequestSeal",
+        ); err != nil {
+            return err
+        }
+    } else {
+        sc.log.Debug().
+            Uint64("slot", requestSeal.Slot).
+            Msg("RequestSeal received while already in Submission; idempotent no-op")
+    }
+    return nil
 }
 
 // sealAndSubmitBlock seals the current block and submits to SP
