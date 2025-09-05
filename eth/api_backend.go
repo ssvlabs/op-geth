@@ -1394,45 +1394,80 @@ func (b *EthAPIBackend) OnBlockBuildingStart(context.Context) error {
 // OnBlockBuildingComplete is called when block building completes
 // SSV
 func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *types.Block, success, simulation bool) error {
-	if !success || block == nil {
-		log.Warn("[SSV] Block building failed", "success", success, "hasBlock", block != nil)
-		return nil
-	}
+    if !success || block == nil {
+        log.Warn("[SSV] Block building failed", "success", success, "hasBlock", block != nil)
+        return nil
+    }
+    if simulation {
+        return nil
+    }
 
-	if simulation {
-		return nil
-	}
+    // Build and send SBCP L2Block based on the actual mined block.
+    b.rsMutex.RLock()
+    included := make([][]byte, len(b.lastRequestSealIncluded))
+    for i := range b.lastRequestSealIncluded {
+        dup := make([]byte, len(b.lastRequestSealIncluded[i]))
+        copy(dup, b.lastRequestSealIncluded[i])
+        included[i] = dup
+    }
+    slot := b.lastRequestSealSlot
+    b.rsMutex.RUnlock()
 
-	// Detect whether any staged putInbox txs were actually included
-	putInbox := b.GetPendingPutInboxTxs()
-	hasher := make(map[common.Hash]struct{}, len(putInbox))
-	for _, tx := range putInbox {
-		hasher[tx.Hash()] = struct{}{}
-	}
-	containsPutInbox := false
-	if len(hasher) > 0 {
-		for _, btx := range block.Transactions() {
-			if _, ok := hasher[btx.Hash()]; ok {
-				containsPutInbox = true
-				break
-			}
-		}
-	}
+    if slot == 0 {
+        // We didn't receive RequestSeal yet; do not send an L2Block.
+        log.Warn("[SSV] Skipping L2Block submission: no RequestSeal recorded for current slot", "blockHash", block.Hash().Hex())
+        return nil
+    }
 
-	// Only notify + clear when the block actually included our sequencer txs
-	if containsPutInbox {
-		if b.coordinator != nil && b.coordinator.Consensus() != nil {
-			if err := b.coordinator.Consensus().OnBlockCommitted(ctx, block); err != nil {
-				log.Error("[SSV] Consensus OnBlockCommitted failed", "err", err, "blockHash", block.Hash().Hex())
-			}
-		}
-		b.ClearSequencerTransactionsAfterBlock()
-		log.Info("[SSV] Block building completed (sequencer txs included)", "blockHash", block.Hash().Hex())
-	} else {
-		log.Info("[SSV] Block building completed (no sequencer txs included)", "blockHash", block.Hash().Hex())
-	}
+    // RLP encode the block
+    var buf bytes.Buffer
+    if err := block.EncodeRLP(&buf); err != nil {
+        log.Error("[SSV] Failed to RLP encode block", "err", err, "blockHash", block.Hash().Hex())
+        return err
+    }
 
-	return nil
+    l2 := &rollupv1.L2Block{
+        Slot:            slot,
+        ChainId:         b.ChainConfig().ChainID.Bytes(),
+        BlockNumber:     block.NumberU64(),
+        BlockHash:       block.Hash().Bytes(),
+        ParentBlockHash: block.ParentHash().Bytes(),
+        IncludedXts:     included,
+        Block:           buf.Bytes(),
+    }
+
+    msg := &rollupv1.Message{
+        SenderId: b.ChainConfig().ChainID.String(),
+        Payload:  &rollupv1.Message_L2Block{L2Block: l2},
+    }
+
+    if err := b.spClient.Send(ctx, msg); err != nil {
+        log.Error("[SSV] Failed to send L2Block to shared publisher", "err", err, "slot", slot)
+        return err
+    }
+    log.Info("[SSV] Submitted L2Block to shared publisher",
+        "slot", slot,
+        "blockNumber", l2.BlockNumber,
+        "blockHash", block.Hash().Hex(),
+        "included_xts", len(included))
+
+    // Mark included xTs as sent in consensus layer (SBCP path)
+    if b.coordinator != nil && b.coordinator.Consensus() != nil {
+        if err := b.coordinator.Consensus().OnL2BlockCommitted(ctx, l2); err != nil {
+            log.Warn("[SSV] Consensus OnL2BlockCommitted warning", "err", err, "slot", slot)
+        }
+    }
+
+    // Clear staged sequencer transactions after successful block
+    b.ClearSequencerTransactionsAfterBlock()
+
+    // Reset recorded RequestSeal once the block is submitted
+    b.rsMutex.Lock()
+    b.lastRequestSealIncluded = nil
+    b.lastRequestSealSlot = 0
+    b.rsMutex.Unlock()
+
+    return nil
 }
 
 func (b *EthAPIBackend) BlockCallbackFn() func(ctx context.Context, block *types.Block, xtIDs []*rollupv1.XtID) error {
@@ -1671,31 +1706,38 @@ func (b *EthAPIBackend) SetSequencerCoordinator(coord sequencer.Coordinator, sp 
 		}
 	}
 
-	if b.coordinator != nil {
-		// Wire consensus callbacks (existing)
-		if b.coordinator.Consensus() != nil {
-			chainID := b.ChainConfig().ChainID
-			b.coordinator.Consensus().SetStartCallback(b.StartCallbackFn(chainID))
-			b.coordinator.Consensus().SetVoteCallback(b.VoteCallbackFn(chainID))
-			b.coordinator.Consensus().SetDecisionCallback(b.DecisionCallbackFn(chainID))
-			b.coordinator.Consensus().SetBlockCallback(b.BlockCallbackFn())
-			b.coordinator.Consensus().SetCIRCCallback(b.CIRCCallbackFn(chainID))
-		}
+    if b.coordinator != nil {
+        // Wire consensus callbacks for SCP → coordinator integration
+        if b.coordinator.Consensus() != nil {
+            chainID := b.ChainConfig().ChainID
+            b.coordinator.Consensus().SetStartCallback(b.StartCallbackFn(chainID))
+            b.coordinator.Consensus().SetVoteCallback(b.VoteCallbackFn(chainID))
+            // On final decision from SCP, update sequencer coordinator state directly.
+            b.coordinator.Consensus().SetDecisionCallback(func(ctx context.Context, xtID *rollupv1.XtID, decision bool) error {
+                log.Info("[SSV] Consensus decision callback", "xtID", xtID.Hex(), "decision", decision)
+                if err := b.coordinator.OnConsensusDecision(ctx, xtID, decision); err != nil {
+                    log.Error("[SSV] Coordinator failed to apply decision", "err", err, "xtID", xtID.Hex())
+                    return err
+                }
+                return nil
+            })
+            // Do not send legacy Block messages in SBCP mode.
+            // The L2Block will be sent from OnBlockBuildingComplete based on the actual mined block.
+            b.coordinator.Consensus().SetCIRCCallback(b.CIRCCallbackFn(chainID))
+        }
 
-		// Register SBCP callbacks with simulation
-		b.coordinator.SetCallbacks(sequencer.CoordinatorCallbacks{
-			// For SBCP mode simulation during StartSC
-			SimulateAndVote: b.simulateXTRequestForSBCP,
+        // Register SBCP callbacks
+        b.coordinator.SetCallbacks(sequencer.CoordinatorCallbacks{
+            // For SBCP mode simulation during StartSC
+            SimulateAndVote: b.simulateXTRequestForSBCP,
 
 			OnVoteDecision: func(ctx context.Context, xtID *rollupv1.XtID, chainID string, vote bool) error {
 				log.Debug("[SSV] Vote decision", "xtID", xtID.Hex(), "vote", vote)
 				return nil
 			},
 
-			OnFinalDecision: func(ctx context.Context, xtID *rollupv1.XtID, decision bool) error {
-				log.Info("[SSV] Final decision", "xtID", xtID.Hex(), "decision", decision)
-				return b.handleDecided(&rollupv1.Decided{XtId: xtID, Decision: decision})
-			},
+            // Decisions are handled via consensus DecisionCallback above.
+            OnFinalDecision: nil,
 
 			OnBlockReady: func(ctx context.Context, block *rollupv1.L2Block, xtIDs []*rollupv1.XtID) error {
 				log.Info("[SSV] SBCP block ready", "slot", block.Slot, "xtIDs", len(xtIDs))

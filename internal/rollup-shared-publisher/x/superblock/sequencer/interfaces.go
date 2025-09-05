@@ -50,8 +50,8 @@ type Coordinator interface {
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
 
-	// Message handling
-	HandleMessage(ctx context.Context, from string, msg *pb.Message) error
+    // Message handling
+    HandleMessage(ctx context.Context, from string, msg *pb.Message) error
 
 	// State queries
 	GetCurrentSlot() uint64
@@ -61,10 +61,14 @@ type Coordinator interface {
 	// Consensus access
 	Consensus() consensus.Coordinator
 
-	// SDK access
-	BlockLifecycleManager
-	TransactionManager
-	CallbackManager
+    // SDK access
+    BlockLifecycleManager
+    TransactionManager
+    CallbackManager
+
+    // Consensus integration (SCP): notify the coordinator about a final decision
+    // so it can update local SCP integration/state machine and unblock queued StartSCs.
+    OnConsensusDecision(ctx context.Context, xtID *pb.XtID, decision bool) error
 }
 
 // BlockBuilderInterface for L2 block construction

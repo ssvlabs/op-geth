@@ -42,6 +42,12 @@ type SequencerCoordinator struct {
 	// Runtime state
 	running bool
 	stopCh  chan struct{}
+
+	// Queue StartSC messages that arrive while an SCP instance is active
+	pendingStartSCs []struct {
+		from  string
+		start *pb.StartSC
+	}
 }
 
 // NewSequencerCoordinator creates a new sequencer coordinator
@@ -316,17 +322,28 @@ func (sc *SequencerCoordinator) handleStartSC(ctx context.Context, from string, 
 	}
 
 	if sc.stateMachine.GetCurrentState() != StateBuildingFree {
+		// Queue for later processing once the current SCP instance completes
+		sc.pendingStartSCs = append(sc.pendingStartSCs, struct {
+			from  string
+			start *pb.StartSC
+		}{from: from, start: startSC})
 		sc.log.Warn().
 			Str("state", sc.stateMachine.GetCurrentState().String()).
-			Msg("StartSC received in wrong state")
+			Int("queued", len(sc.pendingStartSCs)).
+			Msg("StartSC received while locked; queued for later")
 		return nil
 	}
 
 	// Enforce StartSC ordering: previous instance must be decided and sequence must be monotonic
 	if sc.scpIntegration.GetActiveCount() > 0 {
+		sc.pendingStartSCs = append(sc.pendingStartSCs, struct {
+			from  string
+			start *pb.StartSC
+		}{from: from, start: startSC})
 		sc.log.Warn().
 			Uint64("sequence", startSC.XtSequenceNumber).
-			Msg("StartSC ignored: previous instance undecided")
+			Int("queued", len(sc.pendingStartSCs)).
+			Msg("StartSC queued: previous instance undecided")
 		return nil
 	}
 
@@ -495,7 +512,8 @@ func (sc *SequencerCoordinator) handleRequestSeal(ctx context.Context, from stri
 		}
 	}
 
-	// Transition to Submission
+	// Transition to Submission; real block sealing/submission will be handled
+	// by the miner and EthAPIBackend once the block is actually built.
 	if err := sc.stateMachine.TransitionTo(
 		StateSubmission,
 		requestSeal.Slot,
@@ -503,9 +521,7 @@ func (sc *SequencerCoordinator) handleRequestSeal(ctx context.Context, from stri
 	); err != nil {
 		return err
 	}
-
-	// Seal and submit block
-	return sc.sealAndSubmitBlock(ctx, requestSeal.IncludedXts)
+	return nil
 }
 
 // sealAndSubmitBlock seals the current block and submits to SP
@@ -688,6 +704,40 @@ func (sc *SequencerCoordinator) OnBlockBuildingComplete(ctx context.Context, blo
 			Bool("success", success).
 			Msg("Block building completed with issues")
 	}
+	return nil
+}
+
+// OnConsensusDecision is invoked when the underlying 2PC (SCP) reaches a
+// final decision for the active StartSC. It updates the local SCP integration
+// and unblocks any queued StartSC messages.
+func (sc *SequencerCoordinator) OnConsensusDecision(ctx context.Context, xtID *pb.XtID, decision bool) error {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+
+	sc.log.Info().
+		Str("xt_id", xtID.Hex()).
+		Bool("decision", decision).
+		Msg("Processing consensus decision at coordinator")
+
+	if err := sc.scpIntegration.HandleDecision(xtID, decision); err != nil {
+		sc.log.Error().Err(err).Str("xt_id", xtID.Hex()).Msg("Failed to apply decision to SCP integration")
+		return err
+	}
+
+	// If we returned to Building-Free and have queued StartSCs, process the next one
+	if sc.stateMachine.GetCurrentState() == StateBuildingFree && len(sc.pendingStartSCs) > 0 {
+		next := sc.pendingStartSCs[0]
+		sc.pendingStartSCs = sc.pendingStartSCs[1:]
+		sc.log.Info().
+			Int("remaining", len(sc.pendingStartSCs)).
+			Uint64("slot", sc.currentSlot).
+			Msg("Starting next queued StartSC after decision")
+		// Drop lock while invoking handler to avoid deadlocks and allow nested transitions
+		sc.mu.Unlock()
+		defer sc.mu.Lock()
+		return sc.handleStartSC(ctx, next.from, next.start)
+	}
+
 	return nil
 }
 
