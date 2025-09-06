@@ -489,8 +489,8 @@ func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollu
 
 func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *rollupv1.XtID, sourceChainID string) (*rollupv1.CIRCMessage, error) {
 	// Wait for CIRC message with a bounded timeout to respect SBCP slot cutover.
-	// Hardcoded for 20s slot with 0.90 seal cutover: use ~4s to leave headroom.
-	timeoutMs := 4000
+	// Hardcoded for 20s slot with 0.90 seal cutover: use ~12s window.
+	timeoutMs := 12000
 	timeout := time.NewTimer(time.Duration(timeoutMs) * time.Millisecond)
 	defer timeout.Stop()
 
@@ -692,7 +692,7 @@ func (mp *MailboxProcessor) reSimulateForACKMessages(ctx context.Context, tx *ty
 
 	log.Debug("[SSV] Re-simulating transaction for ACK detection", "txHash", tx.Hash().Hex(), "xtID", xtID.Hex())
 
-	// Re-simulate the transaction against pending state (which now includes putInbox transactions)
+	// Re-simulate the transaction against pending state (which should include putInbox transactions)
 	blockNrOrHash := rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber)
 	traceResult, err := backend.SimulateTransaction(ctx, tx, blockNrOrHash)
 	if err != nil {
@@ -728,6 +728,5 @@ func (mp *MailboxProcessor) reSimulateForACKMessages(ctx context.Context, tx *ty
 	if len(newOutboundMsgs) > 0 {
 		log.Info("[SSV] Successfully sent ACK CIRC messages", "xtID", xtID.Hex(), "count", len(newOutboundMsgs))
 	}
-
 	return newOutboundMsgs, nil
 }

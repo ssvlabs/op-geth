@@ -1416,7 +1416,7 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *type
     if slot == 0 {
         // Try to wait briefly for RequestSeal to arrive to avoid empty inclusion list.
         waited := false
-        for i := 0; i < 7; i++ { // up to ~700ms
+        for i := 0; i < 21; i++ { // up to ~2100ms
             time.Sleep(100 * time.Millisecond)
             b.rsMutex.RLock()
             slot = b.lastRequestSealSlot
@@ -1706,7 +1706,7 @@ func (b *EthAPIBackend) waitForPutInboxTransactionsToBeProcessed() error {
                     if poolTx := b.GetPoolTransaction(tx.Hash()); poolTx != nil {
                         log.Info("[SSV] found putInbox transaction in pool", "hash", tx.Hash().Hex())
                         // small settling delay so miner refresh picks it up in pending view
-                        time.Sleep(150 * time.Millisecond)
+                        time.Sleep(450 * time.Millisecond)
                         return // This will trigger the defer and stop the ticker
                     }
                 }
@@ -1894,9 +1894,9 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 	}
 
 	txDone := make(map[string]interface{}, 0)
-    // With 20s slots and 0.90 cutover (~18s), bound local coordination loop to ~6s
-    // so voting and mailbox-population attempt happen well before sealing.
-    timeout := time.After(6 * time.Second)
+    // With 20s slots and 0.90 cutover (~18s), allow up to ~12s here
+    // to give re-simulation and mailbox-population more time.
+    timeout := time.After(12 * time.Second)
 
 	sequencerNonce := startNonce + 1 // reserve startNonce for clear() tx
 
@@ -1960,13 +1960,13 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
                     if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
                         return false, fmt.Errorf("failed to SubmitSequencerTransaction (txHash=%s): %v", putInboxTx.Hash().Hex(), err)
                     }
-                    // Give miner a brief moment to observe the staged tx and refresh pending.
-                    time.Sleep(200 * time.Millisecond)
+                        // Give miner more time to observe the staged tx and refresh pending.
+                        time.Sleep(600 * time.Millisecond)
                     sequencerNonce++
                 }
                 // Nudge coordinator/miner path to prep transactions for pending state.
                 _ = b.PrepareSequencerTransactionsForBlock(ctx)
-                time.Sleep(200 * time.Millisecond)
+                time.Sleep(600 * time.Millisecond)
 						// Track these deps for future simulations
 						historicalCIRCDeps = append(historicalCIRCDeps, fulFilledDeps...)
 						// After submitting putInbox, detect any ACK writes via targeted re-simulation per tx
@@ -1983,7 +1983,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 							if err != nil || !okLocal {
 								allLocalPass = false
 							}
-							newOutboundMsgs, err := mailboxProcessor.reSimulateForACKMessages(ctx, s.Tx, xtID, historicalSentCIRCMsgs)
+                    newOutboundMsgs, err := mailboxProcessor.reSimulateForACKMessages(ctx, s.Tx, xtID, historicalSentCIRCMsgs)
 							if err != nil {
 								log.Warn("[SSV] Failed to re-simulate for ACK messages", "error", err, "xtID", xtID.Hex())
 								continue
@@ -2072,11 +2072,11 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
                             log.Error("[SSV] Failed to submit putInbox for async CIRC", "err", err)
                             continue
                         }
-                        time.Sleep(200 * time.Millisecond)
+                        time.Sleep(600 * time.Millisecond)
                         sequencerNonce++
                     }
                     _ = b.PrepareSequencerTransactionsForBlock(ctx)
-                    time.Sleep(200 * time.Millisecond)
+                    time.Sleep(600 * time.Millisecond)
 
 						// Re-simulate original transactions to detect ACK writes after putInbox creation
 						for _, state := range coordinationStates {
@@ -2084,7 +2084,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 								continue
 							}
 
-							newOutboundMsgs, err := mailboxProcessor.reSimulateForACKMessages(ctx, state.Tx, xtID, historicalSentCIRCMsgs)
+                    newOutboundMsgs, err := mailboxProcessor.reSimulateForACKMessages(ctx, state.Tx, xtID, historicalSentCIRCMsgs)
 							if err != nil {
 								log.Error("[SSV] Failed to re-simulate for ACK after async CIRC", "error", err, "txHash", state.Tx.Hash().Hex())
 								continue
@@ -2104,7 +2104,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 
 						// Re-simulate the transaction to detect ACK writes
 						if state.Tx != nil {
-							newOutboundMsgs, err := mailboxProcessor.reSimulateForACKMessages(ctx, state.Tx, xtID, historicalSentCIRCMsgs)
+                    newOutboundMsgs, err := mailboxProcessor.reSimulateForACKMessages(ctx, state.Tx, xtID, historicalSentCIRCMsgs)
 							if err != nil {
 								log.Warn("[SSV] Failed to re-simulate for ACK after async putInbox", "error", err, "xtID", xtID.Hex())
 							} else if len(newOutboundMsgs) > 0 {
