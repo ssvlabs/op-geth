@@ -1142,13 +1142,6 @@ func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context
 		log.Info("[SSV] No cross-chain activity detected for this block")
 	}
 
-	// Always print putInbox queue details to correlate with miner view
-	if pis := b.GetPendingPutInboxTxs(); len(pis) > 0 {
-		for i, tx := range pis {
-			log.Info("[SSV] Prepared putInbox in queue", "index", i, "txHash", tx.Hash().Hex(), "nonce", tx.Nonce(), "to", tx.To())
-		}
-	}
-
 	return nil
 }
 
@@ -1398,23 +1391,19 @@ func (b *EthAPIBackend) OnBlockBuildingStart(context.Context) error {
 
 	if clearPresent {
 		c := b.GetPendingClearTx()
-		log.Info("[SSV] Pending clear", "txHash", c.Hash().Hex(), "nonce", c.Nonce(), "to", c.To())
+		log.Info("[SSV] Pending clear", "txHash", c.Hash().Hex(), "nonce", c.Nonce())
 	}
 	if len(putInbox) > 0 {
-		for i, tx := range putInbox {
-			log.Info("[SSV] Pending putInbox", "index", i, "txHash", tx.Hash().Hex(), "nonce", tx.Nonce(), "to", tx.To())
-		}
+		tx := putInbox[0]
+		log.Info("[SSV] Pending putInbox", "index", 0, "txHash", tx.Hash().Hex(), "nonce", tx.Nonce())
 	}
 	if len(original) > 0 {
-		for i, tx := range original {
-			log.Info("[SSV] Pending original", "index", i, "txHash", tx.Hash().Hex(), "nonce", tx.Nonce(), "to", tx.To())
-		}
+		tx := original[0]
+		log.Info("[SSV] Pending original", "index", 0, "txHash", tx.Hash().Hex(), "nonce", tx.Nonce())
 	}
 
 	if b.coordinator != nil {
-		log.Info("[SSV] Notifying coordinator of block building start", "slot", b.coordinator.GetCurrentSlot())
 		_ = b.coordinator.OnBlockBuildingStart(context.Background(), b.coordinator.GetCurrentSlot())
-		log.Info("[SSV] Coordinator notified of block building start", "slot", b.coordinator.GetCurrentSlot())
 	}
 
 	return nil

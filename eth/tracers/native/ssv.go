@@ -71,13 +71,13 @@ func newSSVTracer(ctx *tracers.Context, cfg json.RawMessage, chainConfig *params
 }
 
 func (t *SSVTracer) OnTxStart(env *tracing.VMContext, tx *types.Transaction, from common.Address) {
-	log.Info("[SSV] OnTxStart called", "txHash", tx.Hash().Hex(), "from", from.Hex())
+	log.Debug("[SSV] OnTxStart called", "txHash", tx.Hash().Hex(), "from", from.Hex())
 
 	t.env = env
 }
 
 func (t *SSVTracer) OnTxEnd(_ *types.Receipt, err error) {
-	log.Info("[SSV] OnTxEnd called")
+	log.Debug("[SSV] OnTxEnd called")
 
 	if err != nil {
 		return
@@ -130,7 +130,7 @@ func decodeTransactionInput(contractABIJSON string, input []byte) {
 }
 
 func (t *SSVTracer) OnEnter(depth int, typ byte, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
-	log.Info("[SSV] OnEnter called", "depth", depth, "type", vm.OpCode(typ).String(), "from", from.Hex(), "to", to.Hex(), "gas", gas, "value", value)
+	log.Debug("[SSV] OnEnter called", "depth", depth, "type", vm.OpCode(typ).String(), "from", from.Hex(), "to", to.Hex(), "gas", gas, "value", value)
 
 	if t.interrupt.Load() {
 		return
@@ -152,13 +152,23 @@ func (t *SSVTracer) OnEnter(depth int, typ byte, from common.Address, to common.
 			Gas:      gas,
 		}
 
-		log.Info("[SSV] Operation recorded")
+		log.Debug("[SSV] Operation recorded")
 		t.operations = append(t.operations, op)
 	}
 }
 
 func (t *SSVTracer) OnExit(depth int, output []byte, gasUsed uint64, err error, reverted bool) {
-	log.Info("[SSV] OnExit called", "depth", depth, "output", common.Bytes2Hex(output), "gasUsed", gasUsed, "err", err, "reverted", reverted)
+	log.Debug("[SSV] OnExit called", "depth", depth, "output", common.Bytes2Hex(output), "gasUsed", gasUsed, "err", err, "reverted", reverted)
+
+	if depth == 0 {
+		log.Info("[SSV] Exiting root call",
+			"from", t.currentFrom.Hex(),
+			"to", t.currentTo.Hex(),
+			"gasUsed", gasUsed,
+			"err", err,
+			"reverted", reverted,
+			"operations", len(t.operations),
+	}
 
 	if t.interrupt.Load() {
 		return
