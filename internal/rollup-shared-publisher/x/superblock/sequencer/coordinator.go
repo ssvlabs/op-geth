@@ -44,6 +44,7 @@ type SequencerCoordinator struct {
 	stopCh  chan struct{}
 
 	// Queue StartSC messages that arrive while an SCP instance is active
+	// TODO: rethink
 	pendingStartSCs []struct {
 		from  string
 		start *pb.StartSC
@@ -286,7 +287,9 @@ func (sc *SequencerCoordinator) handleRollBackAndStartSlot(
 	if sc.stateMachine.GetCurrentState() != StateWaiting {
 		_ = sc.stateMachine.TransitionTo(StateWaiting, rb.CurrentSlot, "reset by RollBackAndStartSlot")
 	}
-	if err := sc.stateMachine.TransitionTo(StateBuildingFree, rb.CurrentSlot, "received RollBackAndStartSlot"); err != nil {
+	if err := sc.stateMachine.TransitionTo(StateBuildingFree,
+		rb.CurrentSlot,
+		"received RollBackAndStartSlot"); err != nil {
 		return err
 	}
 
@@ -307,8 +310,10 @@ func (sc *SequencerCoordinator) handleRollBackAndStartSlot(
 	return nil
 }
 
-//nolint:unparam // in progress
-func (sc *SequencerCoordinator) handleStartSC(ctx context.Context, from string, startSC *pb.StartSC) error {
+func (sc *SequencerCoordinator) handleStartSC(
+	ctx context.Context,
+	from string,
+	startSC *pb.StartSC) error {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
@@ -437,17 +442,27 @@ func (sc *SequencerCoordinator) extractMyTransactions(xtReq *pb.XTRequest) [][]b
 	return myTxs
 }
 
-//nolint:unparam // in progress
+//nolint:unparam,gocyclo // in progress
 func (sc *SequencerCoordinator) handleRequestSeal(ctx context.Context, from string, requestSeal *pb.RequestSeal) error {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
-	if requestSeal.Slot != sc.currentSlot {
+	if requestSeal.Slot < sc.currentSlot {
 		sc.log.Warn().
 			Uint64("msg_slot", requestSeal.Slot).
 			Uint64("current_slot", sc.currentSlot).
-			Msg("RequestSeal for wrong slot")
+			Msg("RequestSeal for old slot")
 		return nil
+	}
+
+	// If RequestSeal is for a newer slot, update our slot tracking
+	// This can happen if we missed StartSlot messages or during startup
+	if requestSeal.Slot > sc.currentSlot {
+		sc.log.Info().
+			Uint64("msg_slot", requestSeal.Slot).
+			Uint64("current_slot", sc.currentSlot).
+			Msg("Updating slot from RequestSeal message")
+		atomic.StoreUint64(&sc.currentSlot, requestSeal.Slot)
 	}
 
 	// If we are not participating in this slot (no current request/draft), ignore the seal politely
@@ -530,6 +545,8 @@ func (sc *SequencerCoordinator) handleRequestSeal(ctx context.Context, from stri
 }
 
 // sealAndSubmitBlock seals the current block and submits to SP
+//
+//nolint:unused // in progress
 func (sc *SequencerCoordinator) sealAndSubmitBlock(ctx context.Context, includedXTs [][]byte) error {
 	// Build L2 block
 	l2Block, err := sc.blockBuilder.SealBlock(includedXTs)
@@ -574,7 +591,7 @@ func (sc *SequencerCoordinator) sealAndSubmitBlock(ctx context.Context, included
 	return nil
 }
 
-// State change callback
+// onStateChange handles actions on state transitions
 func (sc *SequencerCoordinator) onStateChange(from, to State, slot uint64, reason string) {
 	// Handle state-specific actions
 	switch to {
