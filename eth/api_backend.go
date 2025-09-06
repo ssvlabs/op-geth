@@ -1697,20 +1697,22 @@ func (b *EthAPIBackend) waitForPutInboxTransactionsToBeProcessed() error {
 
 		func() {
 			defer ticker.Stop() // Now properly scoped to this transaction
-			for {
-				select {
-				case <-timeout:
-					log.Error("timed out waiting for putInbox transaction appearance in pool")
-					return // This will trigger the defer and stop the ticker
-				case <-ticker.C:
-					if poolTx := b.GetPoolTransaction(tx.Hash()); poolTx != nil {
-						log.Info("[SSV] found putInbox transaction in pool", "hash", tx.Hash().Hex())
-						return // This will trigger the defer and stop the ticker
-					}
-				}
-			}
-		}()
-	}
+            for {
+                select {
+                case <-timeout:
+                    log.Error("timed out waiting for putInbox transaction appearance in pool")
+                    return // This will trigger the defer and stop the ticker
+                case <-ticker.C:
+                    if poolTx := b.GetPoolTransaction(tx.Hash()); poolTx != nil {
+                        log.Info("[SSV] found putInbox transaction in pool", "hash", tx.Hash().Hex())
+                        // small settling delay so miner refresh picks it up in pending view
+                        time.Sleep(150 * time.Millisecond)
+                        return // This will trigger the defer and stop the ticker
+                    }
+                }
+            }
+        }()
+    }
 
 	return nil
 }
@@ -1955,11 +1957,16 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 							if err != nil {
 								return false, fmt.Errorf("failed to createPutInboxTx: %v", err)
 							}
-							if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
-								return false, fmt.Errorf("failed to SubmitSequencerTransaction (txHash=%s): %v", putInboxTx.Hash().Hex(), err)
-							}
-							sequencerNonce++
-						}
+                    if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
+                        return false, fmt.Errorf("failed to SubmitSequencerTransaction (txHash=%s): %v", putInboxTx.Hash().Hex(), err)
+                    }
+                    // Give miner a brief moment to observe the staged tx and refresh pending.
+                    time.Sleep(200 * time.Millisecond)
+                    sequencerNonce++
+                }
+                // Nudge coordinator/miner path to prep transactions for pending state.
+                _ = b.PrepareSequencerTransactionsForBlock(ctx)
+                time.Sleep(200 * time.Millisecond)
 						// Track these deps for future simulations
 						historicalCIRCDeps = append(historicalCIRCDeps, fulFilledDeps...)
 						// After submitting putInbox, detect any ACK writes via targeted re-simulation per tx
@@ -2061,12 +2068,15 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 								log.Error("[SSV] Failed to create putInbox for async CIRC", "err", err)
 								continue
 							}
-							if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
-								log.Error("[SSV] Failed to submit putInbox for async CIRC", "err", err)
-								continue
-							}
-							sequencerNonce++
-						}
+                        if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
+                            log.Error("[SSV] Failed to submit putInbox for async CIRC", "err", err)
+                            continue
+                        }
+                        time.Sleep(200 * time.Millisecond)
+                        sequencerNonce++
+                    }
+                    _ = b.PrepareSequencerTransactionsForBlock(ctx)
+                    time.Sleep(200 * time.Millisecond)
 
 						// Re-simulate original transactions to detect ACK writes after putInbox creation
 						for _, state := range coordinationStates {
