@@ -1142,6 +1142,13 @@ func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context
 		log.Info("[SSV] No cross-chain activity detected for this block")
 	}
 
+	// Always print putInbox queue details to correlate with miner view
+	if pis := b.GetPendingPutInboxTxs(); len(pis) > 0 {
+		for i, tx := range pis {
+			log.Info("[SSV] Prepared putInbox in queue", "index", i, "txHash", tx.Hash().Hex(), "nonce", tx.Nonce(), "to", tx.To())
+		}
+	}
+
 	return nil
 }
 
@@ -1371,21 +1378,43 @@ func (b *EthAPIBackend) OnBlockBuildingStart(context.Context) error {
 	clearPresent := b.GetPendingClearTx() != nil
 	putInbox := b.GetPendingPutInboxTxs()
 	original := b.GetPendingOriginalTxs()
+
 	log.Info("[SSV] Block building started - preparing sequencer state",
+		"state", func() string {
+			if b.coordinator != nil {
+				return b.coordinator.GetState().String()
+			}
+			return "unknown"
+		}(),
+		"slot", func() uint64 {
+			if b.coordinator != nil {
+				return b.coordinator.GetCurrentSlot()
+			}
+			return 0
+		}(),
 		"clear_present", clearPresent,
 		"putInbox_count", len(putInbox),
 		"original_count", len(original))
+
+	if clearPresent {
+		c := b.GetPendingClearTx()
+		log.Info("[SSV] Pending clear", "txHash", c.Hash().Hex(), "nonce", c.Nonce(), "to", c.To())
+	}
 	if len(putInbox) > 0 {
-		max := len(putInbox)
-		if max > 3 {
-			max = 3
-		}
-		for i := 0; i < max; i++ {
-			log.Info("[SSV] Pending putInbox", "index", i, "txHash", putInbox[i].Hash().Hex(), "nonce", putInbox[i].Nonce())
+		for i, tx := range putInbox {
+			log.Info("[SSV] Pending putInbox", "index", i, "txHash", tx.Hash().Hex(), "nonce", tx.Nonce(), "to", tx.To())
 		}
 	}
+	if len(original) > 0 {
+		for i, tx := range original {
+			log.Info("[SSV] Pending original", "index", i, "txHash", tx.Hash().Hex(), "nonce", tx.Nonce(), "to", tx.To())
+		}
+	}
+
 	if b.coordinator != nil {
+		log.Info("[SSV] Notifying coordinator of block building start", "slot", b.coordinator.GetCurrentSlot())
 		_ = b.coordinator.OnBlockBuildingStart(context.Background(), b.coordinator.GetCurrentSlot())
+		log.Info("[SSV] Coordinator notified of block building start", "slot", b.coordinator.GetCurrentSlot())
 	}
 
 	return nil
@@ -1413,42 +1442,42 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *type
 	slot := b.lastRequestSealSlot
 	b.rsMutex.RUnlock()
 
-    if slot == 0 {
-        // Try to wait briefly for RequestSeal to arrive to avoid empty inclusion list.
-        waited := false
-        for i := 0; i < 21; i++ { // up to ~2100ms
-            time.Sleep(100 * time.Millisecond)
-            b.rsMutex.RLock()
-            slot = b.lastRequestSealSlot
-            if slot != 0 {
-                included = make([][]byte, len(b.lastRequestSealIncluded))
-                for i := range b.lastRequestSealIncluded {
-                    dup := make([]byte, len(b.lastRequestSealIncluded[i]))
-                    copy(dup, b.lastRequestSealIncluded[i])
-                    included[i] = dup
-                }
-                b.rsMutex.RUnlock()
-                waited = true
-                break
-            }
-            b.rsMutex.RUnlock()
-        }
-        if !waited {
-            // Fallback: no RequestSeal recorded (e.g., SP sealed quickly or message delayed).
-            // Submit an L2Block tied to the coordinator's current slot with an empty inclusion list.
-            if b.coordinator != nil {
-                slot = b.coordinator.GetCurrentSlot()
-            }
-            included = nil
-            log.Info("[SSV] No RequestSeal recorded; submitting L2Block with empty inclusion list",
-                "slot", slot,
-                "blockHash", block.Hash().Hex())
-        } else {
-            log.Info("[SSV] Captured RequestSeal after short wait",
-                "slot", slot,
-                "included_xts", len(included))
-        }
-    }
+	if slot == 0 {
+		// Try to wait briefly for RequestSeal to arrive to avoid empty inclusion list.
+		waited := false
+		for i := 0; i < 21; i++ { // up to ~2100ms
+			time.Sleep(100 * time.Millisecond)
+			b.rsMutex.RLock()
+			slot = b.lastRequestSealSlot
+			if slot != 0 {
+				included = make([][]byte, len(b.lastRequestSealIncluded))
+				for i := range b.lastRequestSealIncluded {
+					dup := make([]byte, len(b.lastRequestSealIncluded[i]))
+					copy(dup, b.lastRequestSealIncluded[i])
+					included[i] = dup
+				}
+				b.rsMutex.RUnlock()
+				waited = true
+				break
+			}
+			b.rsMutex.RUnlock()
+		}
+		if !waited {
+			// Fallback: no RequestSeal recorded (e.g., SP sealed quickly or message delayed).
+			// Submit an L2Block tied to the coordinator's current slot with an empty inclusion list.
+			if b.coordinator != nil {
+				slot = b.coordinator.GetCurrentSlot()
+			}
+			included = nil
+			log.Info("[SSV] No RequestSeal recorded; submitting L2Block with empty inclusion list",
+				"slot", slot,
+				"blockHash", block.Hash().Hex())
+		} else {
+			log.Info("[SSV] Captured RequestSeal after short wait",
+				"slot", slot,
+				"included_xts", len(included))
+		}
+	}
 
 	// RLP encode the block
 	var buf bytes.Buffer
@@ -1472,30 +1501,30 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *type
 		Payload:  &rollupv1.Message_L2Block{L2Block: l2},
 	}
 
-    if err := b.spClient.Send(ctx, msg); err != nil {
-        log.Error("[SSV] Failed to send L2Block to shared publisher", "err", err, "slot", slot)
-        return err
-    }
+	if err := b.spClient.Send(ctx, msg); err != nil {
+		log.Error("[SSV] Failed to send L2Block to shared publisher", "err", err, "slot", slot)
+		return err
+	}
 	log.Info("[SSV] Submitted L2Block to shared publisher",
 		"slot", slot,
 		"blockNumber", l2.BlockNumber,
 		"blockHash", block.Hash().Hex(),
 		"included_xts", len(included))
 
-    // Mark included xTs as sent in consensus layer (SBCP path)
-    if b.coordinator != nil && b.coordinator.Consensus() != nil {
-        if err := b.coordinator.Consensus().OnL2BlockCommitted(ctx, l2); err != nil {
-            log.Warn("[SSV] Consensus OnL2BlockCommitted warning", "err", err, "slot", slot)
-        }
-    }
+	// Mark included xTs as sent in consensus layer (SBCP path)
+	if b.coordinator != nil && b.coordinator.Consensus() != nil {
+		if err := b.coordinator.Consensus().OnL2BlockCommitted(ctx, l2); err != nil {
+			log.Warn("[SSV] Consensus OnL2BlockCommitted warning", "err", err, "slot", slot)
+		}
+	}
 
-    // Notify sequencer coordinator to complete the block lifecycle and
-    // transition state back to Waiting.
-    if b.coordinator != nil {
-        if err := b.coordinator.OnBlockBuildingComplete(ctx, l2, true); err != nil {
-            log.Warn("[SSV] Coordinator OnBlockBuildingComplete warning", "err", err, "slot", slot)
-        }
-    }
+	// Notify sequencer coordinator to complete the block lifecycle and
+	// transition state back to Waiting.
+	if b.coordinator != nil {
+		if err := b.coordinator.OnBlockBuildingComplete(ctx, l2, true); err != nil {
+			log.Warn("[SSV] Coordinator OnBlockBuildingComplete warning", "err", err, "slot", slot)
+		}
+	}
 
 	// Clear staged sequencer transactions after successful block
 	b.ClearSequencerTransactionsAfterBlock()
@@ -1697,22 +1726,22 @@ func (b *EthAPIBackend) waitForPutInboxTransactionsToBeProcessed() error {
 
 		func() {
 			defer ticker.Stop() // Now properly scoped to this transaction
-            for {
-                select {
-                case <-timeout:
-                    log.Error("timed out waiting for putInbox transaction appearance in pool")
-                    return // This will trigger the defer and stop the ticker
-                case <-ticker.C:
-                    if poolTx := b.GetPoolTransaction(tx.Hash()); poolTx != nil {
-                        log.Info("[SSV] found putInbox transaction in pool", "hash", tx.Hash().Hex())
-                        // small settling delay so miner refresh picks it up in pending view
-                        time.Sleep(450 * time.Millisecond)
-                        return // This will trigger the defer and stop the ticker
-                    }
-                }
-            }
-        }()
-    }
+			for {
+				select {
+				case <-timeout:
+					log.Error("timed out waiting for putInbox transaction appearance in pool")
+					return // This will trigger the defer and stop the ticker
+				case <-ticker.C:
+					if poolTx := b.GetPoolTransaction(tx.Hash()); poolTx != nil {
+						log.Info("[SSV] found putInbox transaction in pool", "hash", tx.Hash().Hex())
+						// small settling delay so miner refresh picks it up in pending view
+						time.Sleep(450 * time.Millisecond)
+						return // This will trigger the defer and stop the ticker
+					}
+				}
+			}
+		}()
+	}
 
 	return nil
 }
@@ -1894,9 +1923,9 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 	}
 
 	txDone := make(map[string]interface{}, 0)
-    // With 20s slots and 0.90 cutover (~18s), allow up to ~12s here
-    // to give re-simulation and mailbox-population more time.
-    timeout := time.After(12 * time.Second)
+	// With 20s slots and 0.90 cutover (~18s), allow up to ~12s here
+	// to give re-simulation and mailbox-population more time.
+	timeout := time.After(12 * time.Second)
 
 	sequencerNonce := startNonce + 1 // reserve startNonce for clear() tx
 
@@ -1957,16 +1986,13 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 							if err != nil {
 								return false, fmt.Errorf("failed to createPutInboxTx: %v", err)
 							}
-                    if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
-                        return false, fmt.Errorf("failed to SubmitSequencerTransaction (txHash=%s): %v", putInboxTx.Hash().Hex(), err)
-                    }
-                        // Give miner more time to observe the staged tx and refresh pending.
-                        time.Sleep(600 * time.Millisecond)
-                    sequencerNonce++
-                }
-                // Nudge coordinator/miner path to prep transactions for pending state.
-                _ = b.PrepareSequencerTransactionsForBlock(ctx)
-                time.Sleep(600 * time.Millisecond)
+							if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
+								return false, fmt.Errorf("failed to SubmitSequencerTransaction (txHash=%s): %v", putInboxTx.Hash().Hex(), err)
+							}
+							// Give miner more time to observe the staged tx and refresh pending.
+							time.Sleep(600 * time.Millisecond)
+							sequencerNonce++
+						}
 						// Track these deps for future simulations
 						historicalCIRCDeps = append(historicalCIRCDeps, fulFilledDeps...)
 						// After submitting putInbox, detect any ACK writes via targeted re-simulation per tx
@@ -1983,7 +2009,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 							if err != nil || !okLocal {
 								allLocalPass = false
 							}
-                    newOutboundMsgs, err := mailboxProcessor.reSimulateForACKMessages(ctx, s.Tx, xtID, historicalSentCIRCMsgs)
+							newOutboundMsgs, err := mailboxProcessor.reSimulateForACKMessages(ctx, s.Tx, xtID, historicalSentCIRCMsgs)
 							if err != nil {
 								log.Warn("[SSV] Failed to re-simulate for ACK messages", "error", err, "xtID", xtID.Hex())
 								continue
@@ -2068,15 +2094,13 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 								log.Error("[SSV] Failed to create putInbox for async CIRC", "err", err)
 								continue
 							}
-                        if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
-                            log.Error("[SSV] Failed to submit putInbox for async CIRC", "err", err)
-                            continue
-                        }
-                        time.Sleep(600 * time.Millisecond)
-                        sequencerNonce++
-                    }
-                    _ = b.PrepareSequencerTransactionsForBlock(ctx)
-                    time.Sleep(600 * time.Millisecond)
+							if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
+								log.Error("[SSV] Failed to submit putInbox for async CIRC", "err", err)
+								continue
+							}
+							time.Sleep(600 * time.Millisecond)
+							sequencerNonce++
+						}
 
 						// Re-simulate original transactions to detect ACK writes after putInbox creation
 						for _, state := range coordinationStates {
@@ -2084,7 +2108,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 								continue
 							}
 
-                    newOutboundMsgs, err := mailboxProcessor.reSimulateForACKMessages(ctx, state.Tx, xtID, historicalSentCIRCMsgs)
+							newOutboundMsgs, err := mailboxProcessor.reSimulateForACKMessages(ctx, state.Tx, xtID, historicalSentCIRCMsgs)
 							if err != nil {
 								log.Error("[SSV] Failed to re-simulate for ACK after async CIRC", "error", err, "txHash", state.Tx.Hash().Hex())
 								continue
@@ -2104,7 +2128,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 
 						// Re-simulate the transaction to detect ACK writes
 						if state.Tx != nil {
-                    newOutboundMsgs, err := mailboxProcessor.reSimulateForACKMessages(ctx, state.Tx, xtID, historicalSentCIRCMsgs)
+							newOutboundMsgs, err := mailboxProcessor.reSimulateForACKMessages(ctx, state.Tx, xtID, historicalSentCIRCMsgs)
 							if err != nil {
 								log.Warn("[SSV] Failed to re-simulate for ACK after async putInbox", "error", err, "xtID", xtID.Hex())
 							} else if len(newOutboundMsgs) > 0 {
