@@ -1414,15 +1414,40 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *type
 	b.rsMutex.RUnlock()
 
     if slot == 0 {
-        // Fallback: no RequestSeal recorded (e.g., SP sealed quickly or message delayed).
-        // Submit an L2Block tied to the coordinator's current slot with an empty inclusion list.
-        if b.coordinator != nil {
-            slot = b.coordinator.GetCurrentSlot()
+        // Try to wait briefly for RequestSeal to arrive to avoid empty inclusion list.
+        waited := false
+        for i := 0; i < 7; i++ { // up to ~700ms
+            time.Sleep(100 * time.Millisecond)
+            b.rsMutex.RLock()
+            slot = b.lastRequestSealSlot
+            if slot != 0 {
+                included = make([][]byte, len(b.lastRequestSealIncluded))
+                for i := range b.lastRequestSealIncluded {
+                    dup := make([]byte, len(b.lastRequestSealIncluded[i]))
+                    copy(dup, b.lastRequestSealIncluded[i])
+                    included[i] = dup
+                }
+                b.rsMutex.RUnlock()
+                waited = true
+                break
+            }
+            b.rsMutex.RUnlock()
         }
-        included = nil
-        log.Info("[SSV] No RequestSeal recorded; submitting L2Block with empty inclusion list",
-            "slot", slot,
-            "blockHash", block.Hash().Hex())
+        if !waited {
+            // Fallback: no RequestSeal recorded (e.g., SP sealed quickly or message delayed).
+            // Submit an L2Block tied to the coordinator's current slot with an empty inclusion list.
+            if b.coordinator != nil {
+                slot = b.coordinator.GetCurrentSlot()
+            }
+            included = nil
+            log.Info("[SSV] No RequestSeal recorded; submitting L2Block with empty inclusion list",
+                "slot", slot,
+                "blockHash", block.Hash().Hex())
+        } else {
+            log.Info("[SSV] Captured RequestSeal after short wait",
+                "slot", slot,
+                "included_xts", len(included))
+        }
     }
 
 	// RLP encode the block
@@ -1867,7 +1892,9 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 	}
 
 	txDone := make(map[string]interface{}, 0)
-	timeout := time.After(30 * time.Second) // Shorter timeout for SBCP
+    // With 20s slots and 0.90 cutover (~18s), bound local coordination loop to ~6s
+    // so voting and mailbox-population attempt happen well before sealing.
+    timeout := time.After(6 * time.Second)
 
 	sequencerNonce := startNonce + 1 // reserve startNonce for clear() tx
 

@@ -48,6 +48,11 @@ type StateMachine struct {
 	scpInstances     map[string]*SCPInstance
 	l2BlockRequests  map[string]*pb.L2BlockRequest
 
+	// lastHeads tracks the last known L2 block per chain across slots so that
+	// StartSlot requests reflect real parents and next block numbers. It is
+	// updated whenever the SP receives an L2Block during sealing.
+	lastHeads map[string]*pb.L2Block
+
 	stateChangeCallbacks map[State][]StateChangeCallback
 	transitionHistory    []StateTransition
 }
@@ -75,7 +80,7 @@ type SCPInstance struct {
 }
 
 func NewStateMachine(slotManager *Manager, log zerolog.Logger) *StateMachine {
-	return &StateMachine{
+    return &StateMachine{
 		currentState:         StateStarting,
 		currentSlot:          0,
 		slotManager:          slotManager,
@@ -83,9 +88,10 @@ func NewStateMachine(slotManager *Manager, log zerolog.Logger) *StateMachine {
 		receivedL2Blocks:     make(map[string]*pb.L2Block),
 		scpInstances:         make(map[string]*SCPInstance),
 		l2BlockRequests:      make(map[string]*pb.L2BlockRequest),
+		lastHeads:            make(map[string]*pb.L2Block),
 		stateChangeCallbacks: make(map[State][]StateChangeCallback),
 		transitionHistory:    make([]StateTransition, 0),
-	}
+    }
 }
 
 func (sm *StateMachine) GetCurrentState() State {
@@ -269,6 +275,16 @@ func (sm *StateMachine) ReceiveL2Block(block *pb.L2Block) error {
 	chainIDStr := string(block.ChainId)
 	sm.receivedL2Blocks[chainIDStr] = block
 
+	// Persist as last head so the next slot’s StartSlot carries a correct
+	// parent hash and next block number for this chain.
+	if prev, ok := sm.lastHeads[chainIDStr]; ok {
+		if block.BlockNumber >= prev.BlockNumber {
+			sm.lastHeads[chainIDStr] = block
+		}
+	} else {
+		sm.lastHeads[chainIDStr] = block
+	}
+
 	sm.log.Info().
 		Str("chain_id", fmt.Sprintf("%x", block.ChainId)).
 		Uint64("block_number", block.BlockNumber).
@@ -354,6 +370,7 @@ func (sm *StateMachine) Reset() {
 	sm.receivedL2Blocks = make(map[string]*pb.L2Block)
 	sm.scpInstances = make(map[string]*SCPInstance)
 	sm.l2BlockRequests = make(map[string]*pb.L2BlockRequest)
+    // Do not clear lastHeads; we need continuity across slots.
 }
 
 func (sm *StateMachine) GetTransitionHistory() []StateTransition {
@@ -380,9 +397,21 @@ func (sm *StateMachine) isValidTransition(from, to State) bool {
 }
 
 func (sm *StateMachine) getNextL2BlockNumber(chainID []byte) uint64 {
+	if head, ok := sm.lastHeads[string(chainID)]; ok && head != nil {
+		if head.BlockNumber > 0 {
+			return head.BlockNumber + 1
+		}
+	}
 	return 1
 }
 
 func (sm *StateMachine) getHeadL2BlockHash(chainID []byte) []byte {
+	if head, ok := sm.lastHeads[string(chainID)]; ok && head != nil {
+		if len(head.BlockHash) == 32 {
+			out := make([]byte, 32)
+			copy(out, head.BlockHash)
+			return out
+		}
+	}
 	return make([]byte, 32)
 }
