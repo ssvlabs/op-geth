@@ -193,7 +193,6 @@ func (t *SSVTracer) OnExit(depth int, output []byte, gasUsed uint64, err error, 
 		)
 	}
 
-	// Update depth tracker
 	if depth > 0 {
 		t.currentDepth = depth - 1
 	}
