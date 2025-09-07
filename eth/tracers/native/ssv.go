@@ -158,22 +158,42 @@ func (t *SSVTracer) OnEnter(depth int, typ byte, from common.Address, to common.
 }
 
 func (t *SSVTracer) OnExit(depth int, output []byte, gasUsed uint64, err error, reverted bool) {
-	log.Debug("[SSV] OnExit called", "depth", depth, "output", common.Bytes2Hex(output), "gasUsed", gasUsed, "err", err, "reverted", reverted)
-
-	if depth == 0 {
-		log.Info("[SSV] Exiting root call",
-			"from", t.currentFrom.Hex(),
-			"to", t.currentTo.Hex(),
-			"gasUsed", gasUsed,
-			"err", err,
-			"reverted", reverted,
-			"operations", len(t.operations),
-	}
-
 	if t.interrupt.Load() {
 		return
 	}
 
+	fields := []interface{}{
+		"depth", depth,
+		"gasUsed", gasUsed,
+		"reverted", reverted,
+	}
+
+	if len(output) > 0 {
+		fields = append(fields, "outputLen", len(output))
+		if len(output) <= 64 {
+			fields = append(fields, "output", common.Bytes2Hex(output))
+		} else {
+			fields = append(fields, "outputPreview", common.Bytes2Hex(output[:32])+"...")
+		}
+	}
+
+	if err != nil {
+		fields = append(fields, "err", err.Error())
+	}
+
+	log.Debug("[SSV] OnExit", fields...)
+
+	if depth == 0 {
+		log.Info("[SSV] Root call completed",
+			"from", t.currentFrom.Hex(),
+			"to", t.currentTo.Hex(),
+			"gasUsed", gasUsed,
+			"success", err == nil && !reverted,
+			"operationCount", len(t.operations),
+		)
+	}
+
+	// Update depth tracker
 	if depth > 0 {
 		t.currentDepth = depth - 1
 	}
