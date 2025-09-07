@@ -157,16 +157,14 @@ func (sc *SequencerCoordinator) handleStartSlot(startSlot *pb.StartSlot) error {
 		Str("chain_id", fmt.Sprintf("%x", sc.chainID)).
 		Msg("Received StartSlot")
 
-	// Check if we have a slot regression
-	// TODO: Implement proper slot state persistence to handle restarts gracefully
-	// Currently allowing slot resets after restart as temporary fix
+	// StartSlot messages should always be processed regardless of current state
+	// This handles SP crashes/restarts where slot numbers may reset or rollback
 	prevSlot := atomic.LoadUint64(&sc.currentSlot)
-	if prevSlot > 0 && prevSlot >= startSlot.Slot {
-		sc.log.Warn().
+	if prevSlot > 0 && prevSlot > startSlot.Slot {
+		sc.log.Info().
 			Uint64("current_slot", prevSlot).
 			Uint64("new_slot", startSlot.Slot).
-			Msg("Ignoring old or duplicate slot")
-		return nil
+			Msg("Processing StartSlot with lower slot number - likely SP restart/rollback")
 	}
 
 	// Find our L2BlockRequest
