@@ -145,7 +145,10 @@ func (b *EthAPIBackend) HeaderByNumber(ctx context.Context, number rpc.BlockNumb
 	return b.eth.blockchain.GetHeaderByNumber(bn), nil
 }
 
-func (b *EthAPIBackend) HeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*types.Header, error) {
+func (b *EthAPIBackend) HeaderByNumberOrHash(
+	ctx context.Context,
+	blockNrOrHash rpc.BlockNumberOrHash,
+) (*types.Header, error) {
 	if blockNr, ok := blockNrOrHash.Number(); ok {
 		return b.HeaderByNumber(ctx, blockNr)
 	}
@@ -232,7 +235,10 @@ func (b *EthAPIBackend) GetBody(ctx context.Context, hash common.Hash, number rp
 	return body, nil
 }
 
-func (b *EthAPIBackend) BlockByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*types.Block, error) {
+func (b *EthAPIBackend) BlockByNumberOrHash(
+	ctx context.Context,
+	blockNrOrHash rpc.BlockNumberOrHash,
+) (*types.Block, error) {
 	if blockNr, ok := blockNrOrHash.Number(); ok {
 		return b.BlockByNumber(ctx, blockNr)
 	}
@@ -260,7 +266,10 @@ func (b *EthAPIBackend) Pending() (*types.Block, types.Receipts, *state.StateDB)
 	return b.eth.miner.Pending(context.Background())
 }
 
-func (b *EthAPIBackend) StateAndHeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*state.StateDB, *types.Header, error) {
+func (b *EthAPIBackend) StateAndHeaderByNumber(
+	ctx context.Context,
+	number rpc.BlockNumber,
+) (*state.StateDB, *types.Header, error) {
 	// Pending state is only known by the miner
 	if number == rpc.PendingBlockNumber {
 		block, _, state := b.eth.miner.Pending(ctx)
@@ -288,7 +297,10 @@ func (b *EthAPIBackend) StateAndHeaderByNumber(ctx context.Context, number rpc.B
 	return stateDb, header, nil
 }
 
-func (b *EthAPIBackend) StateAndHeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*state.StateDB, *types.Header, error) {
+func (b *EthAPIBackend) StateAndHeaderByNumberOrHash(
+	ctx context.Context,
+	blockNrOrHash rpc.BlockNumberOrHash,
+) (*state.StateDB, *types.Header, error) {
 	if blockNr, ok := blockNrOrHash.Number(); ok {
 		return b.StateAndHeaderByNumber(ctx, blockNr)
 	}
@@ -325,7 +337,13 @@ func (b *EthAPIBackend) GetLogs(ctx context.Context, hash common.Hash, number ui
 	return rawdb.ReadLogs(b.eth.chainDb, hash, number), nil
 }
 
-func (b *EthAPIBackend) GetEVM(ctx context.Context, state *state.StateDB, header *types.Header, vmConfig *vm.Config, blockCtx *vm.BlockContext) *vm.EVM {
+func (b *EthAPIBackend) GetEVM(
+	ctx context.Context,
+	state *state.StateDB,
+	header *types.Header,
+	vmConfig *vm.Config,
+	blockCtx *vm.BlockContext,
+) *vm.EVM {
 	if vmConfig == nil {
 		vmConfig = b.eth.blockchain.GetVMConfig()
 	}
@@ -376,7 +394,13 @@ func (b *EthAPIBackend) SendTx(ctx context.Context, signedTx *types.Transaction)
 	// Retain tx in local tx pool after forwarding, for local RPC usage.
 	err := b.sendTx(ctx, signedTx)
 	if err != nil && b.eth.seqRPCService != nil {
-		log.Warn("successfully sent tx to sequencer, but failed to persist in local tx pool", "err", err, "tx", signedTx.Hash())
+		log.Warn(
+			"successfully sent tx to sequencer, but failed to persist in local tx pool",
+			"err",
+			err,
+			"tx",
+			signedTx.Hash(),
+		)
 		return nil
 	}
 	return err
@@ -477,7 +501,12 @@ func (b *EthAPIBackend) SuggestGasTipCap(ctx context.Context) (*big.Int, error) 
 	return b.gpo.SuggestTipCap(ctx)
 }
 
-func (b *EthAPIBackend) FeeHistory(ctx context.Context, blockCount uint64, lastBlock rpc.BlockNumber, rewardPercentiles []float64) (firstBlock *big.Int, reward [][]*big.Int, baseFee []*big.Int, gasUsedRatio []float64, baseFeePerBlobGas []*big.Int, blobGasUsedRatio []float64, err error) {
+func (b *EthAPIBackend) FeeHistory(
+	ctx context.Context,
+	blockCount uint64,
+	lastBlock rpc.BlockNumber,
+	rewardPercentiles []float64,
+) (firstBlock *big.Int, reward [][]*big.Int, baseFee []*big.Int, gasUsedRatio []float64, baseFeePerBlobGas []*big.Int, blobGasUsedRatio []float64, err error) {
 	return b.gpo.FeeHistory(ctx, blockCount, lastBlock, rewardPercentiles)
 }
 
@@ -536,11 +565,23 @@ func (b *EthAPIBackend) CurrentHeader() *types.Header {
 	return b.eth.blockchain.CurrentHeader()
 }
 
-func (b *EthAPIBackend) StateAtBlock(ctx context.Context, block *types.Block, reexec uint64, base *state.StateDB, readOnly bool, preferDisk bool) (*state.StateDB, tracers.StateReleaseFunc, error) {
+func (b *EthAPIBackend) StateAtBlock(
+	ctx context.Context,
+	block *types.Block,
+	reexec uint64,
+	base *state.StateDB,
+	readOnly bool,
+	preferDisk bool,
+) (*state.StateDB, tracers.StateReleaseFunc, error) {
 	return b.eth.stateAtBlock(ctx, block, reexec, base, readOnly, preferDisk)
 }
 
-func (b *EthAPIBackend) StateAtTransaction(ctx context.Context, block *types.Block, txIndex int, reexec uint64) (*types.Transaction, vm.BlockContext, *state.StateDB, tracers.StateReleaseFunc, error) {
+func (b *EthAPIBackend) StateAtTransaction(
+	ctx context.Context,
+	block *types.Block,
+	txIndex int,
+	reexec uint64,
+) (*types.Transaction, vm.BlockContext, *state.StateDB, tracers.StateReleaseFunc, error) {
 	return b.eth.stateAtTransaction(ctx, block, txIndex, reexec)
 }
 
@@ -615,7 +656,11 @@ func (b *EthAPIBackend) isCoordinator(ctx context.Context, mailboxProcessor *Mai
 	}
 
 	if coordinatorAddr != b.sequencerAddress {
-		return fmt.Errorf("sequencer is not coordinator, coordinatorAddr: %s, sequencerAddr: %s", coordinatorAddr.Hex(), b.sequencerAddress.Hex())
+		return fmt.Errorf(
+			"sequencer is not coordinator, coordinatorAddr: %s, sequencerAddr: %s",
+			coordinatorAddr.Hex(),
+			b.sequencerAddress.Hex(),
+		)
 	}
 
 	return nil
@@ -864,12 +909,24 @@ func (b *EthAPIBackend) handleCIRCMessage(circMessage *rollupv1.CIRCMessage) err
 
 // handleSequencerMessage processes messages received from sequencer clients (peer-to-peer).
 // SSV
-func (b *EthAPIBackend) handleSequencerMessage(ctx context.Context, chainID string, msg *rollupv1.Message) ([]common.Hash, error) {
+func (b *EthAPIBackend) handleSequencerMessage(
+	ctx context.Context,
+	chainID string,
+	msg *rollupv1.Message,
+) ([]common.Hash, error) {
 	if b.coordinator == nil {
 		return nil, fmt.Errorf("coordinator not configured for sequencer message from chainID %s", chainID)
 	}
 
-	log.Debug("[SSV] Handling message from sequencer", "chainID", chainID, "senderID", msg.SenderId, "type", fmt.Sprintf("%T", msg.Payload))
+	log.Debug(
+		"[SSV] Handling message from sequencer",
+		"chainID",
+		chainID,
+		"senderID",
+		msg.SenderId,
+		"type",
+		fmt.Sprintf("%T", msg.Payload),
+	)
 
 	if err := b.coordinator.HandleMessage(ctx, msg.SenderId, msg); err != nil {
 		log.Error("[SSV] Failed to handle message from sequencer", "chainID", chainID, "err", err)
@@ -938,7 +995,11 @@ func (b *EthAPIBackend) DecisionCallbackFn(chainID *big.Int) spconsensus.Decisio
 	}
 }
 
-func (b *EthAPIBackend) SimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
+func (b *EthAPIBackend) SimulateTransaction(
+	ctx context.Context,
+	tx *types.Transaction,
+	blockNrOrHash rpc.BlockNumberOrHash,
+) (*ssv.SSVTraceResult, error) {
 	timer := time.Now()
 	defer func() {
 		log.Info("[SSV] Simulated transaction with SSV trace", "txHash", tx.Hash().Hex(), "duration", time.Since(timer))
@@ -1007,7 +1068,13 @@ func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *type
 	// Also inject into the local txpool so that PENDING state reflects these txs
 	// and re-simulation against rpc.PendingBlockNumber can observe mailbox effects.
 	if err := b.sendTx(ctx, tx); err != nil {
-		log.Warn("[SSV] Failed to inject sequencer tx into txpool (continuing with staged include)", "err", err, "txHash", tx.Hash().Hex())
+		log.Warn(
+			"[SSV] Failed to inject sequencer tx into txpool (continuing with staged include)",
+			"err",
+			err,
+			"txHash",
+			tx.Hash().Hex(),
+		)
 	}
 	return nil
 }
@@ -1254,7 +1321,10 @@ func (b *EthAPIBackend) createClearTransactionWithNonce(ctx context.Context, non
 
 // GetOrderedTransactionsForBlock returns transactions in the correct order for block inclusion
 // SSV
-func (b *EthAPIBackend) GetOrderedTransactionsForBlock(ctx context.Context, normalTxs types.Transactions) (types.Transactions, error) {
+func (b *EthAPIBackend) GetOrderedTransactionsForBlock(
+	ctx context.Context,
+	normalTxs types.Transactions,
+) (types.Transactions, error) {
 	var orderedTxs types.Transactions
 
 	// 1. First: Clear transaction
@@ -1428,7 +1498,11 @@ func (b *EthAPIBackend) OnBlockBuildingStart(context.Context) error {
 
 // OnBlockBuildingComplete is called when block building completes
 // SSV
-func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *types.Block, success, simulation bool) error {
+func (b *EthAPIBackend) OnBlockBuildingComplete(
+	ctx context.Context,
+	block *types.Block,
+	success, simulation bool,
+) error {
 	if !success || block == nil {
 		log.Warn("[SSV] Block building failed", "success", success, "hasBlock", block != nil)
 		return nil
@@ -1490,7 +1564,13 @@ func (b *EthAPIBackend) BlockCallbackFn() func(ctx context.Context, block *types
 			return fmt.Errorf("failed to send block to shared publisher: %w", err)
 		}
 
-		log.Info("[SSV] Block sent to shared publisher successfully", "blockHash", block.Hash().Hex(), "xtIDs", len(xtIDs))
+		log.Info(
+			"[SSV] Block sent to shared publisher successfully",
+			"blockHash",
+			block.Hash().Hex(),
+			"xtIDs",
+			len(xtIDs),
+		)
 		return nil
 	}
 }
@@ -1508,7 +1588,12 @@ func (b *EthAPIBackend) GetPendingOriginalTxs() []*types.Transaction {
 // reSimulateAfterMailboxPopulation re-simulates transactions after mailbox has been populated
 // SSV
 // In api_backend.go, update reSimulateAfterMailboxPopulation:
-func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(ctx context.Context, xtReq *rollupv1.XTRequest, xtID *rollupv1.XtID, coordinationStates []*SimulationState) (bool, error) {
+func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(
+	ctx context.Context,
+	xtReq *rollupv1.XTRequest,
+	xtID *rollupv1.XtID,
+	coordinationStates []*SimulationState,
+) (bool, error) {
 	chainID := b.ChainConfig().ChainID
 
 	log.Info("[SSV] Starting re-simulation after mailbox population",
@@ -1583,7 +1668,12 @@ func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(ctx context.Context, xt
 
 // reSimulateTransaction re-simulates a single transaction and checks for success
 // SSV
-func (b *EthAPIBackend) reSimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash, xtID *rollupv1.XtID) (bool, error) {
+func (b *EthAPIBackend) reSimulateTransaction(
+	ctx context.Context,
+	tx *types.Transaction,
+	blockNrOrHash rpc.BlockNumberOrHash,
+	xtID *rollupv1.XtID,
+) (bool, error) {
 	log.Debug("[SSV] Re-simulating transaction",
 		"txHash", tx.Hash().Hex(),
 		"xtID", xtID.Hex())
@@ -1704,14 +1794,15 @@ func (b *EthAPIBackend) SetSequencerCoordinator(coord sequencer.Coordinator, sp 
 			b.coordinator.Consensus().SetStartCallback(b.StartCallbackFn(chainID))
 			b.coordinator.Consensus().SetVoteCallback(b.VoteCallbackFn(chainID))
 			// On final decision from SCP, update sequencer coordinator state directly.
-			b.coordinator.Consensus().SetDecisionCallback(func(ctx context.Context, xtID *rollupv1.XtID, decision bool) error {
-				log.Info("[SSV] Consensus decision callback", "xtID", xtID.Hex(), "decision", decision)
-				if err := b.coordinator.OnConsensusDecision(ctx, xtID, decision); err != nil {
-					log.Error("[SSV] Coordinator failed to apply decision", "err", err, "xtID", xtID.Hex())
-					return err
-				}
-				return nil
-			})
+			b.coordinator.Consensus().
+				SetDecisionCallback(func(ctx context.Context, xtID *rollupv1.XtID, decision bool) error {
+					log.Info("[SSV] Consensus decision callback", "xtID", xtID.Hex(), "decision", decision)
+					if err := b.coordinator.OnConsensusDecision(ctx, xtID, decision); err != nil {
+						log.Error("[SSV] Coordinator failed to apply decision", "err", err, "xtID", xtID.Hex())
+						return err
+					}
+					return nil
+				})
 			// Do not send legacy Block messages in SBCP mode.
 			// The L2Block will be sent from OnBlockBuildingComplete based on the actual mined block.
 			b.coordinator.Consensus().SetCIRCCallback(b.CIRCCallbackFn(chainID))
@@ -1895,7 +1986,11 @@ func (b *EthAPIBackend) sendStoredL2Block(ctx context.Context) error {
 	return nil
 }
 
-func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rollupv1.XTRequest, xtID *rollupv1.XtID) (bool, error) {
+func (b *EthAPIBackend) simulateXTRequestForSBCP(
+	ctx context.Context,
+	xtReq *rollupv1.XTRequest,
+	xtID *rollupv1.XtID,
+) (bool, error) {
 	log.Info("[SSV] Simulating XT request for SBCP",
 		"xtID", xtID.Hex(),
 		"chainID", b.ChainConfig().ChainID,
@@ -1966,7 +2061,9 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 		}
 	}
 
-	// Handle cross-rollup coordination - simplified
+	allSentMsgs := make([]CrossRollupMessage, 0)
+	allFulfilledDeps := make([]CrossRollupDependency, 0)
+
 	for _, state := range coordinationStates {
 		if !state.RequiresCoordination() {
 			continue
@@ -1982,64 +2079,117 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 			return false, fmt.Errorf("failed to handle cross-rollup coordination: %w", err)
 		}
 
-		// Create putInbox transactions for fulfilled dependencies
-		if len(fulfilledDeps) > 0 {
-			log.Info("[SSV] Creating putInbox transactions for fulfilled dependencies", "count", len(fulfilledDeps))
+		log.Info(
+			"[SSV] Cross-rollup coordination completed",
+			"xtID",
+			xtID.Hex(),
+			"sent",
+			len(sentMsgs),
+			"received",
+			len(fulfilledDeps),
+		)
 
-			nonce, err := b.GetPoolNonce(ctx, sequencerAddr)
+		allSentMsgs = append(allSentMsgs, sentMsgs...)
+		allFulfilledDeps = append(allFulfilledDeps, fulfilledDeps...)
+	}
+
+	// Create putInbox transactions for fulfilled dependencies
+	if len(allFulfilledDeps) > 0 {
+		log.Info("[SSV] Creating putInbox transactions for fulfilled dependencies", "count", len(allFulfilledDeps))
+
+		nonce, err := b.GetPoolNonce(ctx, sequencerAddr)
+		if err != nil {
+			return false, fmt.Errorf("failed to get nonce: %w", err)
+		}
+
+		// Create clear transaction first
+		clearTx, err := b.createClearTransactionWithNonce(ctx, nonce)
+		if err != nil {
+			log.Error("[SSV] Failed to create clear transaction", "err", err)
+		} else {
+			b.SetPendingClearTx(clearTx)
+			log.Info("[SSV] Reserved clear transaction created", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce())
+		}
+
+		// Create putInbox transactions
+		for _, dep := range allFulfilledDeps {
+			nonce++
+			putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, nonce)
 			if err != nil {
-				return false, fmt.Errorf("failed to get nonce: %w", err)
+				return false, fmt.Errorf("failed to create putInbox transaction: %w", err)
 			}
 
-			// Create clear transaction first
-			clearTx, err := b.createClearTransactionWithNonce(ctx, nonce)
+			if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
+				return false, fmt.Errorf("failed to submit putInbox transaction: %w", err)
+			}
+		}
+
+		// Wait for putInbox transactions to be processed
+		if err := b.waitForPutInboxTransactionsToBeProcessed(); err != nil {
+			return false, fmt.Errorf("failed to wait for putInbox transactions: %w", err)
+		}
+
+		// Re-simulate after putInbox to detect ACK messages that need to be sent
+		for i, state := range coordinationStates {
+			traceResult, err := b.SimulateTransaction(
+				ctx,
+				state.Tx,
+				rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber),
+			)
 			if err != nil {
-				log.Error("[SSV] Failed to create clear transaction", "err", err)
-			} else {
-				b.SetPendingClearTx(clearTx)
-				log.Info("[SSV] Reserved clear transaction created", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce())
+				continue
 			}
 
-			// Create putInbox transactions
-			for _, dep := range fulfilledDeps {
-				nonce++
-				putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, nonce)
-				if err != nil {
-					return false, fmt.Errorf("failed to create putInbox transaction: %w", err)
-				}
-
-				if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
-					return false, fmt.Errorf("failed to submit putInbox transaction: %w", err)
-				}
+			newSimState, err := mailboxProcessor.AnalyzeTransaction(
+				traceResult,
+				allSentMsgs,
+				allFulfilledDeps,
+				state.Tx,
+			)
+			if err != nil {
+				continue
 			}
 
-			// Wait for putInbox transactions to be processed
-			if err := b.waitForPutInboxTransactionsToBeProcessed(); err != nil {
-				return false, fmt.Errorf("failed to wait for putInbox transactions: %w", err)
-			}
+			coordinationStates[i] = newSimState
+			log.Info(
+				"[SSV] Re-simulation successful for transaction",
+				"txHash",
+				state.Tx.Hash().Hex(),
+				"xtID",
+				xtID.Hex(),
+			)
 
-			// Re-simulate after putInbox
-			for i, state := range coordinationStates {
-				traceResult, err := b.SimulateTransaction(ctx, state.Tx, rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber))
-				if err != nil {
+			// Send any ACK messages detected in re-simulation
+			for _, outMsg := range newSimState.OutboundMessages {
+				log.Info("[SSV] Detected new ACK message in re-simulation",
+					"xtID", xtID.Hex(),
+					"srcChain", outMsg.SourceChainID,
+					"destChain", outMsg.DestChainID,
+					"sessionId", outMsg.SessionID,
+					"label", string(outMsg.Label))
+
+				if err := mailboxProcessor.sendCIRCMessage(ctx, &outMsg, xtID); err != nil {
+					log.Error("[SSV] Failed to send ACK CIRC message", "error", err, "xtID", xtID.Hex())
 					continue
 				}
+			}
 
-				newSimState, err := mailboxProcessor.AnalyzeTransaction(traceResult, sentMsgs, fulfilledDeps, state.Tx)
-				if err != nil {
-					continue
-				}
+			if len(newSimState.OutboundMessages) > 0 {
+				log.Info(
+					"[SSV] Successfully sent ACK CIRC messages after putInbox",
+					"count",
+					len(newSimState.OutboundMessages),
+					"xtID",
+					xtID.Hex(),
+				)
+			}
 
-				coordinationStates[i] = newSimState
-				log.Info("[SSV] Re-simulation successful for transaction", "txHash", state.Tx.Hash().Hex(), "xtID", xtID.Hex())
-
-				// Pool transactions that became successful after re-simulation
-				_, done := txDone[state.Tx.Hash().Hex()]
-				if newSimState.Success && !done && len(newSimState.Dependencies) == 0 {
-					log.Info("[SSV] Pooling transaction after re-simulation", "hash", state.Tx.Hash().Hex())
-					b.poolPayloadTx(state.Tx)
-					txDone[state.Tx.Hash().Hex()] = struct{}{}
-				}
+			// Pool transactions that became successful after re-simulation
+			_, done := txDone[state.Tx.Hash().Hex()]
+			if newSimState.Success && !done && len(newSimState.Dependencies) == 0 {
+				log.Info("[SSV] Pooling transaction after re-simulation", "hash", state.Tx.Hash().Hex())
+				b.poolPayloadTx(state.Tx)
+				txDone[state.Tx.Hash().Hex()] = struct{}{}
 			}
 		}
 	}
@@ -2057,7 +2207,15 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 
 	// Check if all transactions are successful
 	allSuccessful := successfulAll(coordinationStates)
-	log.Info("[SSV] SBCP simulation completed", "xtID", xtID.Hex(), "allSuccessful", allSuccessful, "pooled_original_txs", len(b.GetPendingOriginalTxs()))
+	log.Info(
+		"[SSV] SBCP simulation completed",
+		"xtID",
+		xtID.Hex(),
+		"allSuccessful",
+		allSuccessful,
+		"pooled_original_txs",
+		len(b.GetPendingOriginalTxs()),
+	)
 
 	return allSuccessful, nil
 }
