@@ -1274,7 +1274,18 @@ func (b *EthAPIBackend) GetOrderedTransactionsForBlock(ctx context.Context, norm
 		}
 	}
 
-	// 3. Third: Normal user transactions (excluding any sequencer txs that might be in pool)
+	// 3. Third: Original user transactions from SBCP simulation
+	originalTxs := b.GetPendingOriginalTxs()
+	if len(originalTxs) > 0 {
+		orderedTxs = append(orderedTxs, originalTxs...)
+		log.Info("[SSV] Added original user transactions to block", "count", len(originalTxs))
+
+		for i, tx := range originalTxs {
+			log.Info("[SSV] Original transaction", "index", i, "txHash", tx.Hash().Hex())
+		}
+	}
+
+	// 4. Fourth: Normal user transactions (excluding any sequencer txs that might be in pool)
 	filteredNormalTxs := b.filterOutSequencerTransactions(normalTxs)
 	orderedTxs = append(orderedTxs, filteredNormalTxs...)
 
@@ -1286,6 +1297,7 @@ func (b *EthAPIBackend) GetOrderedTransactionsForBlock(ctx context.Context, norm
 			return 0
 		}(),
 		"putInboxTxs", len(putInboxTxs),
+		"originalTxs", len(originalTxs),
 		"normalTxs", len(filteredNormalTxs),
 		"totalOrdered", len(orderedTxs),
 	)
@@ -1440,6 +1452,9 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *type
 		"slot", slot,
 		"blockNumber", block.NumberU64(),
 		"blockHash", block.Hash().Hex())
+
+	b.ClearSequencerTransactionsAfterBlock()
+	log.Info("[SSV] Cleared sequencer transactions after storing block to prevent reuse")
 
 	return nil
 }
@@ -1865,9 +1880,6 @@ func (b *EthAPIBackend) sendStoredL2Block(ctx context.Context) error {
 			log.Warn("[SSV] Coordinator OnBlockBuildingComplete warning", "err", err, "slot", slot)
 		}
 	}
-
-	// Clear staged sequencer transactions after successful block
-	b.ClearSequencerTransactionsAfterBlock()
 
 	// Clear stored block and reset RequestSeal state
 	b.pendingBlockMutex.Lock()
