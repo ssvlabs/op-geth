@@ -89,9 +89,10 @@ type EthAPIBackend struct {
 	lastRequestSealIncluded [][]byte
 	lastRequestSealSlot     uint64
 
-	// SSV: Immediate submission signaling when RequestSeal arrives
-	rsNotifyMu sync.Mutex
-	rsNotifyCh chan struct{}
+	// SSV: Store built blocks to send after RequestSeal
+	pendingBlockMutex sync.RWMutex
+	pendingBlock      *types.Block
+	pendingBlockSlot  uint64
 }
 
 // ChainConfig returns the active chain configuration.
@@ -1424,110 +1425,21 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *type
 		return nil
 	}
 
-	// Build and send SBCP L2Block based on the actual mined block.
-	b.rsMutex.RLock()
-	included := make([][]byte, len(b.lastRequestSealIncluded))
-	for i := range b.lastRequestSealIncluded {
-		dup := make([]byte, len(b.lastRequestSealIncluded[i]))
-		copy(dup, b.lastRequestSealIncluded[i])
-		included[i] = dup
-	}
-	slot := b.lastRequestSealSlot
-	b.rsMutex.RUnlock()
-
-	if slot == 0 {
-		rsCh := b.getOrInitRSNotifyCh()
-		waitCtx, cancel := context.WithTimeout(ctx, 2100*time.Millisecond)
-		select {
-		case <-rsCh:
-			// RequestSeal arrived; read the latest snapshot
-		case <-waitCtx.Done():
-			// Timeout; proceed with fallback
-		}
-		cancel()
-
-		b.rsMutex.RLock()
-		slot = b.lastRequestSealSlot
-		if slot != 0 {
-			included = make([][]byte, len(b.lastRequestSealIncluded))
-			for i := range b.lastRequestSealIncluded {
-				dup := make([]byte, len(b.lastRequestSealIncluded[i]))
-				copy(dup, b.lastRequestSealIncluded[i])
-				included[i] = dup
-			}
-			b.rsMutex.RUnlock()
-			log.Info("[SSV] RequestSeal signaled; submitting L2Block",
-				"slot", slot,
-				"included_xts", len(included))
-		} else {
-			b.rsMutex.RUnlock()
-			// Fallback: no RequestSeal recorded (e.g., SP sealed quickly or message delayed).
-			// Submit an L2Block tied to the coordinator's current slot with an empty inclusion list.
-			if b.coordinator != nil {
-				slot = b.coordinator.GetCurrentSlot()
-			}
-			included = nil
-			log.Info("[SSV] No RequestSeal recorded; submitting L2Block with empty inclusion list",
-				"slot", slot,
-				"blockHash", block.Hash().Hex())
-		}
-	}
-
-	// RLP encode the block
-	var buf bytes.Buffer
-	if err := block.EncodeRLP(&buf); err != nil {
-		log.Error("[SSV] Failed to RLP encode block", "err", err, "blockHash", block.Hash().Hex())
-		return err
-	}
-
-	l2 := &rollupv1.L2Block{
-		Slot:            slot,
-		ChainId:         b.ChainConfig().ChainID.Bytes(),
-		BlockNumber:     block.NumberU64(),
-		BlockHash:       block.Hash().Bytes(),
-		ParentBlockHash: block.ParentHash().Bytes(),
-		IncludedXts:     included,
-		Block:           buf.Bytes(),
-	}
-
-	msg := &rollupv1.Message{
-		SenderId: b.ChainConfig().ChainID.String(),
-		Payload:  &rollupv1.Message_L2Block{L2Block: l2},
-	}
-
-	if err := b.spClient.Send(ctx, msg); err != nil {
-		log.Error("[SSV] Failed to send L2Block to shared publisher", "err", err, "slot", slot)
-		return err
-	}
-	log.Info("[SSV] Submitted L2Block to shared publisher",
-		"slot", slot,
-		"blockNumber", l2.BlockNumber,
-		"blockHash", block.Hash().Hex(),
-		"included_xts", len(included))
-
-	// Mark included xTs as sent in consensus layer (SBCP path)
-	if b.coordinator != nil && b.coordinator.Consensus() != nil {
-		if err := b.coordinator.Consensus().OnL2BlockCommitted(ctx, l2); err != nil {
-			log.Warn("[SSV] Consensus OnL2BlockCommitted warning", "err", err, "slot", slot)
-		}
-	}
-
-	// Notify sequencer coordinator to complete the block lifecycle and
-	// transition state back to Waiting.
+	// Store the block instead of sending immediately - wait for RequestSeal per SBCP protocol
+	slot := uint64(0)
 	if b.coordinator != nil {
-		if err := b.coordinator.OnBlockBuildingComplete(ctx, l2, true); err != nil {
-			log.Warn("[SSV] Coordinator OnBlockBuildingComplete warning", "err", err, "slot", slot)
-		}
+		slot = b.coordinator.GetCurrentSlot()
 	}
 
-	// Clear staged sequencer transactions after successful block
-	b.ClearSequencerTransactionsAfterBlock()
+	b.pendingBlockMutex.Lock()
+	b.pendingBlock = block
+	b.pendingBlockSlot = slot
+	b.pendingBlockMutex.Unlock()
 
-	// Reset recorded RequestSeal once the block is submitted
-	b.rsMutex.Lock()
-	b.lastRequestSealIncluded = nil
-	b.lastRequestSealSlot = 0
-	b.rsMutex.Unlock()
+	log.Info("[SSV] Block building completed, stored for RequestSeal",
+		"slot", slot,
+		"blockNumber", block.NumberU64(),
+		"blockHash", block.Hash().Hex())
 
 	return nil
 }
@@ -1832,6 +1744,8 @@ func (b *EthAPIBackend) NotifySlotStart(startSlot *rollupv1.StartSlot) error {
 // SSV
 func (b *EthAPIBackend) NotifyRequestSeal(requestSeal *rollupv1.RequestSeal) error {
 	log.Info("[SSV] Notify miner: RequestSeal", "slot", requestSeal.Slot, "included_xts", len(requestSeal.IncludedXts))
+
+	// Store RequestSeal info first
 	b.rsMutex.Lock()
 	b.lastRequestSealIncluded = make([][]byte, len(requestSeal.IncludedXts))
 	for i, xt := range requestSeal.IncludedXts {
@@ -1843,8 +1757,18 @@ func (b *EthAPIBackend) NotifyRequestSeal(requestSeal *rollupv1.RequestSeal) err
 	b.lastRequestSealSlot = requestSeal.Slot
 	b.rsMutex.Unlock()
 
-	// Wake up any waiter to submit the block immediately
-	b.signalRequestSeal()
+	// Send stored block if available (this fixes the "not accepting L2 blocks in state free" error)
+	b.pendingBlockMutex.RLock()
+	hasStoredBlock := b.pendingBlock != nil
+	b.pendingBlockMutex.RUnlock()
+
+	if hasStoredBlock {
+		if err := b.sendStoredL2Block(context.Background()); err != nil {
+			log.Error("[SSV] Failed to send stored L2Block after RequestSeal", "err", err, "slot", requestSeal.Slot)
+		}
+	} else {
+		log.Warn("[SSV] RequestSeal received but no block stored", "slot", requestSeal.Slot)
+	}
 
 	// proactively stage a clear() transaction to help sealing,
 	// but only when there is at least one cross-chain transaction to include
@@ -1866,30 +1790,96 @@ func (b *EthAPIBackend) NotifyRequestSeal(requestSeal *rollupv1.RequestSeal) err
 	return nil
 }
 
-// SSV: RequestSeal signaling helpers
-func (b *EthAPIBackend) getOrInitRSNotifyCh() <-chan struct{} {
-	b.rsNotifyMu.Lock()
-	defer b.rsNotifyMu.Unlock()
-	if b.rsNotifyCh == nil {
-		b.rsNotifyCh = make(chan struct{})
-	}
-	return b.rsNotifyCh
-}
-
-func (b *EthAPIBackend) signalRequestSeal() {
-	b.rsNotifyMu.Lock()
-	// If there is a channel, close it to broadcast to all waiters, then create a fresh one
-	if b.rsNotifyCh == nil {
-		b.rsNotifyCh = make(chan struct{})
-	}
-	close(b.rsNotifyCh)
-	b.rsNotifyCh = make(chan struct{})
-	b.rsNotifyMu.Unlock()
-}
-
 // SSV
 func (b *EthAPIBackend) NotifyStateChange(from, to sequencer.State, slot uint64) error {
 	log.Debug("[SSV] SBCP state change", "from", from.String(), "to", to.String(), "slot", slot)
+	return nil
+}
+
+// sendStoredL2Block sends the stored block as L2Block message
+// SSV
+func (b *EthAPIBackend) sendStoredL2Block(ctx context.Context) error {
+	b.pendingBlockMutex.RLock()
+	block := b.pendingBlock
+	slot := b.pendingBlockSlot
+	b.pendingBlockMutex.RUnlock()
+
+	if block == nil {
+		return fmt.Errorf("no stored block to send")
+	}
+
+	// Get RequestSeal inclusion list
+	b.rsMutex.RLock()
+	included := make([][]byte, len(b.lastRequestSealIncluded))
+	for i := range b.lastRequestSealIncluded {
+		dup := make([]byte, len(b.lastRequestSealIncluded[i]))
+		copy(dup, b.lastRequestSealIncluded[i])
+		included[i] = dup
+	}
+	b.rsMutex.RUnlock()
+
+	// RLP encode the block
+	var buf bytes.Buffer
+	if err := block.EncodeRLP(&buf); err != nil {
+		log.Error("[SSV] Failed to RLP encode block", "err", err, "blockHash", block.Hash().Hex())
+		return err
+	}
+
+	l2 := &rollupv1.L2Block{
+		Slot:            slot,
+		ChainId:         b.ChainConfig().ChainID.Bytes(),
+		BlockNumber:     block.NumberU64(),
+		BlockHash:       block.Hash().Bytes(),
+		ParentBlockHash: block.ParentHash().Bytes(),
+		IncludedXts:     included,
+		Block:           buf.Bytes(),
+	}
+
+	msg := &rollupv1.Message{
+		SenderId: b.ChainConfig().ChainID.String(),
+		Payload:  &rollupv1.Message_L2Block{L2Block: l2},
+	}
+
+	if err := b.spClient.Send(ctx, msg); err != nil {
+		log.Error("[SSV] Failed to send L2Block to shared publisher", "err", err, "slot", slot)
+		return err
+	}
+
+	log.Info("[SSV] Submitted L2Block to shared publisher",
+		"slot", slot,
+		"blockNumber", l2.BlockNumber,
+		"blockHash", block.Hash().Hex(),
+		"included_xts", len(included))
+
+	// Mark included xTs as sent in consensus layer (SBCP path)
+	if b.coordinator != nil && b.coordinator.Consensus() != nil {
+		if err := b.coordinator.Consensus().OnL2BlockCommitted(ctx, l2); err != nil {
+			log.Warn("[SSV] Consensus OnL2BlockCommitted warning", "err", err, "slot", slot)
+		}
+	}
+
+	// Notify sequencer coordinator to complete the block lifecycle and
+	// transition state back to Waiting.
+	if b.coordinator != nil {
+		if err := b.coordinator.OnBlockBuildingComplete(ctx, l2, true); err != nil {
+			log.Warn("[SSV] Coordinator OnBlockBuildingComplete warning", "err", err, "slot", slot)
+		}
+	}
+
+	// Clear staged sequencer transactions after successful block
+	b.ClearSequencerTransactionsAfterBlock()
+
+	// Clear stored block and reset RequestSeal state
+	b.pendingBlockMutex.Lock()
+	b.pendingBlock = nil
+	b.pendingBlockSlot = 0
+	b.pendingBlockMutex.Unlock()
+
+	b.rsMutex.Lock()
+	b.lastRequestSealIncluded = nil
+	b.lastRequestSealSlot = 0
+	b.rsMutex.Unlock()
+
 	return nil
 }
 
