@@ -76,10 +76,6 @@ func (v *basicValidator) ValidateL2Block(l2Block *pb.L2Block) error {
 		return fmt.Errorf("missing chain ID")
 	}
 
-	if l2Block.BlockNumber == 0 {
-		return fmt.Errorf("invalid block number: %d", l2Block.BlockNumber)
-	}
-
 	if len(l2Block.BlockHash) == 0 {
 		return fmt.Errorf("missing block hash")
 	}
@@ -147,10 +143,6 @@ func (v *basicValidator) validateL2BlockRequest(req *pb.L2BlockRequest) error {
 
 	if len(req.ChainId) == 0 {
 		return fmt.Errorf("missing chain ID")
-	}
-
-	if req.BlockNumber == 0 {
-		return fmt.Errorf("invalid block number: %d", req.BlockNumber)
 	}
 
 	// ParentHash can be empty for genesis blocks
