@@ -1544,6 +1544,19 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(
 			"blockNumber", block.NumberU64(),
 			"blockHash", block.Hash().Hex())
 		log.Info("[SSV] Block stored, keeping transactions available for atomic inclusion")
+
+		// If we're in submission state, immediately send the block and clear transactions
+		if b.coordinator != nil {
+			currentState := b.coordinator.GetState()
+			if currentState == sequencer.StateSubmission {
+				log.Info("[SSV] Block built in submission state - sending immediately", "slot", slot)
+				go func() {
+					if err := b.sendStoredL2Block(context.Background()); err != nil {
+						log.Error("[SSV] Failed to send submission state block", "err", err, "slot", slot)
+					}
+				}()
+			}
+		}
 	} else {
 		log.Info("[SSV] Block already stored for slot, ignoring duplicate build",
 			"slot", slot,
@@ -2008,6 +2021,7 @@ func (b *EthAPIBackend) sendStoredL2Block(ctx context.Context) error {
 	b.ClearSequencerTransactionsAfterBlock()
 	log.Info("[SSV] Cleared sequencer transactions after successful L2Block submission")
 
+	// Also clear the pending clear transaction to prevent reuse
 	b.SetPendingClearTx(nil)
 	log.Info("[SSV] Cleared pending clear transaction to prevent reuse")
 
