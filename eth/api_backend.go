@@ -1200,16 +1200,19 @@ func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context
 
 	// Always prepare clear transaction if we have cross-chain activity.
 	hasCrossChain := len(b.GetPendingPutInboxTxs()) > 0 || len(b.GetPendingOriginalTxs()) > 0
-	if hasCrossChain && b.pendingClearTx == nil {
+	if hasCrossChain {
+		// Always create fresh clear transaction to avoid reuse and duplicate hashes
 		clearTx, err := b.createClearTransaction(ctx)
 		if err != nil {
 			log.Error("[SSV] Failed to create clear transaction", "err", err)
 			return err
 		}
 		b.SetPendingClearTx(clearTx)
-		log.Info("[SSV] Created clear transaction", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce())
-	} else if hasCrossChain && b.pendingClearTx != nil {
-		log.Info("[SSV] Reusing existing clear transaction", "txHash", b.pendingClearTx.Hash().Hex(), "nonce", b.pendingClearTx.Nonce())
+		log.Info("[SSV] Created clear transaction for cross-chain activity",
+			"txHash", clearTx.Hash().Hex(),
+			"nonce", clearTx.Nonce(),
+			"putInbox_count", len(b.GetPendingPutInboxTxs()),
+			"original_count", len(b.GetPendingOriginalTxs()))
 	} else {
 		log.Info("[SSV] No cross-chain activity detected for this block")
 	}
@@ -1518,17 +1521,23 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(
 	}
 
 	b.pendingBlockMutex.Lock()
-	b.pendingBlock = block
-	b.pendingBlockSlot = slot
+	// Only store block if we don't already have one for this slot (prevent multiple builds)
+	if b.pendingBlock == nil || b.pendingBlockSlot != slot {
+		b.pendingBlock = block
+		b.pendingBlockSlot = slot
+
+		log.Info("[SSV] Block building completed, stored for RequestSeal",
+			"slot", slot,
+			"blockNumber", block.NumberU64(),
+			"blockHash", block.Hash().Hex())
+		log.Info("[SSV] Block stored, keeping transactions available for atomic inclusion")
+	} else {
+		log.Info("[SSV] Block already stored for slot, ignoring duplicate build",
+			"slot", slot,
+			"existingBlock", b.pendingBlock.Hash().Hex(),
+			"newBlock", block.Hash().Hex())
+	}
 	b.pendingBlockMutex.Unlock()
-
-	log.Info("[SSV] Block building completed, stored for RequestSeal",
-		"slot", slot,
-		"blockNumber", block.NumberU64(),
-		"blockHash", block.Hash().Hex())
-
-	b.ClearSequencerTransactionsAfterBlock()
-	log.Info("[SSV] Cleared sequencer transactions after storing block to prevent reuse")
 
 	return nil
 }
@@ -1983,6 +1992,9 @@ func (b *EthAPIBackend) sendStoredL2Block(ctx context.Context) error {
 	b.lastRequestSealSlot = 0
 	b.rsMutex.Unlock()
 
+	b.ClearSequencerTransactionsAfterBlock()
+	log.Info("[SSV] Cleared sequencer transactions after successful L2Block submission")
+
 	return nil
 }
 
@@ -2184,7 +2196,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 				)
 			}
 
-			// Pool transactions that became successful after re-simulation
+			// Pool transactions immediately when they become successful
 			_, done := txDone[state.Tx.Hash().Hex()]
 			if newSimState.Success && !done && len(newSimState.Dependencies) == 0 {
 				log.Info("[SSV] Pooling transaction after re-simulation", "hash", state.Tx.Hash().Hex())
