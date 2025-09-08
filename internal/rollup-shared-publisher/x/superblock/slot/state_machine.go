@@ -5,8 +5,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog"
 	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
+	"github.com/rs/zerolog"
+	"google.golang.org/protobuf/proto"
 )
 
 type State int
@@ -48,9 +49,7 @@ type StateMachine struct {
 	scpInstances     map[string]*SCPInstance
 	l2BlockRequests  map[string]*pb.L2BlockRequest
 
-	// lastHeads tracks the last known L2 block per chain across slots so that
-	// StartSlot requests reflect real parents and next block numbers. It is
-	// updated whenever the SP receives an L2Block during sealing.
+	// lastHeads tracks the last known L2 block per chain across slots
 	lastHeads map[string]*pb.L2Block
 
 	stateChangeCallbacks map[State][]StateChangeCallback
@@ -80,7 +79,7 @@ type SCPInstance struct {
 }
 
 func NewStateMachine(slotManager *Manager, log zerolog.Logger) *StateMachine {
-    return &StateMachine{
+	return &StateMachine{
 		currentState:         StateStarting,
 		currentSlot:          0,
 		slotManager:          slotManager,
@@ -91,7 +90,7 @@ func NewStateMachine(slotManager *Manager, log zerolog.Logger) *StateMachine {
 		lastHeads:            make(map[string]*pb.L2Block),
 		stateChangeCallbacks: make(map[State][]StateChangeCallback),
 		transitionHistory:    make([]StateTransition, 0),
-    }
+	}
 }
 
 func (sm *StateMachine) GetCurrentState() State {
@@ -370,7 +369,7 @@ func (sm *StateMachine) Reset() {
 	sm.receivedL2Blocks = make(map[string]*pb.L2Block)
 	sm.scpInstances = make(map[string]*SCPInstance)
 	sm.l2BlockRequests = make(map[string]*pb.L2BlockRequest)
-    // Do not clear lastHeads; we need continuity across slots.
+	// Do not clear lastHeads; we need continuity across slots.
 }
 
 func (sm *StateMachine) GetTransitionHistory() []StateTransition {
@@ -380,6 +379,22 @@ func (sm *StateMachine) GetTransitionHistory() []StateTransition {
 	result := make([]StateTransition, len(sm.transitionHistory))
 	copy(result, sm.transitionHistory)
 	return result
+}
+
+// SeedLastHead seeds the last known L2 head for a chain. This allows BeginSlot
+// to compute correct L2BlockRequest values (next block number and parent hash)
+// even on the first slot or after restarts.
+func (sm *StateMachine) SeedLastHead(block *pb.L2Block) {
+	if block == nil || len(block.ChainId) == 0 {
+		return
+	}
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	chainIDStr := string(block.ChainId)
+	if prev, ok := sm.lastHeads[chainIDStr]; !ok || prev == nil || block.BlockNumber >= prev.BlockNumber {
+		cp := proto.Clone(block).(*pb.L2Block)
+		sm.lastHeads[chainIDStr] = cp
+	}
 }
 
 func (sm *StateMachine) isValidTransition(from, to State) bool {
