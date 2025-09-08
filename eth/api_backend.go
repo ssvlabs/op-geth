@@ -1521,8 +1521,21 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(
 	}
 
 	b.pendingBlockMutex.Lock()
-	// Only store block if we don't already have one for this slot (prevent multiple builds)
+	// Only store block if we don't already have one for this slot AND all SBCP simulations are complete
 	if b.pendingBlock == nil || b.pendingBlockSlot != slot {
+		// Check if we have active SCP instances that might still be pooling transactions
+		if b.coordinator != nil {
+			activeSCP := b.coordinator.GetActiveSCPInstanceCount()
+			if activeSCP > 0 {
+				log.Info("[SSV] Delaying block storage - active SCP instances still running",
+					"slot", slot,
+					"activeSCP", activeSCP,
+					"blockNumber", block.NumberU64())
+				b.pendingBlockMutex.Unlock()
+				return nil
+			}
+		}
+
 		b.pendingBlock = block
 		b.pendingBlockSlot = slot
 
@@ -1994,6 +2007,9 @@ func (b *EthAPIBackend) sendStoredL2Block(ctx context.Context) error {
 
 	b.ClearSequencerTransactionsAfterBlock()
 	log.Info("[SSV] Cleared sequencer transactions after successful L2Block submission")
+
+	b.SetPendingClearTx(nil)
+	log.Info("[SSV] Cleared pending clear transaction to prevent reuse")
 
 	return nil
 }

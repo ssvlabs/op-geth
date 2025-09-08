@@ -22,6 +22,7 @@ type CoordinatorCallbacks struct {
 	OnBlockReady        func(ctx context.Context, block *pb.L2Block, xtIDs []*pb.XtID) error
 	OnStateTransition   func(from, to State, slot uint64, reason string)
 
+	SendCIRC func(ctx context.Context, circ *pb.CIRCMessage) error
 	// TODO: new interface for simulation and voting?
 	SimulateAndVote func(ctx context.Context, xtReq *pb.XTRequest, xtID *pb.XtID) (bool, error)
 }
@@ -50,25 +51,27 @@ type Coordinator interface {
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
 
-    // Message handling
-    HandleMessage(ctx context.Context, from string, msg *pb.Message) error
+	// Message handling
+	HandleMessage(ctx context.Context, from string, msg *pb.Message) error
 
 	// State queries
 	GetCurrentSlot() uint64
 	GetState() State
 	GetStats() map[string]interface{}
+	GetActiveSCPInstanceCount() int
 
 	// Consensus access
 	Consensus() consensus.Coordinator
 
-    // SDK access
-    BlockLifecycleManager
-    TransactionManager
-    CallbackManager
+	// SDK access
+	BlockLifecycleManager
+	TransactionManager
+	CallbackManager
 
-    // Consensus integration (SCP): notify the coordinator about a final decision
-    // so it can update local SCP integration/state machine and unblock queued StartSCs.
-    OnConsensusDecision(ctx context.Context, xtID *pb.XtID, decision bool) error
+	// Consensus integration (SCP): notify the coordinator about a final decision
+	// so it can update local SCP integration/state machine and unblock queued StartSCs.
+	// TODO: move it, refactor
+	OnConsensusDecision(ctx context.Context, xtID *pb.XtID, decision bool) error
 }
 
 // BlockBuilderInterface for L2 block construction

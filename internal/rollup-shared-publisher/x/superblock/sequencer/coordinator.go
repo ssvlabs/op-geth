@@ -671,6 +671,14 @@ func (sc *SequencerCoordinator) GetStats() map[string]interface{} {
 	return stats
 }
 
+// GetActiveSCPInstanceCount returns the number of active SCP instances
+func (sc *SequencerCoordinator) GetActiveSCPInstanceCount() int {
+	if sc.scpIntegration != nil {
+		return sc.scpIntegration.GetActiveCount()
+	}
+	return 0
+}
+
 // BlockLifecycleManager implementation
 
 // OnBlockBuildingStart is called when block building starts
