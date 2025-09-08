@@ -417,7 +417,8 @@ func (sm *StateMachine) getNextL2BlockNumber(chainID []byte) uint64 {
 			return head.BlockNumber + 1
 		}
 	}
-	return 1
+	// TODO: Unknown head: use 0 as sentinel ("unspecified") to allow tolerant validation
+	return 0
 }
 
 func (sm *StateMachine) getHeadL2BlockHash(chainID []byte) []byte {
@@ -428,5 +429,6 @@ func (sm *StateMachine) getHeadL2BlockHash(chainID []byte) []byte {
 			return out
 		}
 	}
-	return make([]byte, 32)
+	// TODO: Unknown parent: return nil to signal "no constraint" to validators
+	return nil
 }

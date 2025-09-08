@@ -88,6 +88,10 @@ type EthAPIBackend struct {
 	rsMutex                 sync.RWMutex
 	lastRequestSealIncluded [][]byte
 	lastRequestSealSlot     uint64
+
+	// SSV: Immediate submission signaling when RequestSeal arrives
+	rsNotifyMu sync.Mutex
+	rsNotifyCh chan struct{}
 }
 
 // ChainConfig returns the active chain configuration.
@@ -1432,26 +1436,31 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *type
 	b.rsMutex.RUnlock()
 
 	if slot == 0 {
-		// Try to wait briefly for RequestSeal to arrive to avoid empty inclusion list.
-		waited := false
-		for i := 0; i < 21; i++ { // up to ~2100ms
-			time.Sleep(100 * time.Millisecond)
-			b.rsMutex.RLock()
-			slot = b.lastRequestSealSlot
-			if slot != 0 {
-				included = make([][]byte, len(b.lastRequestSealIncluded))
-				for i := range b.lastRequestSealIncluded {
-					dup := make([]byte, len(b.lastRequestSealIncluded[i]))
-					copy(dup, b.lastRequestSealIncluded[i])
-					included[i] = dup
-				}
-				b.rsMutex.RUnlock()
-				waited = true
-				break
+		rsCh := b.getOrInitRSNotifyCh()
+		waitCtx, cancel := context.WithTimeout(ctx, 2100*time.Millisecond)
+		select {
+		case <-rsCh:
+			// RequestSeal arrived; read the latest snapshot
+		case <-waitCtx.Done():
+			// Timeout; proceed with fallback
+		}
+		cancel()
+
+		b.rsMutex.RLock()
+		slot = b.lastRequestSealSlot
+		if slot != 0 {
+			included = make([][]byte, len(b.lastRequestSealIncluded))
+			for i := range b.lastRequestSealIncluded {
+				dup := make([]byte, len(b.lastRequestSealIncluded[i]))
+				copy(dup, b.lastRequestSealIncluded[i])
+				included[i] = dup
 			}
 			b.rsMutex.RUnlock()
-		}
-		if !waited {
+			log.Info("[SSV] RequestSeal signaled; submitting L2Block",
+				"slot", slot,
+				"included_xts", len(included))
+		} else {
+			b.rsMutex.RUnlock()
 			// Fallback: no RequestSeal recorded (e.g., SP sealed quickly or message delayed).
 			// Submit an L2Block tied to the coordinator's current slot with an empty inclusion list.
 			if b.coordinator != nil {
@@ -1461,10 +1470,6 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(ctx context.Context, block *type
 			log.Info("[SSV] No RequestSeal recorded; submitting L2Block with empty inclusion list",
 				"slot", slot,
 				"blockHash", block.Hash().Hex())
-		} else {
-			log.Info("[SSV] Captured RequestSeal after short wait",
-				"slot", slot,
-				"included_xts", len(included))
 		}
 	}
 
@@ -1838,6 +1843,9 @@ func (b *EthAPIBackend) NotifyRequestSeal(requestSeal *rollupv1.RequestSeal) err
 	b.lastRequestSealSlot = requestSeal.Slot
 	b.rsMutex.Unlock()
 
+	// Wake up any waiter to submit the block immediately
+	b.signalRequestSeal()
+
 	// proactively stage a clear() transaction to help sealing,
 	// but only when there is at least one cross-chain transaction to include
 	// in this slot (as indicated by RequestSeal.IncludedXts).
@@ -1856,6 +1864,27 @@ func (b *EthAPIBackend) NotifyRequestSeal(requestSeal *rollupv1.RequestSeal) err
 		}
 	}
 	return nil
+}
+
+// SSV: RequestSeal signaling helpers
+func (b *EthAPIBackend) getOrInitRSNotifyCh() <-chan struct{} {
+	b.rsNotifyMu.Lock()
+	defer b.rsNotifyMu.Unlock()
+	if b.rsNotifyCh == nil {
+		b.rsNotifyCh = make(chan struct{})
+	}
+	return b.rsNotifyCh
+}
+
+func (b *EthAPIBackend) signalRequestSeal() {
+	b.rsNotifyMu.Lock()
+	// If there is a channel, close it to broadcast to all waiters, then create a fresh one
+	if b.rsNotifyCh == nil {
+		b.rsNotifyCh = make(chan struct{})
+	}
+	close(b.rsNotifyCh)
+	b.rsNotifyCh = make(chan struct{})
+	b.rsNotifyMu.Unlock()
 }
 
 // SSV
