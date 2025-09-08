@@ -2039,9 +2039,19 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 								log.Info("[SSV] Successfully sent ACK CIRC messages after putInbox", "count", len(newOutboundMsgs), "xtID", xtID.Hex())
 							}
 						}
-						// If all local re-simulations succeed now that putInbox is in, vote early by returning success
+						// If all local re-simulations succeed now that putInbox is in, pool successful txs and vote
 						if allLocalPass {
-							log.Info("[SSV] All local transactions pass after putInbox; returning early for vote", "xtID", xtID.Hex())
+							// Pool successful transactions BEFORE early return (like old implementation)
+							for _, state := range coordinationStates {
+								tx := state.Tx
+								_, done := txDone[tx.Hash().Hex()]
+								if state.Success && !done && (len(state.Dependencies) == 0) {
+									log.Info("[SSV] Pooling successful user transaction before early vote", "hash", tx.Hash().Hex(), "count", len(b.GetPendingOriginalTxs()))
+									b.poolPayloadTx(tx)
+									txDone[tx.Hash().Hex()] = struct{}{}
+								}
+							}
+							log.Info("[SSV] All local transactions pass after putInbox; returning early for vote", "xtID", xtID.Hex(), "pooled_original_txs", len(b.GetPendingOriginalTxs()))
 							return true, nil
 						}
 					}
@@ -2059,6 +2069,17 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 					log.Error("[SSV] Re-simulation after mailbox population failed", "error", err, "xtID", xtID.Hex())
 				}
 				if ok {
+					// Pool successful transactions before early return
+					for _, state := range coordinationStates {
+						tx := state.Tx
+						_, done := txDone[tx.Hash().Hex()]
+						if state.Success && !done && (len(state.Dependencies) == 0) {
+							log.Info("[SSV] Pooling successful user transaction after re-simulation", "hash", tx.Hash().Hex(), "count", len(b.GetPendingOriginalTxs()))
+							b.poolPayloadTx(tx)
+							txDone[tx.Hash().Hex()] = struct{}{}
+						}
+					}
+					log.Info("[SSV] Re-simulation successful, returning with pooled transactions", "pooled_original_txs", len(b.GetPendingOriginalTxs()))
 					return true, nil
 				}
 			}
@@ -2161,7 +2182,17 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 						if state.Tx != nil {
 							okLocal, err := b.reSimulateTransaction(ctx, state.Tx, rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber), xtID)
 							if err == nil && okLocal {
-								log.Info("[SSV] Transaction now passes after async putInbox", "xtID", xtID.Hex())
+								// Pool successful transactions before early return
+								for _, s := range coordinationStates {
+									tx := s.Tx
+									_, done := txDone[tx.Hash().Hex()]
+									if s.Success && !done && (len(s.Dependencies) == 0) {
+										log.Info("[SSV] Pooling successful user transaction after async putInbox", "hash", tx.Hash().Hex(), "count", len(b.GetPendingOriginalTxs()))
+										b.poolPayloadTx(tx)
+										txDone[tx.Hash().Hex()] = struct{}{}
+									}
+								}
+								log.Info("[SSV] Transaction now passes after async putInbox", "xtID", xtID.Hex(), "pooled_original_txs", len(b.GetPendingOriginalTxs()))
 								return true, nil
 							}
 						}
@@ -2183,6 +2214,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(ctx context.Context, xtReq *rol
 
 		// successful when no tx ends up with revert()
 		if successfulAll(coordinationStates) {
+			log.Info("[SSV] All transactions successful, voting commit", "xtID", xtID.Hex(), "pooled_original_txs", len(b.GetPendingOriginalTxs()))
 			return true, nil
 		}
 
