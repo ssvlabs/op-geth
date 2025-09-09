@@ -1154,69 +1154,97 @@ func (b *EthAPIBackend) ClearSequencerTransactions() {
 // ClearSequencerTransactionsAfterBlock clears all pending sequencer transactions after block creation
 // SSV
 func (b *EthAPIBackend) ClearSequencerTransactionsAfterBlock() {
+	if b.coordinator == nil {
+		log.Info("[SSV] Clearing transactions - non-SBCP mode")
+		b.clearAllSequencerTransactions()
+		return
+	}
+
+	currentState := b.coordinator.GetState()
+	slot := b.coordinator.GetCurrentSlot()
+
+	log.Info("[SSV] Transaction clearing request",
+		"state", currentState.String(),
+		"slot", slot,
+		"pending", len(b.GetPendingPutInboxTxs())+len(b.GetPendingOriginalTxs()))
+
+	switch currentState {
+	case sequencer.StateBuildingFree, sequencer.StateBuildingLocked:
+		log.Info("[SSV] Preserving transactions during coordination")
+		return
+	default:
+		log.Info("[SSV] Clearing transactions")
+		b.clearAllSequencerTransactions()
+	}
+}
+
+// clearAllSequencerTransactions performs the actual clearing of transactions
+// SSV
+func (b *EthAPIBackend) clearAllSequencerTransactions() {
 	b.sequencerTxMutex.Lock()
 	defer b.sequencerTxMutex.Unlock()
 
-	log.Info("[SSV] Clearing sequencer transactions",
-		"clearTx", b.pendingClearTx != nil,
-		"putInboxCount", len(b.pendingPutInboxTxs),
-		"originalCount", len(b.pendingSequencerTxs))
+	clearCount := 0
+	if b.pendingClearTx != nil {
+		clearCount = 1
+	}
+	putInboxCount := len(b.pendingPutInboxTxs)
+	originalCount := len(b.pendingSequencerTxs)
 
 	b.pendingClearTx = nil
 	b.pendingPutInboxTxs = nil
 	b.pendingSequencerTxs = nil
+
+	log.Info("[SSV] Cleared sequencer transactions",
+		"clear", clearCount,
+		"putInbox", putInboxCount,
+		"original", originalCount)
 }
 
 // PrepareSequencerTransactionsForBlock prepares sequencer transactions for inclusion in a new block
 // SSV
 func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context) error {
-	// Check if we're in SBCP mode
-	if b.coordinator != nil {
-		currentState := b.coordinator.GetState()
-		currentSlot := b.coordinator.GetCurrentSlot()
-
-		log.Info("[SSV] Preparing sequencer transactions",
-			"state", currentState.String(),
-			"slot", currentSlot,
-			"have_clear", b.GetPendingClearTx() != nil,
-			"putInbox_count", len(b.GetPendingPutInboxTxs()),
-			"original_count", len(b.GetPendingOriginalTxs()))
-
-		// Only prepare sequencer transactions during appropriate states
-		switch currentState {
-		case sequencer.StateBuildingFree, sequencer.StateBuildingLocked:
-			// Let coordinator prepare any SCP-related transactions
-			if err := b.coordinator.PrepareTransactionsForBlock(ctx, currentSlot); err != nil {
-				log.Warn("[SSV] Coordinator failed to prepare transactions", "err", err)
-			}
-		case sequencer.StateSubmission:
-			// During submission, we should already have all transactions ready
-			log.Debug("[SSV] In submission state, transactions should be ready")
-		default:
-			// In Waiting state, no SBCP transactions needed
-			log.Debug("[SSV] Not in active building state, skipping SBCP prep")
-		}
+	if b.coordinator == nil {
+		log.Info("[SSV] Preparing sequencer transactions", "state", "non-SBCP")
+		return b.prepareAllCrossChainTransactionsForSubmission(ctx)
 	}
 
-	// Always prepare clear transaction if we have cross-chain activity.
+	currentState := b.coordinator.GetState()
+	currentSlot := b.coordinator.GetCurrentSlot()
+
+	log.Info("[SSV] Preparing sequencer transactions",
+		"state", currentState.String(),
+		"slot", currentSlot,
+		"putInbox", len(b.GetPendingPutInboxTxs()),
+		"original", len(b.GetPendingOriginalTxs()))
+
+	switch currentState {
+	case sequencer.StateBuildingFree, sequencer.StateBuildingLocked:
+		log.Info("[SSV] Coordination state - excluding cross-chain txs from block")
+		if err := b.coordinator.PrepareTransactionsForBlock(ctx, currentSlot); err != nil {
+			log.Warn("[SSV] Coordinator failed to prepare transactions", "err", err)
+		}
+		return nil
+	case sequencer.StateSubmission:
+		log.Info("[SSV] Submission state - preparing ALL cross-chain txs")
+		return b.prepareAllCrossChainTransactionsForSubmission(ctx)
+	default:
+		return nil
+	}
+}
+
+// prepareAllCrossChainTransactionsForSubmission prepares all cross-chain transactions for inclusion
+// SSV
+func (b *EthAPIBackend) prepareAllCrossChainTransactionsForSubmission(ctx context.Context) error {
 	hasCrossChain := len(b.GetPendingPutInboxTxs()) > 0 || len(b.GetPendingOriginalTxs()) > 0
 	if hasCrossChain {
-		// Always create fresh clear transaction to avoid reuse and duplicate hashes
 		clearTx, err := b.createClearTransaction(ctx)
 		if err != nil {
-			log.Error("[SSV] Failed to create clear transaction", "err", err)
 			return err
 		}
 		b.SetPendingClearTx(clearTx)
-		log.Info("[SSV] Created clear transaction for cross-chain activity",
-			"txHash", clearTx.Hash().Hex(),
-			"nonce", clearTx.Nonce(),
-			"putInbox_count", len(b.GetPendingPutInboxTxs()),
-			"original_count", len(b.GetPendingOriginalTxs()))
-	} else {
-		log.Info("[SSV] No cross-chain activity detected for this block")
+		log.Info("[SSV] Created clear transaction", "txHash", clearTx.Hash().Hex())
 	}
-
 	return nil
 }
 
@@ -1328,52 +1356,65 @@ func (b *EthAPIBackend) GetOrderedTransactionsForBlock(
 	ctx context.Context,
 	normalTxs types.Transactions,
 ) (types.Transactions, error) {
-	var orderedTxs types.Transactions
-
-	// 1. First: Clear transaction
-	if clearTx := b.GetPendingClearTx(); clearTx != nil {
-		orderedTxs = append(orderedTxs, clearTx)
-		log.Info("[SSV] Added clear transaction to block", "txHash", clearTx.Hash().Hex())
+	if b.coordinator == nil {
+		log.Info("[SSV] Building full cross-chain block", "normalTxs", len(normalTxs))
+		return b.buildFullCrossChainBlock(ctx, normalTxs)
 	}
 
-	// 2. Second: All putInbox transactions
+	currentState := b.coordinator.GetState()
+	slot := b.coordinator.GetCurrentSlot()
+
+	log.Info("[SSV] Building block transaction list",
+		"state", currentState.String(),
+		"slot", slot,
+		"normalTxs", len(normalTxs))
+
+	switch currentState {
+	case sequencer.StateBuildingFree, sequencer.StateBuildingLocked:
+		log.Info("[SSV] Coordination block - local txs only")
+		return b.filterOutSequencerTransactions(normalTxs), nil
+	case sequencer.StateSubmission:
+		log.Info("[SSV] Submission block - ALL transactions")
+		return b.buildFullCrossChainBlock(ctx, normalTxs)
+	default:
+		log.Info("[SSV] Default block - normal txs only")
+		return b.filterOutSequencerTransactions(normalTxs), nil
+	}
+}
+
+// buildFullCrossChainBlock builds the final block with all cross-chain transactions
+// SSV
+func (b *EthAPIBackend) buildFullCrossChainBlock(
+	ctx context.Context,
+	normalTxs types.Transactions,
+) (types.Transactions, error) {
+	var orderedTxs types.Transactions
+
+	clearCount := 0
+	if clearTx := b.GetPendingClearTx(); clearTx != nil {
+		orderedTxs = append(orderedTxs, clearTx)
+		clearCount = 1
+	}
+
 	putInboxTxs := b.GetPendingPutInboxTxs()
 	if len(putInboxTxs) > 0 {
 		orderedTxs = append(orderedTxs, putInboxTxs...)
-		log.Info("[SSV] Added putInbox transactions to block", "count", len(putInboxTxs))
-
-		for i, tx := range putInboxTxs {
-			log.Info("[SSV] PutInbox transaction", "index", i, "txHash", tx.Hash().Hex())
-		}
 	}
 
-	// 3. Third: Original user transactions from SBCP simulation
 	originalTxs := b.GetPendingOriginalTxs()
 	if len(originalTxs) > 0 {
 		orderedTxs = append(orderedTxs, originalTxs...)
-		log.Info("[SSV] Added original user transactions to block", "count", len(originalTxs))
-
-		for i, tx := range originalTxs {
-			log.Info("[SSV] Original transaction", "index", i, "txHash", tx.Hash().Hex())
-		}
 	}
 
-	// 4. Fourth: Normal user transactions (excluding any sequencer txs that might be in pool)
 	filteredNormalTxs := b.filterOutSequencerTransactions(normalTxs)
 	orderedTxs = append(orderedTxs, filteredNormalTxs...)
 
-	log.Info("[SSV] Block transaction order finalized",
-		"clearTxs", func() int {
-			if b.GetPendingClearTx() != nil {
-				return 1
-			}
-			return 0
-		}(),
-		"putInboxTxs", len(putInboxTxs),
-		"originalTxs", len(originalTxs),
-		"normalTxs", len(filteredNormalTxs),
-		"totalOrdered", len(orderedTxs),
-	)
+	log.Info("[SSV] Built cross-chain block",
+		"clear", clearCount,
+		"putInbox", len(putInboxTxs),
+		"original", len(originalTxs),
+		"normal", len(filteredNormalTxs),
+		"total", len(orderedTxs))
 
 	return orderedTxs, nil
 }
@@ -1506,64 +1547,73 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(
 	block *types.Block,
 	success, simulation bool,
 ) error {
-	if !success || block == nil {
-		log.Warn("[SSV] Block building failed", "success", success, "hasBlock", block != nil)
-		return nil
-	}
-	if simulation {
+	if !success || block == nil || simulation {
 		return nil
 	}
 
-	// Store the block instead of sending immediately - wait for RequestSeal per SBCP protocol
-	slot := uint64(0)
-	if b.coordinator != nil {
-		slot = b.coordinator.GetCurrentSlot()
+	if b.coordinator == nil {
+		log.Info("[SSV] Block completed - non-SBCP mode", "blockNumber", block.NumberU64())
+		return b.handleSubmissionBlock(ctx, block, 0)
 	}
 
+	currentState := b.coordinator.GetState()
+	slot := b.coordinator.GetCurrentSlot()
+
+	log.Info("[SSV] Block building completed",
+		"state", currentState.String(),
+		"slot", slot,
+		"blockNumber", block.NumberU64(),
+		"txs", len(block.Transactions()))
+
+	switch currentState {
+	case sequencer.StateBuildingFree, sequencer.StateBuildingLocked:
+		log.Info("[SSV] Coordination block completed - not storing")
+		return nil
+	case sequencer.StateSubmission:
+		log.Info("[SSV] Submission block completed - storing and sending")
+		return b.handleSubmissionBlock(ctx, block, slot)
+	default:
+		log.Info("[SSV] Default block completed")
+		return nil
+	}
+}
+
+// handleSubmissionBlock handles the final block containing all cross-chain transactions
+// SSV
+func (b *EthAPIBackend) handleSubmissionBlock(ctx context.Context, block *types.Block, slot uint64) error {
 	b.pendingBlockMutex.Lock()
-	// Only store block if we don't already have one for this slot AND all SBCP simulations are complete
-	if b.pendingBlock == nil || b.pendingBlockSlot != slot {
-		// Check if we have active SCP instances that might still be pooling transactions
-		if b.coordinator != nil {
-			activeSCP := b.coordinator.GetActiveSCPInstanceCount()
-			if activeSCP > 0 {
-				log.Info("[SSV] Delaying block storage - active SCP instances still running",
-					"slot", slot,
-					"activeSCP", activeSCP,
-					"blockNumber", block.NumberU64())
-				b.pendingBlockMutex.Unlock()
-				return nil
-			}
-		}
+	defer b.pendingBlockMutex.Unlock()
 
-		b.pendingBlock = block
-		b.pendingBlockSlot = slot
-
-		log.Info("[SSV] Block building completed, stored for RequestSeal",
-			"slot", slot,
-			"blockNumber", block.NumberU64(),
-			"blockHash", block.Hash().Hex())
-		log.Info("[SSV] Block stored, keeping transactions available for atomic inclusion")
-
-		// If we're in submission state, immediately send the block and clear transactions
-		if b.coordinator != nil {
-			currentState := b.coordinator.GetState()
-			if currentState == sequencer.StateSubmission {
-				log.Info("[SSV] Block built in submission state - sending immediately", "slot", slot)
-				go func() {
-					if err := b.sendStoredL2Block(context.Background()); err != nil {
-						log.Error("[SSV] Failed to send submission state block", "err", err, "slot", slot)
-					}
-				}()
-			}
-		}
-	} else {
-		log.Info("[SSV] Block already stored for slot, ignoring duplicate build",
-			"slot", slot,
-			"existingBlock", b.pendingBlock.Hash().Hex(),
-			"newBlock", block.Hash().Hex())
+	if b.pendingBlock != nil && b.pendingBlockSlot == slot {
+		log.Debug("[SSV] Submission block already stored", "slot", slot)
+		return nil
 	}
-	b.pendingBlockMutex.Unlock()
+
+	if b.coordinator != nil && b.coordinator.GetActiveSCPInstanceCount() > 0 {
+		log.Info("[SSV] Delaying submission block - active SCP instances",
+			"activeSCP", b.coordinator.GetActiveSCPInstanceCount())
+		return nil
+	}
+
+	log.Info("[SSV] Storing submission block",
+		"slot", slot,
+		"blockNumber", block.NumberU64(),
+		"txs", len(block.Transactions()))
+
+	b.pendingBlock = block
+	b.pendingBlockSlot = slot
+
+	if b.coordinator != nil && b.coordinator.GetState() == sequencer.StateSubmission {
+		log.Info("[SSV] Sending submission block to SP", "slot", slot)
+		go func() {
+			if err := b.sendStoredL2Block(context.Background()); err != nil {
+				log.Error("[SSV] Failed to send submission block", "err", err, "slot", slot)
+			} else {
+				log.Info("[SSV] Submission block sent successfully", "slot", slot)
+				b.clearAllSequencerTransactions()
+			}
+		}()
+	}
 
 	return nil
 }
