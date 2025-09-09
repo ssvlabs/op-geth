@@ -748,7 +748,7 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 		// Ask backend for sequencer-managed txs appropriate for the current SBCP state.
 		// We pass no normal txs here; backend returns ONLY sequencer txs when applicable
 		// (e.g., during Submission), and none during Building-*.
-		orderedSequencerTxs, err := backend.GetOrderedTransactionsForBlock(env.rpcCtx, nil)
+		orderedSequencerTxs, err := backend.GetOrderedTransactionsForBlock(env.rpcCtx)
 		if err != nil {
 			log.Warn("[SSV] Failed to get backend-ordered sequencer txs", "err", err)
 		}
