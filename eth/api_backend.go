@@ -1958,7 +1958,7 @@ func (b *EthAPIBackend) NotifyRequestSeal(requestSeal *rollupv1.RequestSeal) err
 			log.Error("[SSV] Failed to send stored L2Block after RequestSeal", "err", err, "slot", requestSeal.Slot)
 		}
 	} else {
-		log.Warn("[SSV] RequestSeal received but no block stored", "slot", requestSeal.Slot)
+		log.Info("[SSV] RequestSeal received with no stored block yet (will build now)", "slot", requestSeal.Slot)
 	}
 
 	// proactively stage a clear() transaction to help sealing,

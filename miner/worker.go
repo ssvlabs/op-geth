@@ -743,148 +743,101 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 		}
 	}
 
-    // SSV: Get ordered transactions from backend if available
-    if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
-        // Ask backend for sequencer-managed txs appropriate for the current SBCP state.
-        // We pass no normal txs here; backend returns ONLY sequencer txs when applicable
-        // (e.g., during Submission), and none during Building-*.
-        orderedSequencerTxs, err := backend.GetOrderedTransactionsForBlock(env.rpcCtx, nil)
-        if err != nil {
-            log.Warn("[SSV] Failed to get backend-ordered sequencer txs", "err", err)
-        }
+	// SSV: Get ordered transactions from backend if available
+	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
+		// Ask backend for sequencer-managed txs appropriate for the current SBCP state.
+		// We pass no normal txs here; backend returns ONLY sequencer txs when applicable
+		// (e.g., during Submission), and none during Building-*.
+		orderedSequencerTxs, err := backend.GetOrderedTransactionsForBlock(env.rpcCtx, nil)
+		if err != nil {
+			log.Warn("[SSV] Failed to get backend-ordered sequencer txs", "err", err)
+		}
 
-        // Build a skip set to exclude sequencer txs from the normal tx pools
-        skip := make(map[common.Hash]struct{}, 0)
-        if len(orderedSequencerTxs) > 0 {
-            // Submission state: skip exactly what backend asked us to include via sequencer path
-            for _, tx := range orderedSequencerTxs {
-                skip[tx.Hash()] = struct{}{}
-            }
-        } else {
-            // Building-* states: skip ALL pending sequencer-managed txs (to avoid premature inclusion)
-            if c := backend.GetPendingClearTx(); c != nil {
-                skip[c.Hash()] = struct{}{}
-            }
-            for _, tx := range backend.GetPendingPutInboxTxs() {
-                skip[tx.Hash()] = struct{}{}
-            }
-            for _, tx := range backend.GetPendingOriginalTxs() {
-                skip[tx.Hash()] = struct{}{}
-            }
-        }
+		// Build a skip set to exclude sequencer txs from the normal tx pools
+		skip := make(map[common.Hash]struct{}, 0)
+		if len(orderedSequencerTxs) > 0 {
+			// Submission state: skip exactly what backend asked us to include via sequencer path
+			for _, tx := range orderedSequencerTxs {
+				skip[tx.Hash()] = struct{}{}
+			}
+		} else {
+			// Building-* states: skip ALL pending sequencer-managed txs (to avoid premature inclusion)
+			if c := backend.GetPendingClearTx(); c != nil {
+				skip[c.Hash()] = struct{}{}
+			}
+			for _, tx := range backend.GetPendingPutInboxTxs() {
+				skip[tx.Hash()] = struct{}{}
+			}
+			for _, tx := range backend.GetPendingOriginalTxs() {
+				skip[tx.Hash()] = struct{}{}
+			}
+		}
 
-        // Commit backend-ordered sequencer txs first (only in Submission)
-        sequencerTxCount := 0
-        for _, tx := range orderedSequencerTxs {
-            if env.gasPool.Gas() < params.TxGas {
-                log.Error("[SSV] Not enough gas for sequencer transactions", "have", env.gasPool.Gas(), "want", params.TxGas)
-                break
-            }
-            env.state.SetTxContext(tx.Hash(), env.tcount)
-            log.Info("Commit tx", "tx", tx.Hash().String())
-            if err := miner.commitTransaction(env, tx); err != nil {
-                log.Warn("[SSV] Failed to commit sequencer transaction", "hash", tx.Hash(), "err", err)
-                continue
-            }
-            sequencerTxCount++
-        }
+		// Commit backend-ordered sequencer txs first (only in Submission)
+		sequencerTxCount := 0
+		for _, tx := range orderedSequencerTxs {
+			if env.gasPool.Gas() < params.TxGas {
+				log.Error("[SSV] Not enough gas for sequencer transactions", "have", env.gasPool.Gas(), "want", params.TxGas)
+				break
+			}
+			env.state.SetTxContext(tx.Hash(), env.tcount)
+			log.Info("Commit tx", "tx", tx.Hash().String())
+			if err := miner.commitTransaction(env, tx); err != nil {
+				log.Warn("[SSV] Failed to commit sequencer transaction", "hash", tx.Hash(), "err", err)
+				continue
+			}
+			sequencerTxCount++
+		}
 
-        // Filter sequencer-managed txs out of account-based pools to avoid premature or double inclusion
-        if len(skip) > 0 {
-            filterAccountTxs := func(m map[common.Address][]*txpool.LazyTransaction) {
-                for addr, txs := range m {
-                    out := txs[:0]
-                    for _, lazy := range txs {
-                        tx := lazy.Resolve()
-                        if tx == nil {
-                            continue
-                        }
-                        if _, isSequencer := skip[tx.Hash()]; !isSequencer {
-                            out = append(out, lazy)
-                        }
-                    }
-                    if len(out) == 0 {
-                        delete(m, addr)
-                    } else {
-                        m[addr] = out
-                    }
-                }
-            }
-            filterAccountTxs(prioPlainTxs)
-            filterAccountTxs(prioBlobTxs)
-            filterAccountTxs(normalPlainTxs)
-            filterAccountTxs(normalBlobTxs)
-        }
+		// Filter sequencer-managed txs out of account-based pools to avoid premature or double inclusion
+		if len(skip) > 0 {
+			filterAccountTxs := func(m map[common.Address][]*txpool.LazyTransaction) {
+				for addr, txs := range m {
+					out := txs[:0]
+					for _, lazy := range txs {
+						tx := lazy.Resolve()
+						if tx == nil {
+							continue
+						}
+						if _, isSequencer := skip[tx.Hash()]; !isSequencer {
+							out = append(out, lazy)
+						}
+					}
+					if len(out) == 0 {
+						delete(m, addr)
+					} else {
+						m[addr] = out
+					}
+				}
+			}
+			filterAccountTxs(prioPlainTxs)
+			filterAccountTxs(prioBlobTxs)
+			filterAccountTxs(normalPlainTxs)
+			filterAccountTxs(normalBlobTxs)
+		}
 
-        // PHASE 2: Process priority transactions (maintain per-account nonce ordering)
-        prioCount := miner.commitAccountBasedTransactions(interrupt, env, prioPlainTxs)
-        prioCount += miner.commitAccountBasedTransactions(interrupt, env, prioBlobTxs)
+		// PHASE 2: Process priority transactions (maintain per-account nonce ordering)
+		prioCount := miner.commitAccountBasedTransactions(interrupt, env, prioPlainTxs)
+		prioCount += miner.commitAccountBasedTransactions(interrupt, env, prioBlobTxs)
 
-        // PHASE 3: Process normal transactions (maintain per-account nonce ordering)
-        normalCount := miner.commitAccountBasedTransactions(interrupt, env, normalPlainTxs)
-        normalCount += miner.commitAccountBasedTransactions(interrupt, env, normalBlobTxs)
+		// PHASE 3: Process normal transactions (maintain per-account nonce ordering)
+		normalCount := miner.commitAccountBasedTransactions(interrupt, env, normalPlainTxs)
+		normalCount += miner.commitAccountBasedTransactions(interrupt, env, normalBlobTxs)
 
-        // Log if there is any sequencer tx
-        if sequencerTxCount > 0 {
-            log.Info("[SSV] Included sequencer transactions",
-                "sequencer", sequencerTxCount,
-                "priority", prioCount,
-                "normal", normalCount,
-                "total", sequencerTxCount+prioCount+normalCount)
-        }
-    } else {
-        log.Info("[SSV] Backend doesn't support sequencer ordering, falling back to normal")
-        return miner.fillTransactions(interrupt, env)
-    }
+		// Log if there is any sequencer tx
+		if sequencerTxCount > 0 {
+			log.Info("[SSV] Included sequencer transactions",
+				"sequencer", sequencerTxCount,
+				"priority", prioCount,
+				"normal", normalCount,
+				"total", sequencerTxCount+prioCount+normalCount)
+		}
+	} else {
+		log.Info("[SSV] Backend doesn't support sequencer ordering, falling back to normal")
+		return miner.fillTransactions(interrupt, env)
+	}
 
 	return nil
-}
-
-// getSequencerTransactions retrieves sequencer transactions in correct order
-// SSV
-func (miner *Miner) getSequencerTransactions(backend BackendWithSequencerTransactions) types.Transactions {
-	clearTx := backend.GetPendingClearTx()
-	putInboxTxs := backend.GetPendingPutInboxTxs()
-	originalTxs := backend.GetPendingOriginalTxs()
-
-	hasClear := clearTx != nil
-	hasPutInbox := len(putInboxTxs) > 0
-	hasOriginal := len(originalTxs) > 0
-
-	// If we have any sequencer transactions, warn about missing components
-	if hasClear || hasPutInbox || hasOriginal {
-		if !hasClear {
-			log.Warn("[SSV] Missing clear transaction - sequencer block may be incomplete")
-		}
-		if !hasPutInbox {
-			log.Warn("[SSV] Missing putInbox transactions - no cross-chain dependencies processed")
-		}
-		if !hasOriginal {
-			log.Warn("[SSV] Missing original transactions - no user transactions in sequencer block")
-		}
-	}
-
-	var sequencerTxs types.Transactions
-
-	// First: clear transaction
-	if hasClear {
-		sequencerTxs = append(sequencerTxs, clearTx)
-		log.Info("[SSV] Added clear transaction", "count", 1)
-	}
-
-	// Second: putInbox transactions
-	if hasPutInbox {
-		sequencerTxs = append(sequencerTxs, putInboxTxs...)
-		log.Info("[SSV] Added putInbox transactions", "count", len(putInboxTxs))
-	}
-
-	// Third: original user transactions
-	if hasOriginal {
-		sequencerTxs = append(sequencerTxs, originalTxs...)
-		log.Info("[SSV] Added original transactions", "count", len(originalTxs))
-	}
-
-	return sequencerTxs
 }
 
 // commitAccountBasedTransactions commits transactions while maintaining per-account nonce ordering
