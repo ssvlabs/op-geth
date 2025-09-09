@@ -88,10 +88,6 @@ type BackendWithSequencerTransactions interface {
 	// SSV
 	GetPendingOriginalTxs() []*types.Transaction
 
-	// ClearSequencerTransactionsAfterBlock clears all pending sequencer transactions after block creation
-	// SSV
-	ClearSequencerTransactionsAfterBlock()
-
 	// OnBlockBuildingStart is called when block building starts
 	// SSV
 	OnBlockBuildingStart(ctx context.Context) error

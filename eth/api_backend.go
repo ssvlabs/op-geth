@@ -1139,18 +1139,6 @@ func (b *EthAPIBackend) GetPendingPutInboxTxs() []*types.Transaction {
 	return result
 }
 
-// ClearSequencerTransactions clears all pending sequencer transactions (called after block creation).
-// SSV
-func (b *EthAPIBackend) ClearSequencerTransactions() {
-	b.sequencerTxMutex.Lock()
-	defer b.sequencerTxMutex.Unlock()
-
-	b.pendingClearTx = nil
-	b.pendingPutInboxTxs = b.pendingPutInboxTxs[:0] // Clear slice but keep capacity
-
-	log.Debug("[SSV] Cleared pending sequencer transactions")
-}
-
 // ClearSequencerTransactionsAfterBlock clears all pending sequencer transactions after block creation
 // SSV
 func (b *EthAPIBackend) ClearSequencerTransactionsAfterBlock() {
@@ -1246,12 +1234,6 @@ func (b *EthAPIBackend) prepareAllCrossChainTransactionsForSubmission(ctx contex
 		log.Info("[SSV] Created clear transaction", "txHash", clearTx.Hash().Hex())
 	}
 	return nil
-}
-
-// shouldCreateClearTx determines if we need a clear transaction
-// SSV
-func (b *EthAPIBackend) shouldCreateClearTx() bool {
-	return len(b.GetPendingOriginalTxs()) > 0
 }
 
 // createClearTransaction creates a transaction to clear the mailbox
@@ -1618,48 +1600,6 @@ func (b *EthAPIBackend) handleSubmissionBlock(ctx context.Context, block *types.
 	return nil
 }
 
-func (b *EthAPIBackend) BlockCallbackFn() func(ctx context.Context, block *types.Block, xtIDs []*rollupv1.XtID) error {
-	return func(ctx context.Context, block *types.Block, xtIDs []*rollupv1.XtID) error {
-
-		var buf bytes.Buffer
-		if err := block.EncodeRLP(&buf); err != nil {
-			return fmt.Errorf("failed to RLP encode block: %w", err)
-		}
-		blockData := buf.Bytes()
-
-		blockMsg := &rollupv1.Block{
-			ChainId:       b.ChainConfig().ChainID.Bytes(),
-			BlockData:     blockData,
-			IncludedXtIds: xtIDs,
-		}
-
-		spMsg := &rollupv1.Message{
-			SenderId: b.ChainConfig().ChainID.String(),
-			Payload: &rollupv1.Message_Block{
-				Block: blockMsg,
-			},
-		}
-
-		log.Info("[SSV] Sending block to shared publisher", "blockHash", block.Hash().Hex(), "xtIDs", len(xtIDs))
-
-		err := b.spClient.Send(ctx, spMsg)
-
-		if err != nil {
-			log.Error("[SSV] Failed to send block to shared publisher", "err", err, "blockHash", block.Hash().Hex())
-			return fmt.Errorf("failed to send block to shared publisher: %w", err)
-		}
-
-		log.Info(
-			"[SSV] Block sent to shared publisher successfully",
-			"blockHash",
-			block.Hash().Hex(),
-			"xtIDs",
-			len(xtIDs),
-		)
-		return nil
-	}
-}
-
 func (b *EthAPIBackend) GetPendingOriginalTxs() []*types.Transaction {
 	b.sequencerTxMutex.RLock()
 	defer b.sequencerTxMutex.RUnlock()
@@ -1924,7 +1864,6 @@ func (b *EthAPIBackend) SetSequencerCoordinator(coord sequencer.Coordinator, sp 
 	}
 }
 
-// MinerNotifier implementation (SBCP -> miner hooks)
 // SSV
 func (b *EthAPIBackend) NotifySlotStart(startSlot *rollupv1.StartSlot) error {
 	log.Info("[SSV] Notify miner: StartSlot", "slot", startSlot.Slot, "next_sb", startSlot.NextSuperblockNumber)
@@ -1981,6 +1920,7 @@ func (b *EthAPIBackend) NotifyRequestSeal(requestSeal *rollupv1.RequestSeal) err
 	return nil
 }
 
+// NotifyStateChange notifies the miner of sequencer state changes
 // SSV
 func (b *EthAPIBackend) NotifyStateChange(from, to sequencer.State, slot uint64) error {
 	log.Debug("[SSV] SBCP state change", "from", from.String(), "to", to.String(), "slot", slot)
