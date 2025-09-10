@@ -726,20 +726,6 @@ func (b *EthAPIBackend) StartCallbackFn(chainID *big.Int) spconsensus.StartFn {
 	}
 }
 
-// CIRCCallbackFn returns a function that triggers re-simulation when CIRC messages are received.
-// SSV
-func (b *EthAPIBackend) CIRCCallbackFn(chainID *big.Int) spconsensus.CIRCFn {
-	return func(ctx context.Context, xtID *rollupv1.XtID, circMessage *rollupv1.CIRCMessage) error {
-		log.Info("[SSV] CIRC message received via callback, triggering re-simulation for ACK detection",
-			"xtID", xtID.Hex(),
-			"sourceChain", new(big.Int).SetBytes(circMessage.SourceChain).String())
-
-		log.Info("[SSV] CIRC callback completed - main simulation loop will detect new messages", "xtID", xtID.Hex())
-
-		return nil
-	}
-}
-
 // VoteCallbackFn returns a function that can be used to send votes for cross-chain transactions.
 // SSV
 func (b *EthAPIBackend) VoteCallbackFn(chainID *big.Int) spconsensus.VoteFn {
@@ -1612,32 +1598,15 @@ func (b *EthAPIBackend) SetSequencerCoordinator(coord sequencer.Coordinator, sp 
 			chainID := b.ChainConfig().ChainID
 			b.coordinator.Consensus().SetStartCallback(b.StartCallbackFn(chainID))
 			b.coordinator.Consensus().SetVoteCallback(b.VoteCallbackFn(chainID))
-			b.coordinator.Consensus().SetCIRCCallback(b.CIRCCallbackFn(chainID))
 		}
 
 		// Register SBCP callbacks
 		b.coordinator.SetCallbacks(sequencer.CoordinatorCallbacks{
-			// For SBCP mode simulation during StartSC
 			SimulateAndVote: b.simulateXTRequestForSBCP,
-
-			OnVoteDecision: func(ctx context.Context, xtID *rollupv1.XtID, chainID string, vote bool) error {
-				log.Debug("[SSV] Vote decision", "xtID", xtID.Hex(), "vote", vote)
-				return nil
-			},
-
-			// Decisions are handled via consensus DecisionCallback above.
-			OnFinalDecision: nil,
 
 			OnBlockReady: func(ctx context.Context, block *rollupv1.L2Block, xtIDs []*rollupv1.XtID) error {
 				log.Info("[SSV] SBCP block ready", "slot", block.Slot, "xtIDs", len(xtIDs))
 				return nil
-			},
-
-			OnStateTransition: func(from, to sequencer.State, slot uint64, reason string) {
-				log.Info("[SSV] SBCP state transition", "from", from.String(), "to", to.String(), "slot", slot)
-				// Do not clear staged sequencer txs on generic Waiting transitions.
-				// They are cleared explicitly in OnBlockBuildingComplete once we know
-				// whether they were included.
 			},
 		})
 

@@ -568,7 +568,7 @@ func (n *Node) stopServices(running []Lifecycle) error {
 		_ = n.spClient.Disconnect(context.Background())
 	}
 	if n.coordinator != nil {
-		n.coordinator.Shutdown()
+		_ = n.coordinator.Stop(context.Background())
 	}
 
 	if len(failure.Services) > 0 {

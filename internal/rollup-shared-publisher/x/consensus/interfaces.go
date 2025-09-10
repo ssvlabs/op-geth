@@ -11,7 +11,7 @@ import (
 // Coordinator defines the consensus coordinator interface
 type Coordinator interface {
 	// Transaction lifecycle
-	StartTransaction(from string, xtReq *pb.XTRequest) error
+	StartTransaction(ctx context.Context, from string, xtReq *pb.XTRequest) error
 	RecordVote(xtID *pb.XtID, chainID string, vote bool) (DecisionState, error)
 	RecordDecision(xtID *pb.XtID, decision bool) error
 	GetTransactionState(xtID *pb.XtID) (DecisionState, error)
@@ -27,7 +27,6 @@ type Coordinator interface {
 	SetVoteCallback(fn VoteFn)
 	SetDecisionCallback(fn DecisionFn)
 	SetBlockCallback(fn BlockFn)
-	SetCIRCCallback(fn CIRCFn)
 
 	// OnBlockCommitted is called by the execution layer when a new L2 block is committed and available
 	// Implementations should gather committed xTs and trigger any registered BlockFn callback
@@ -37,14 +36,14 @@ type Coordinator interface {
 	OnL2BlockCommitted(ctx context.Context, block *pb.L2Block) error
 
 	// Lifecycle
-	Shutdown() error
+	Start(ctx context.Context) error
+	Stop(ctx context.Context) error
 }
 
 // Callback function types
 type StartFn func(ctx context.Context, from string, xtReq *pb.XTRequest) error
 type VoteFn func(ctx context.Context, xtID *pb.XtID, vote bool) error
 type DecisionFn func(ctx context.Context, xtID *pb.XtID, decision bool) error
-type CIRCFn func(ctx context.Context, xtID *pb.XtID, circMessage *pb.CIRCMessage) error
 
 // BlockFn sends a block plus committed xTs to the SP layer
 type BlockFn func(ctx context.Context, block *types.Block, xtIDs []*pb.XtID) error

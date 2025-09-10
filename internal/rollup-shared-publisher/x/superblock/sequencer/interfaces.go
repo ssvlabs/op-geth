@@ -16,10 +16,7 @@ type MinerNotifier interface {
 
 // CoordinatorCallbacks defines callback functions for cross-component communication
 type CoordinatorCallbacks struct {
-	OnVoteDecision    func(ctx context.Context, xtID *pb.XtID, chainID string, vote bool) error
-	OnFinalDecision   func(ctx context.Context, xtID *pb.XtID, decision bool) error
-	OnBlockReady      func(ctx context.Context, block *pb.L2Block, xtIDs []*pb.XtID) error
-	OnStateTransition func(from, to State, slot uint64, reason string)
+	OnBlockReady func(ctx context.Context, block *pb.L2Block, xtIDs []*pb.XtID) error
 
 	SendCIRC func(ctx context.Context, circ *pb.CIRCMessage) error
 	// SimulateAndVote runs local-chain simulation for the provided XT request
