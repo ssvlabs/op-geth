@@ -72,9 +72,11 @@ type BackendWithSequencerTransactions interface {
 	// SSV
 	PrepareSequencerTransactionsForBlock(ctx context.Context) error
 
-	// GetOrderedTransactionsForBlock returns transactions in the correct order for block inclusion
+	// GetOrderedTransactionsForBlock returns sequencer-managed transactions in the
+	// correct order for block inclusion. Normal mempool transactions are handled
+	// by the miner and must NOT be included here.
 	// SSV
-	GetOrderedTransactionsForBlock(ctx context.Context, normalTxs types.Transactions) (types.Transactions, error)
+	GetOrderedTransactionsForBlock(ctx context.Context) (types.Transactions, error)
 
 	// GetPendingClearTx returns the pending clear transaction, if any
 	// SSV
