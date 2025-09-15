@@ -771,6 +771,16 @@ func (sc *SequencerCoordinator) handleConsensusDecision(ctx context.Context, xtI
 		return err
 	}
 
+	// Clean up original transactions on abort to prevent orphaned txs in next blocks
+	if !decision && sc.callbacks.CleanupOriginalTransactions != nil {
+		if err := sc.callbacks.CleanupOriginalTransactions(ctx, xtID); err != nil {
+			sc.log.Error().Err(err).Str("xt_id", xtID.Hex()).Msg("Failed to cleanup original transactions")
+			// Don't return error - this is cleanup, continue with flow
+		} else {
+			sc.log.Info().Str("xt_id", xtID.Hex()).Msg("Cleaned up original transactions after abort")
+		}
+	}
+
 	// If we returned to Building-Free and have queued StartSCs, process the next one
 	if sc.stateMachine.GetCurrentState() == StateBuildingFree && len(sc.pendingStartSCs) > 0 {
 		next := sc.pendingStartSCs[0]

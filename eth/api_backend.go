@@ -1391,6 +1391,33 @@ func (b *EthAPIBackend) GetPendingOriginalTxs() []*types.Transaction {
 	return result
 }
 
+// CleanupOriginalTransactionsForXT removes original transactions from pending list
+// when SCP decision is abort (false). This prevents orphaned transactions
+// from being included in subsequent blocks.
+// SSV
+func (b *EthAPIBackend) CleanupOriginalTransactionsForXT(ctx context.Context, xtID *rollupv1.XtID) error {
+	b.sequencerTxMutex.Lock()
+	defer b.sequencerTxMutex.Unlock()
+
+	originalCount := len(b.pendingSequencerTxs)
+
+	if originalCount == 0 {
+		log.Debug("[SSV] No original transactions to cleanup",
+			"xt_id", xtID.Hex())
+		return nil
+	}
+
+	// For now, clear all original transactions as a safe approach
+	// TODO: Track per-XT original transactions for more precise cleanup
+	b.pendingSequencerTxs = nil
+
+	log.Info("[SSV] Cleaned up original transactions for aborted XT",
+		"xt_id", xtID.Hex(),
+		"removed_count", originalCount)
+
+	return nil
+}
+
 // reSimulateAfterMailboxPopulation re-simulates transactions after mailbox has been populated
 // SSV
 func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(
@@ -1602,7 +1629,8 @@ func (b *EthAPIBackend) SetSequencerCoordinator(coord sequencer.Coordinator, sp 
 
 		// Register SBCP callbacks
 		b.coordinator.SetCallbacks(sequencer.CoordinatorCallbacks{
-			SimulateAndVote: b.simulateXTRequestForSBCP,
+			SimulateAndVote:             b.simulateXTRequestForSBCP,
+			CleanupOriginalTransactions: b.CleanupOriginalTransactionsForXT,
 
 			OnBlockReady: func(ctx context.Context, block *rollupv1.L2Block, xtIDs []*rollupv1.XtID) error {
 				log.Info("[SSV] SBCP block ready", "slot", block.Slot, "xtIDs", len(xtIDs))
