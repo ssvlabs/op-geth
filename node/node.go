@@ -390,7 +390,7 @@ func generateClients(addrs string, authManager auth.Manager) (map[string]transpo
 		clientConfig := tcp.ClientConfig{
 			ServerAddr:      serverAddr,
 			ConnectTimeout:  10 * time.Second,
-			ReadTimeout:     30 * time.Second,
+			ReadTimeout:     0,
 			WriteTimeout:    30 * time.Second,
 			ReconnectDelay:  5 * time.Second,
 			MaxMessageSize:  10 * 1024 * 1024,
