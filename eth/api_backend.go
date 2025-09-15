@@ -1520,6 +1520,43 @@ func (b *EthAPIBackend) reSimulateTransaction(
         return false, err
     }
 
+    // Instrumentation: summarize mailbox ops and execution outcome for re-sim
+    {
+        addrs := b.GetMailboxAddresses()
+        var addrA, addrB common.Address
+        if len(addrs) > 0 {
+            addrA = addrs[0]
+        }
+        if len(addrs) > 1 {
+            addrB = addrs[1]
+        }
+        total := 0
+        reads := 0
+        writes := 0
+        selectors := make(map[string]int)
+        for _, op := range traceResult.Operations {
+            if (addrA != (common.Address{}) && op.Address == addrA) || (addrB != (common.Address{}) && op.Address == addrB) {
+                total++
+                if len(op.CallData) >= 4 {
+                    sel := fmt.Sprintf("0x%x", op.CallData[:4])
+                    selectors[sel]++
+                    if sel == "0xbd8b74e8" { reads++ }
+                    if sel == "0xa19ad3c7" { writes++ }
+                }
+            }
+        }
+        log.Info("[SSV][TRACE] Re-sim summary",
+            "txHash", tx.Hash().Hex(),
+            "xtID", xtID.Hex(),
+            "usedGas", traceResult.ExecutionResult.UsedGas,
+            "execErr", traceResult.ExecutionResult.Err,
+            "mailboxOps", total,
+            "reads", reads,
+            "writes", writes,
+            "selectors", selectors,
+        )
+    }
+
     // Instrumentation: summarize mailbox ops observed in re-sim
     {
         addrs := b.GetMailboxAddresses()
