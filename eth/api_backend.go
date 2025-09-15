@@ -2017,6 +2017,43 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 				continue
 			}
 
+			// Instrumentation: summarize mailbox ops and execution outcome in re-sim (post-putInbox)
+			{
+				addrs := b.GetMailboxAddresses()
+				var addrA, addrB common.Address
+				if len(addrs) > 0 {
+					addrA = addrs[0]
+				}
+				if len(addrs) > 1 {
+					addrB = addrs[1]
+				}
+				total := 0
+				reads := 0
+				writes := 0
+				selectors := make(map[string]int)
+				for _, op := range traceResult.Operations {
+					if (addrA != (common.Address{}) && op.Address == addrA) || (addrB != (common.Address{}) && op.Address == addrB) {
+						total++
+						if len(op.CallData) >= 4 {
+							sel := fmt.Sprintf("0x%x", op.CallData[:4])
+							selectors[sel]++
+							if sel == "0xbd8b74e8" { reads++ }
+							if sel == "0xa19ad3c7" { writes++ }
+						}
+					}
+				}
+				log.Info("[SSV][TRACE] Re-sim (post-putInbox) summary",
+					"txHash", state.Tx.Hash().Hex(),
+					"xtID", xtID.Hex(),
+					"usedGas", traceResult.ExecutionResult.UsedGas,
+					"execErr", traceResult.ExecutionResult.Err,
+					"mailboxOps", total,
+					"reads", reads,
+					"writes", writes,
+					"selectors", selectors,
+				)
+			}
+
 			newSimState, err := mailboxProcessor.AnalyzeTransaction(
 				traceResult,
 				allSentMsgs,
