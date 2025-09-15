@@ -1501,24 +1501,53 @@ func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(
 // reSimulateTransaction re-simulates a single transaction and checks for success
 // SSV
 func (b *EthAPIBackend) reSimulateTransaction(
-	ctx context.Context,
-	tx *types.Transaction,
-	blockNrOrHash rpc.BlockNumberOrHash,
-	xtID *rollupv1.XtID,
+    ctx context.Context,
+    tx *types.Transaction,
+    blockNrOrHash rpc.BlockNumberOrHash,
+    xtID *rollupv1.XtID,
 ) (bool, error) {
 	log.Debug("[SSV] Re-simulating transaction",
 		"txHash", tx.Hash().Hex(),
 		"xtID", xtID.Hex())
 
-	// Simulate with SSV tracing to detect mailbox interactions
-	traceResult, err := b.SimulateTransaction(ctx, tx, blockNrOrHash)
-	if err != nil {
-		log.Error("[SSV] Transaction simulation with trace failed",
-			"txHash", tx.Hash().Hex(),
-			"error", err,
-			"xtID", xtID.Hex())
-		return false, err
-	}
+    // Simulate with SSV tracing to detect mailbox interactions
+    traceResult, err := b.SimulateTransaction(ctx, tx, blockNrOrHash)
+    if err != nil {
+        log.Error("[SSV] Transaction simulation with trace failed",
+            "txHash", tx.Hash().Hex(),
+            "error", err,
+            "xtID", xtID.Hex())
+        return false, err
+    }
+
+    // Instrumentation: summarize mailbox ops observed in re-sim
+    {
+        addrs := b.GetMailboxAddresses()
+        addrA, addrB := addrs[0], addrs[1]
+        total := 0
+        reads := 0
+        writes := 0
+        selectors := make(map[string]int)
+        for _, op := range traceResult.Operations {
+            if op.Address == addrA || op.Address == addrB {
+                total++
+                if len(op.CallData) >= 4 {
+                    sel := fmt.Sprintf("0x%x", op.CallData[:4])
+                    selectors[sel]++
+                    if sel == "0xbd8b74e8" { reads++ }
+                    if sel == "0xa19ad3c7" { writes++ }
+                }
+            }
+        }
+        log.Info("[SSV][TRACE] Re-sim mailbox ops",
+            "txHash", tx.Hash().Hex(),
+            "count", total,
+            "reads", reads,
+            "writes", writes,
+            "selectors", selectors,
+            "xtID", xtID.Hex(),
+        )
+    }
 
 	// Check if execution was successful
 	if traceResult.ExecutionResult.Err != nil {
