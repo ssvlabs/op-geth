@@ -1550,6 +1550,7 @@ func (b *EthAPIBackend) reSimulateTransaction(
             "xtID", xtID.Hex(),
             "usedGas", traceResult.ExecutionResult.UsedGas,
             "execErr", traceResult.ExecutionResult.Err,
+            "revertData", fmt.Sprintf("0x%x", traceResult.ExecutionResult.Revert()),
             "mailboxOps", total,
             "reads", reads,
             "writes", writes,
@@ -1587,13 +1588,14 @@ func (b *EthAPIBackend) reSimulateTransaction(
     }
 
 	// Check if execution was successful
-	if traceResult.ExecutionResult.Err != nil {
-		log.Warn("[SSV] Transaction execution failed in re-simulation",
-			"txHash", tx.Hash().Hex(),
-			"executionError", traceResult.ExecutionResult.Err,
-			"xtID", xtID.Hex())
-		return false, nil
-	}
+    if traceResult.ExecutionResult.Err != nil {
+        log.Warn("[SSV] Transaction execution failed in re-simulation",
+            "txHash", tx.Hash().Hex(),
+            "executionError", traceResult.ExecutionResult.Err,
+            "revertData", fmt.Sprintf("0x%x", traceResult.ExecutionResult.Revert()),
+            "xtID", xtID.Hex())
+        return false, nil
+    }
 
 	// Validate that the transaction used reasonable gas (not failed silently)
 	if traceResult.ExecutionResult.UsedGas == 0 {
@@ -2042,16 +2044,17 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 						}
 					}
 				}
-				log.Info("[SSV][TRACE] Re-sim (post-putInbox) summary",
-					"txHash", state.Tx.Hash().Hex(),
-					"xtID", xtID.Hex(),
-					"usedGas", traceResult.ExecutionResult.UsedGas,
-					"execErr", traceResult.ExecutionResult.Err,
-					"mailboxOps", total,
-					"reads", reads,
-					"writes", writes,
-					"selectors", selectors,
-				)
+                log.Info("[SSV][TRACE] Re-sim (post-putInbox) summary",
+                    "txHash", state.Tx.Hash().Hex(),
+                    "xtID", xtID.Hex(),
+                    "usedGas", traceResult.ExecutionResult.UsedGas,
+                    "execErr", traceResult.ExecutionResult.Err,
+                    "revertData", fmt.Sprintf("0x%x", traceResult.ExecutionResult.Revert()),
+                    "mailboxOps", total,
+                    "reads", reads,
+                    "writes", writes,
+                    "selectors", selectors,
+                )
 			}
 
 			newSimState, err := mailboxProcessor.AnalyzeTransaction(
