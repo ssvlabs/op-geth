@@ -24,7 +24,8 @@ import (
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
-	"github.com/ethereum/go-ethereum/crypto"
+    "github.com/ethereum/go-ethereum/crypto"
+    internalethapi "github.com/ethereum/go-ethereum/internal/ethapi"
 	rollupv1 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
 
@@ -1697,9 +1698,9 @@ func (b *EthAPIBackend) waitForInboxVisibility(ctx context.Context, deps []Cross
             if err != nil {
                 return err
             }
-            args := ethapi.TransactionArgs{To: &mailboxAddr, Data: (*hexutil.Bytes)(&callData)}
+            args := internalethapi.TransactionArgs{To: &mailboxAddr, Data: (*hexutil.Bytes)(&callData)}
             // Read against the pending block so txpool effects are visible
-            res, err := ethapi.DoCall(ctx, b, args, rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber), nil, nil, 0, 0)
+            res, err := internalethapi.DoCall(ctx, b, args, rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber), nil, nil, 0, 0)
             if err != nil {
                 allVisible = false
                 continue
