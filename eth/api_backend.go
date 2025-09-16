@@ -2055,32 +2055,41 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	if len(allFulfilledDeps) > 0 {
 		log.Info("[SSV] Creating putInbox transactions for fulfilled dependencies", "count", len(allFulfilledDeps))
 
-		nonce, err := b.GetPoolNonce(ctx, sequencerAddr)
-		if err != nil {
-			return false, fmt.Errorf("failed to get nonce: %w", err)
-		}
+        nonce, err := b.GetPoolNonce(ctx, sequencerAddr)
+        if err != nil {
+            return false, fmt.Errorf("failed to get nonce: %w", err)
+        }
 
-		// Create clear transaction first
-		clearTx, err := b.createClearTransactionWithNonce(ctx, nonce)
-		if err != nil {
-			log.Error("[SSV] Failed to create clear transaction", "err", err)
-		} else {
-			b.SetPendingClearTx(clearTx)
-			log.Info("[SSV] Reserved clear transaction created", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce())
-		}
+        // Create clear transaction only once per slot/build. If one is already staged,
+        // reuse it and do not create another clear that could wipe previously staged inbox entries.
+        if b.GetPendingClearTx() == nil {
+            clearTx, err := b.createClearTransactionWithNonce(ctx, nonce)
+            if err != nil {
+                log.Error("[SSV] Failed to create clear transaction", "err", err)
+            } else {
+                b.SetPendingClearTx(clearTx)
+                log.Info("[SSV] Reserved clear transaction created", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce())
+                // advance nonce for subsequent putInbox txs
+                nonce++
+            }
+        } else {
+            // A clear is already pending for this block build; do not create another.
+            log.Info("[SSV] Reusing existing clear transaction for this slot/build", "nonce", b.GetPendingClearTx().Nonce(), "hash", b.GetPendingClearTx().Hash().Hex())
+            // Do not increment nonce here; GetPoolNonce already reflects the pending clear
+        }
 
 		// Create putInbox transactions
-		for _, dep := range allFulfilledDeps {
-			nonce++
-			putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, nonce)
-			if err != nil {
-				return false, fmt.Errorf("failed to create putInbox transaction: %w", err)
-			}
+        for _, dep := range allFulfilledDeps {
+            putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, nonce)
+            if err != nil {
+                return false, fmt.Errorf("failed to create putInbox transaction: %w", err)
+            }
 
-			if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
-				return false, fmt.Errorf("failed to submit putInbox transaction: %w", err)
-			}
-		}
+            if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
+                return false, fmt.Errorf("failed to submit putInbox transaction: %w", err)
+            }
+            nonce++
+        }
 
 		// Wait for putInbox transactions to be processed
 		if err := b.waitForPutInboxTransactionsToBeProcessed(); err != nil {
