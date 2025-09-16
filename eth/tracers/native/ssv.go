@@ -22,8 +22,8 @@ import (
 const RollupAChainID = 77777
 const RollupBChainID = 88888
 
-const RollupAMailBoxAddr = "0x2d3dd075BdFDb18FA3aD89CF6783e23556E4aAa9"
-const RollupBMailBoxAddr = "0xa3eECfA63f9cCEE84C28508Af13f12baecB51e86"
+const RollupAMailBoxAddr = "0xfc83487BA02a87Ec53669cdE81367C117872e157"
+const RollupBMailBoxAddr = "0x62678733dcD7ea6D5Db1Cf508157ea5F113e7E32"
 
 var ChainIDToMailbox = map[uint64]string{
 	RollupAChainID: RollupAMailBoxAddr,
@@ -130,39 +130,31 @@ func decodeTransactionInput(contractABIJSON string, input []byte) {
 }
 
 func (t *SSVTracer) OnEnter(depth int, typ byte, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
-    log.Debug("[SSV] OnEnter called", "depth", depth, "type", vm.OpCode(typ).String(), "from", from.Hex(), "to", to.Hex(), "gas", gas, "value", value)
+	log.Debug("[SSV] OnEnter called", "depth", depth, "type", vm.OpCode(typ).String(), "from", from.Hex(), "to", to.Hex(), "gas", gas, "value", value)
 
-    if t.interrupt.Load() {
-        return
-    }
+	if t.interrupt.Load() {
+		return
+	}
 
 	t.currentDepth = depth
 	t.currentFrom = from
 	t.currentTo = to
 
-    // Track calls to watched addresses, including internal calls
-    if t.watchedAddresses[to] {
-        //decodeTransactionInput(mailboxABI, input)
+	// Track calls to watched addresses, including internal calls
+	if t.watchedAddresses[to] {
+		//decodeTransactionInput(mailboxABI, input)
 
-        op := ssv.SSVOperation{
-            Type:     vm.OpCode(typ),
-            Address:  to,
-            From:     from,
-            CallData: common.CopyBytes(input),
-            Gas:      gas,
-        }
+		op := ssv.SSVOperation{
+			Type:     vm.OpCode(typ),
+			Address:  to,
+			From:     from,
+			CallData: common.CopyBytes(input),
+			Gas:      gas,
+		}
 
-        log.Debug("[SSV] Operation recorded")
-        t.operations = append(t.operations, op)
-
-        // Instrumentation: surface mailbox selector sightings to help debug parsing
-        if len(input) >= 4 {
-            sel := common.Bytes2Hex(input[:4])
-            log.Info("[SSV][TRACE] Mailbox call", "to", to.Hex(), "from", from.Hex(), "type", vm.OpCode(typ).String(), "selector", "0x"+sel, "depth", depth)
-        } else {
-            log.Info("[SSV][TRACE] Mailbox call (no selector)", "to", to.Hex(), "from", from.Hex(), "type", vm.OpCode(typ).String(), "inputLen", len(input), "depth", depth)
-        }
-    }
+		log.Debug("[SSV] Operation recorded")
+		t.operations = append(t.operations, op)
+	}
 }
 
 func (t *SSVTracer) OnExit(depth int, output []byte, gasUsed uint64, err error, reverted bool) {

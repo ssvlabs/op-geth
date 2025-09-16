@@ -390,7 +390,7 @@ func generateClients(addrs string, authManager auth.Manager) (map[string]transpo
 		clientConfig := tcp.ClientConfig{
 			ServerAddr:      serverAddr,
 			ConnectTimeout:  10 * time.Second,
-			ReadTimeout:     0,
+			ReadTimeout:     30 * time.Second,
 			WriteTimeout:    30 * time.Second,
 			ReconnectDelay:  5 * time.Second,
 			MaxMessageSize:  10 * 1024 * 1024,
@@ -568,7 +568,7 @@ func (n *Node) stopServices(running []Lifecycle) error {
 		_ = n.spClient.Disconnect(context.Background())
 	}
 	if n.coordinator != nil {
-		_ = n.coordinator.Stop(context.Background())
+		n.coordinator.Shutdown()
 	}
 
 	if len(failure.Services) > 0 {

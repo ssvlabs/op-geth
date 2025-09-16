@@ -3,16 +3,15 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/rand"
 	"fmt"
-	"log"
-	"math/big"
-	"os"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/ethclient"
 	rollupv1 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
+
+	"log"
+	"math/big"
+	"os"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -38,25 +37,6 @@ func (r *Rollup) GetChainID() *big.Int {
 
 type Config struct {
 	Rollups map[string]Rollup `yaml:"rollups"`
-}
-
-// generateUniqueSessionId creates a unique session ID using timestamp + random component
-func generateUniqueSessionId() *big.Int {
-	// Use current timestamp (seconds) as base
-	timestamp := time.Now().Unix()
-
-	// Add random component (0-999) to avoid collisions within the same second
-	randomBytes := make([]byte, 2)
-	rand.Read(randomBytes)
-	randomComponent := big.NewInt(0).SetBytes(randomBytes)
-	randomComponent.Mod(randomComponent, big.NewInt(1000))
-
-	// Combine: timestamp * 1000 + random
-	sessionId := big.NewInt(timestamp)
-	sessionId.Mul(sessionId, big.NewInt(1000))
-	sessionId.Add(sessionId, randomComponent)
-
-	return sessionId
 }
 
 func main() {
@@ -86,20 +66,19 @@ func main() {
 	publicKeyECDSA, _ = publicKey.(*ecdsa.PublicKey)
 	addressB := crypto.PubkeyToAddress(*publicKeyECDSA)
 
-	// Create ping-pong parameters with unique session ID
-	sessionId := generateUniqueSessionId()
+	// Create ping-pong parameters
+	sessionId := big.NewInt(12345)
 	pingData := []byte("hello from rollup A")
 	pongData := []byte("hello from rollup B")
 
 	// Create a ping transaction (A -> B)
 	pingParams := PingPongParams{
-		ExecChainID: chainAId,
-		ChainSrc:    chainAId,
-		ChainDest:   chainBId,
-		Sender:      addressA,
-		Receiver:    addressB,
-		SessionId:   sessionId,
-		Data:        pingData,
+		ChainSrc:  chainAId,
+		ChainDest: chainBId,
+		Sender:    addressA,
+		Receiver:  addressB,
+		SessionId: sessionId,
+		Data:      pingData,
 	}
 
 	nonceA, err := getNonceFor(rollupA.RPC, addressA)
@@ -119,13 +98,12 @@ func main() {
 
 	// Create a pong transaction (B -> A)
 	pongParams := PingPongParams{
-		ExecChainID: chainBId,
-		ChainSrc:    chainAId,
-		ChainDest:   chainBId,
-		Sender:      addressB,
-		Receiver:    addressA,
-		SessionId:   sessionId,
-		Data:        pongData,
+		ChainSrc:  chainAId,
+		ChainDest: chainBId,
+		Sender:    addressB,
+		Receiver:  addressA,
+		SessionId: sessionId,
+		Data:      pongData,
 	}
 
 	nonceB, err := getNonceFor(rollupB.RPC, addressB)

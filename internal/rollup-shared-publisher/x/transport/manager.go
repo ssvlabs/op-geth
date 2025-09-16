@@ -147,17 +147,23 @@ func (m *Manager) StopHealthMonitoring() {
 // checkHealth monitors connection health and removes stale connections
 func (m *Manager) checkHealth() {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-
+	staleConns := make([]string, 0)
 	now := time.Now()
+
 	for id, conn := range m.connections {
 		info := conn.Info()
-		if since := now.Sub(info.LastSeen); since > 30*time.Minute {
-			m.log.Debug().
-				Str("conn_id", id).
-				Str("remote", info.RemoteAddr).
-				Dur("idle_for", since).
-				Msg("Connection idle but preserved (no stale eviction)")
+		if now.Sub(info.LastSeen) > 5*time.Minute {
+			staleConns = append(staleConns, id)
+		}
+	}
+	m.mu.RUnlock()
+
+	// Remove stale connections
+	for _, id := range staleConns {
+		if conn, exists := m.Get(id); exists {
+			conn.Close()
+			m.Remove(id)
+			m.log.Warn().Str("conn_id", id).Msg("Removed stale connection")
 		}
 	}
 }

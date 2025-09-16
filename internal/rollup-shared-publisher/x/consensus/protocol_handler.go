@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 	"github.com/rs/zerolog"
+	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 )
 
 // ProtocolHandler defines the interface for SCP protocol message handling
@@ -49,7 +49,7 @@ func (h *protocolHandler) Handle(ctx context.Context, from string, msg *pb.Messa
 	switch msgType {
 	case MsgXTRequest:
 		xtReq := msg.GetXtRequest()
-		return h.coordinator.StartTransaction(ctx, from, xtReq)
+		return h.coordinator.StartTransaction(from, xtReq)
 
 	case MsgVote:
 		vote := msg.GetVote()

@@ -24,8 +24,7 @@ import (
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
-    "github.com/ethereum/go-ethereum/crypto"
-    internalethapi "github.com/ethereum/go-ethereum/internal/ethapi"
+	"github.com/ethereum/go-ethereum/crypto"
 	rollupv1 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
 
@@ -727,6 +726,20 @@ func (b *EthAPIBackend) StartCallbackFn(chainID *big.Int) spconsensus.StartFn {
 	}
 }
 
+// CIRCCallbackFn returns a function that triggers re-simulation when CIRC messages are received.
+// SSV
+func (b *EthAPIBackend) CIRCCallbackFn(chainID *big.Int) spconsensus.CIRCFn {
+	return func(ctx context.Context, xtID *rollupv1.XtID, circMessage *rollupv1.CIRCMessage) error {
+		log.Info("[SSV] CIRC message received via callback, triggering re-simulation for ACK detection",
+			"xtID", xtID.Hex(),
+			"sourceChain", new(big.Int).SetBytes(circMessage.SourceChain).String())
+
+		log.Info("[SSV] CIRC callback completed - main simulation loop will detect new messages", "xtID", xtID.Hex())
+
+		return nil
+	}
+}
+
 // VoteCallbackFn returns a function that can be used to send votes for cross-chain transactions.
 // SSV
 func (b *EthAPIBackend) VoteCallbackFn(chainID *big.Int) spconsensus.VoteFn {
@@ -1392,33 +1405,6 @@ func (b *EthAPIBackend) GetPendingOriginalTxs() []*types.Transaction {
 	return result
 }
 
-// CleanupOriginalTransactionsForXT removes original transactions from pending list
-// when SCP decision is abort (false). This prevents orphaned transactions
-// from being included in subsequent blocks.
-// SSV
-func (b *EthAPIBackend) CleanupOriginalTransactionsForXT(ctx context.Context, xtID *rollupv1.XtID) error {
-	b.sequencerTxMutex.Lock()
-	defer b.sequencerTxMutex.Unlock()
-
-	originalCount := len(b.pendingSequencerTxs)
-
-	if originalCount == 0 {
-		log.Debug("[SSV] No original transactions to cleanup",
-			"xt_id", xtID.Hex())
-		return nil
-	}
-
-	// For now, clear all original transactions as a safe approach
-	// TODO: Track per-XT original transactions for more precise cleanup
-	b.pendingSequencerTxs = nil
-
-	log.Info("[SSV] Cleaned up original transactions for aborted XT",
-		"xt_id", xtID.Hex(),
-		"removed_count", originalCount)
-
-	return nil
-}
-
 // reSimulateAfterMailboxPopulation re-simulates transactions after mailbox has been populated
 // SSV
 func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(
@@ -1502,101 +1488,33 @@ func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(
 // reSimulateTransaction re-simulates a single transaction and checks for success
 // SSV
 func (b *EthAPIBackend) reSimulateTransaction(
-    ctx context.Context,
-    tx *types.Transaction,
-    blockNrOrHash rpc.BlockNumberOrHash,
-    xtID *rollupv1.XtID,
+	ctx context.Context,
+	tx *types.Transaction,
+	blockNrOrHash rpc.BlockNumberOrHash,
+	xtID *rollupv1.XtID,
 ) (bool, error) {
 	log.Debug("[SSV] Re-simulating transaction",
 		"txHash", tx.Hash().Hex(),
 		"xtID", xtID.Hex())
 
-    // Simulate with SSV tracing to detect mailbox interactions
-    traceResult, err := b.SimulateTransaction(ctx, tx, blockNrOrHash)
-    if err != nil {
-        log.Error("[SSV] Transaction simulation with trace failed",
-            "txHash", tx.Hash().Hex(),
-            "error", err,
-            "xtID", xtID.Hex())
-        return false, err
-    }
-
-    // Instrumentation: summarize mailbox ops and execution outcome for re-sim
-    {
-        addrs := b.GetMailboxAddresses()
-        var addrA, addrB common.Address
-        if len(addrs) > 0 {
-            addrA = addrs[0]
-        }
-        if len(addrs) > 1 {
-            addrB = addrs[1]
-        }
-        total := 0
-        reads := 0
-        writes := 0
-        selectors := make(map[string]int)
-        for _, op := range traceResult.Operations {
-            if (addrA != (common.Address{}) && op.Address == addrA) || (addrB != (common.Address{}) && op.Address == addrB) {
-                total++
-                if len(op.CallData) >= 4 {
-                    sel := fmt.Sprintf("0x%x", op.CallData[:4])
-                    selectors[sel]++
-                    if sel == "0xbd8b74e8" { reads++ }
-                    if sel == "0xa19ad3c7" { writes++ }
-                }
-            }
-        }
-        log.Info("[SSV][TRACE] Re-sim summary",
-            "txHash", tx.Hash().Hex(),
-            "xtID", xtID.Hex(),
-            "usedGas", traceResult.ExecutionResult.UsedGas,
-            "execErr", traceResult.ExecutionResult.Err,
-            "revertData", fmt.Sprintf("0x%x", traceResult.ExecutionResult.Revert()),
-            "mailboxOps", total,
-            "reads", reads,
-            "writes", writes,
-            "selectors", selectors,
-        )
-    }
-
-    // Instrumentation: summarize mailbox ops observed in re-sim
-    {
-        addrs := b.GetMailboxAddresses()
-        addrA, addrB := addrs[0], addrs[1]
-        total := 0
-        reads := 0
-        writes := 0
-        selectors := make(map[string]int)
-        for _, op := range traceResult.Operations {
-            if op.Address == addrA || op.Address == addrB {
-                total++
-                if len(op.CallData) >= 4 {
-                    sel := fmt.Sprintf("0x%x", op.CallData[:4])
-                    selectors[sel]++
-                    if sel == "0xbd8b74e8" { reads++ }
-                    if sel == "0xa19ad3c7" { writes++ }
-                }
-            }
-        }
-        log.Info("[SSV][TRACE] Re-sim mailbox ops",
-            "txHash", tx.Hash().Hex(),
-            "count", total,
-            "reads", reads,
-            "writes", writes,
-            "selectors", selectors,
-            "xtID", xtID.Hex(),
-        )
-    }
+	// Simulate with SSV tracing to detect mailbox interactions
+	traceResult, err := b.SimulateTransaction(ctx, tx, blockNrOrHash)
+	if err != nil {
+		log.Error("[SSV] Transaction simulation with trace failed",
+			"txHash", tx.Hash().Hex(),
+			"error", err,
+			"xtID", xtID.Hex())
+		return false, err
+	}
 
 	// Check if execution was successful
-    if traceResult.ExecutionResult.Err != nil {
-        log.Warn("[SSV] Transaction execution failed in re-simulation",
-            "txHash", tx.Hash().Hex(),
-            "executionError", traceResult.ExecutionResult.Err,
-            "revertData", fmt.Sprintf("0x%x", traceResult.ExecutionResult.Revert()),
-            "xtID", xtID.Hex())
-        return false, nil
-    }
+	if traceResult.ExecutionResult.Err != nil {
+		log.Warn("[SSV] Transaction execution failed in re-simulation",
+			"txHash", tx.Hash().Hex(),
+			"executionError", traceResult.ExecutionResult.Err,
+			"xtID", xtID.Hex())
+		return false, nil
+	}
 
 	// Validate that the transaction used reasonable gas (not failed silently)
 	if traceResult.ExecutionResult.UsedGas == 0 {
@@ -1658,84 +1576,6 @@ func (b *EthAPIBackend) waitForPutInboxTransactionsToBeProcessed() error {
 	return nil
 }
 
-// waitForInboxVisibility waits until mailbox.read for each fulfilled dependency returns non-empty
-// in the PENDING state. This guards re-simulation against a race where the txpool has the
-// putInbox transaction, but the pending-state snapshot used by the EVM has not reflected it yet.
-// SSV
-func (b *EthAPIBackend) waitForInboxVisibility(ctx context.Context, deps []CrossRollupDependency) error {
-    if len(deps) == 0 {
-        return nil
-    }
-    // Resolve local mailbox address once
-    mailboxAddr := b.GetMailboxAddressFromChainID(b.ChainConfig().ChainID.Uint64())
-    if (mailboxAddr == common.Address{}) {
-        return fmt.Errorf("no mailbox address configured for chain %d", b.ChainConfig().ChainID)
-    }
-    parsedABI, err := abi.JSON(strings.NewReader(mailboxABI))
-    if err != nil {
-        return err
-    }
-
-    deadline := time.Now().Add(3 * time.Second)
-    // Track which deps became visible
-    visible := make(map[int]bool)
-
-    for time.Now().Before(deadline) {
-        allVisible := true
-        for i, dep := range deps {
-            if visible[i] {
-                continue
-            }
-            // Build calldata for mailbox.read(chainSrc, chainDest, receiver, sessionId, label)
-            callData, err := parsedABI.Pack(
-                "read",
-                new(big.Int).SetUint64(dep.SourceChainID),
-                new(big.Int).SetUint64(dep.DestChainID),
-                dep.Receiver,
-                dep.SessionID,
-                dep.Label,
-            )
-            if err != nil {
-                return err
-            }
-            args := internalethapi.TransactionArgs{To: &mailboxAddr, Data: (*hexutil.Bytes)(&callData)}
-            // Read against the pending block so txpool effects are visible
-            res, err := internalethapi.DoCall(ctx, b, args, rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber), nil, nil, 0, 0)
-            if err != nil {
-                allVisible = false
-                continue
-            }
-            if out := res.Return(); len(out) > 0 {
-                visible[i] = true
-                log.Info("[SSV] Inbox entry visible in pending state",
-                    "src", dep.SourceChainID,
-                    "dest", dep.DestChainID,
-                    "sessionId", dep.SessionID,
-                    "label", string(dep.Label),
-                )
-            } else {
-                allVisible = false
-            }
-        }
-        if allVisible {
-            return nil
-        }
-        time.Sleep(150 * time.Millisecond)
-    }
-    // Log which entries are still missing
-    for i, dep := range deps {
-        if !visible[i] {
-            log.Warn("[SSV] Inbox entry still not visible after wait",
-                "src", dep.SourceChainID,
-                "dest", dep.DestChainID,
-                "sessionId", dep.SessionID,
-                "label", string(dep.Label),
-            )
-        }
-    }
-    return fmt.Errorf("timeout waiting for inbox visibility in pending state for %d deps", len(deps))
-}
-
 func (b *EthAPIBackend) poolPayloadTx(tx *types.Transaction) {
 	b.sequencerTxMutex.Lock()
 	defer b.sequencerTxMutex.Unlock()
@@ -1772,16 +1612,32 @@ func (b *EthAPIBackend) SetSequencerCoordinator(coord sequencer.Coordinator, sp 
 			chainID := b.ChainConfig().ChainID
 			b.coordinator.Consensus().SetStartCallback(b.StartCallbackFn(chainID))
 			b.coordinator.Consensus().SetVoteCallback(b.VoteCallbackFn(chainID))
+			b.coordinator.Consensus().SetCIRCCallback(b.CIRCCallbackFn(chainID))
 		}
 
 		// Register SBCP callbacks
 		b.coordinator.SetCallbacks(sequencer.CoordinatorCallbacks{
-			SimulateAndVote:             b.simulateXTRequestForSBCP,
-			CleanupOriginalTransactions: b.CleanupOriginalTransactionsForXT,
+			// For SBCP mode simulation during StartSC
+			SimulateAndVote: b.simulateXTRequestForSBCP,
+
+			OnVoteDecision: func(ctx context.Context, xtID *rollupv1.XtID, chainID string, vote bool) error {
+				log.Debug("[SSV] Vote decision", "xtID", xtID.Hex(), "vote", vote)
+				return nil
+			},
+
+			// Decisions are handled via consensus DecisionCallback above.
+			OnFinalDecision: nil,
 
 			OnBlockReady: func(ctx context.Context, block *rollupv1.L2Block, xtIDs []*rollupv1.XtID) error {
 				log.Info("[SSV] SBCP block ready", "slot", block.Slot, "xtIDs", len(xtIDs))
 				return nil
+			},
+
+			OnStateTransition: func(from, to sequencer.State, slot uint64, reason string) {
+				log.Info("[SSV] SBCP state transition", "from", from.String(), "to", to.String(), "slot", slot)
+				// Do not clear staged sequencer txs on generic Waiting transitions.
+				// They are cleared explicitly in OnBlockBuildingComplete once we know
+				// whether they were included.
 			},
 		})
 
@@ -2055,50 +1911,36 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	if len(allFulfilledDeps) > 0 {
 		log.Info("[SSV] Creating putInbox transactions for fulfilled dependencies", "count", len(allFulfilledDeps))
 
-        nonce, err := b.GetPoolNonce(ctx, sequencerAddr)
-        if err != nil {
-            return false, fmt.Errorf("failed to get nonce: %w", err)
-        }
+		nonce, err := b.GetPoolNonce(ctx, sequencerAddr)
+		if err != nil {
+			return false, fmt.Errorf("failed to get nonce: %w", err)
+		}
 
-        // Create clear transaction only once per slot/build. If one is already staged,
-        // reuse it and do not create another clear that could wipe previously staged inbox entries.
-        if b.GetPendingClearTx() == nil {
-            clearTx, err := b.createClearTransactionWithNonce(ctx, nonce)
-            if err != nil {
-                log.Error("[SSV] Failed to create clear transaction", "err", err)
-            } else {
-                b.SetPendingClearTx(clearTx)
-                log.Info("[SSV] Reserved clear transaction created", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce())
-                // advance nonce for subsequent putInbox txs
-                nonce++
-            }
-        } else {
-            // A clear is already pending for this block build; do not create another.
-            log.Info("[SSV] Reusing existing clear transaction for this slot/build", "nonce", b.GetPendingClearTx().Nonce(), "hash", b.GetPendingClearTx().Hash().Hex())
-            // Do not increment nonce here; GetPoolNonce already reflects the pending clear
-        }
+		// Create clear transaction first
+		clearTx, err := b.createClearTransactionWithNonce(ctx, nonce)
+		if err != nil {
+			log.Error("[SSV] Failed to create clear transaction", "err", err)
+		} else {
+			b.SetPendingClearTx(clearTx)
+			log.Info("[SSV] Reserved clear transaction created", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce())
+		}
 
 		// Create putInbox transactions
-        for _, dep := range allFulfilledDeps {
-            putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, nonce)
-            if err != nil {
-                return false, fmt.Errorf("failed to create putInbox transaction: %w", err)
-            }
+		for _, dep := range allFulfilledDeps {
+			nonce++
+			putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, nonce)
+			if err != nil {
+				return false, fmt.Errorf("failed to create putInbox transaction: %w", err)
+			}
 
-            if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
-                return false, fmt.Errorf("failed to submit putInbox transaction: %w", err)
-            }
-            nonce++
-        }
+			if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
+				return false, fmt.Errorf("failed to submit putInbox transaction: %w", err)
+			}
+		}
 
 		// Wait for putInbox transactions to be processed
 		if err := b.waitForPutInboxTransactionsToBeProcessed(); err != nil {
 			return false, fmt.Errorf("failed to wait for putInbox transactions: %w", err)
-		}
-
-		// Extra guard: ensure inbox entries are visible in pending state before re-simulating.
-		if err := b.waitForInboxVisibility(ctx, allFulfilledDeps); err != nil {
-			log.Warn("[SSV] Pending-state inbox visibility not confirmed (continuing)", "err", err)
 		}
 
 		// Re-simulate after putInbox to detect ACK messages that need to be sent
@@ -2110,44 +1952,6 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 			)
 			if err != nil {
 				continue
-			}
-
-			// Instrumentation: summarize mailbox ops and execution outcome in re-sim (post-putInbox)
-			{
-				addrs := b.GetMailboxAddresses()
-				var addrA, addrB common.Address
-				if len(addrs) > 0 {
-					addrA = addrs[0]
-				}
-				if len(addrs) > 1 {
-					addrB = addrs[1]
-				}
-				total := 0
-				reads := 0
-				writes := 0
-				selectors := make(map[string]int)
-				for _, op := range traceResult.Operations {
-					if (addrA != (common.Address{}) && op.Address == addrA) || (addrB != (common.Address{}) && op.Address == addrB) {
-						total++
-						if len(op.CallData) >= 4 {
-							sel := fmt.Sprintf("0x%x", op.CallData[:4])
-							selectors[sel]++
-							if sel == "0xbd8b74e8" { reads++ }
-							if sel == "0xa19ad3c7" { writes++ }
-						}
-					}
-				}
-                log.Info("[SSV][TRACE] Re-sim (post-putInbox) summary",
-                    "txHash", state.Tx.Hash().Hex(),
-                    "xtID", xtID.Hex(),
-                    "usedGas", traceResult.ExecutionResult.UsedGas,
-                    "execErr", traceResult.ExecutionResult.Err,
-                    "revertData", fmt.Sprintf("0x%x", traceResult.ExecutionResult.Revert()),
-                    "mailboxOps", total,
-                    "reads", reads,
-                    "writes", writes,
-                    "selectors", selectors,
-                )
 			}
 
 			newSimState, err := mailboxProcessor.AnalyzeTransaction(

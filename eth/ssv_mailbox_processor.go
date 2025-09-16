@@ -335,11 +335,11 @@ func awaitRead(call *MailboxCall, chainID uint64) bool {
 }
 
 func (mp *MailboxProcessor) parseMailboxCall(callData []byte) (*MailboxCall, error) {
-    if len(callData) < 4 {
-        return nil, fmt.Errorf("invalid call data length")
-    }
+	if len(callData) < 4 {
+		return nil, fmt.Errorf("invalid call data length")
+	}
 
-    methodSig := callData[:4]
+	methodSig := callData[:4]
 
 	// Parse using method signatures directly
 	parsedABI, err := abi.JSON(strings.NewReader(mailboxABI))
@@ -347,30 +347,26 @@ func (mp *MailboxProcessor) parseMailboxCall(callData []byte) (*MailboxCall, err
 		return nil, err
 	}
 
-    // Check method by comparing signatures
-    if bytes.Equal(methodSig, parsedABI.Methods["read"].ID) {
-        call, err := mp.parseReadCall(callData[4:])
-        if err != nil {
-            return nil, err
-        }
-        call.IsRead = true
-        log.Info("[SSV] Detected mailbox read selector", "selector", fmt.Sprintf("0x%x", methodSig))
-        return call, nil
-    }
+	// Check method by comparing signatures
+	if bytes.Equal(methodSig, parsedABI.Methods["read"].ID) {
+		call, err := mp.parseReadCall(callData[4:])
+		if err != nil {
+			return nil, err
+		}
+		call.IsRead = true
+		return call, nil
+	}
 
-    if bytes.Equal(methodSig, parsedABI.Methods["write"].ID) {
-        call, err := mp.parseWriteCall(callData[4:])
-        if err != nil {
-            return nil, err
-        }
-        call.IsWrite = true
-        log.Info("[SSV] Detected mailbox write selector", "selector", fmt.Sprintf("0x%x", methodSig))
-        return call, nil
-    }
+	if bytes.Equal(methodSig, parsedABI.Methods["write"].ID) {
+		call, err := mp.parseWriteCall(callData[4:])
+		if err != nil {
+			return nil, err
+		}
+		call.IsWrite = true
+		return call, nil
+	}
 
-    // Instrumentation: unknown selector observed at mailbox
-    log.Warn("[SSV] Unknown mailbox method selector", "selector", fmt.Sprintf("0x%x", methodSig))
-    return nil, fmt.Errorf("unknown mailbox method")
+	return nil, fmt.Errorf("unknown mailbox method")
 }
 
 func (mp *MailboxProcessor) parseReadCall(data []byte) (*MailboxCall, error) {

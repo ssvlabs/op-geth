@@ -13,16 +13,16 @@ import (
 // MyToken = 0x6d19CB7639DeB366c334BD69f030A38e226BA6d2
 
 // == Logs ==
-//   Mailbox:   0x2d3dd075BdFDb18FA3aD89CF6783e23556E4aAa9
-//   PingPong:   0x97487E10f0E0302718291d1Fd6aEF040Bc87bb38
+//   Mailbox:   0x6e3f6C93C58f6E3523D18930a58c0FFAc13833aB
+//   PingPong:   0x0C151ff329d0D21D0481933b2f524554b116C862
 //   Coordinator:   0x0f10aF865F68F5aA1dDB7c5b5A1a0f396232C6Be
 //   Bridge:   0xB37E43fd6C32e4d0E37FA38F8c7F00d0a72ddA1B
 //
 //   chain id 11111
 //
 // == Logs ==
-//   Mailbox:   0xa3eECfA63f9cCEE84C28508Af13f12baecB51e86
-//   PingPong:   0xD044e7ABad4662f2243A6eF5636973Ec80EF7551
+//   Mailbox:   0xa4EEBE333Bc9b707198297ea23B77fB104A8e443
+//   PingPong:   0x6e3f6C93C58f6E3523D18930a58c0FFAc13833aB
 //   Coordinator:   0x0f10aF865F68F5aA1dDB7c5b5A1a0f396232C6Be
 //   Bridge:   0x0C151ff329d0D21D0481933b2f524554b116C862
 //
@@ -33,8 +33,8 @@ import (
 // Chain 22222
 
 const (
-	bridgeAddrA = "0x2953382855b72051763Ab4a6121Ae97e43f571F6"
-	bridgeAddrB = "0xd42b7d295806F03Aec457D2cC3D9a721046b8564"
+	bridgeAddrA = "0x920e081762018D9a10e3248fC46f23702d1AEF61"
+	bridgeAddrB = "0x5b0a10821EE37e84714898d5418f650d8d802c71"
 	bridgeABI   = `[{"type":"constructor","inputs":[{"name":"_mailbox","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"mailbox","inputs":[],"outputs":[{"name":"","type":"address","internalType":"contract IMailbox"}],"stateMutability":"view"},{"type":"function","name":"receiveTokens","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"token","type":"address","internalType":"address"},{"name":"amount","type":"uint256","internalType":"uint256"}],"stateMutability":"nonpayable"},{"type":"function","name":"send","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"token","type":"address","internalType":"address"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"amount","type":"uint256","internalType":"uint256"},{"name":"sessionId","type":"uint256","internalType":"uint256"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"event","name":"DataWritten","inputs":[{"name":"data","type":"bytes","indexed":false,"internalType":"bytes"}],"anonymous":false},{"type":"event","name":"EmptyEvent","inputs":[],"anonymous":false}]`
 )
 

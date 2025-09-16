@@ -3,19 +3,9 @@ package consensus
 import (
 	"time"
 
-	metrics2 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/metrics"
 	"github.com/prometheus/client_golang/prometheus"
+	metrics2 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/metrics"
 )
-
-// MetricsRecorder defines the interface for recording consensus metrics
-type MetricsRecorder interface {
-	RecordTransactionStarted(participantCount int)
-	RecordTransactionCompleted(state string, duration time.Duration)
-	RecordVote(chainID string, vote bool, latency time.Duration)
-	RecordTimeout()
-	RecordDecisionBroadcast(decision bool)
-	RecordVoteBroadcast(vote bool)
-}
 
 // Metrics holds all consensus-level metrics
 type Metrics struct {
@@ -36,9 +26,6 @@ type Metrics struct {
 	CallbackLatency   *prometheus.HistogramVec
 	CIRCMessagesTotal *prometheus.CounterVec
 }
-
-// Ensure Metrics implements MetricsRecorder
-var _ MetricsRecorder = (*Metrics)(nil)
 
 // NewMetrics creates consensus metrics
 func NewMetrics() *Metrics {
@@ -160,22 +147,4 @@ func (m *Metrics) RecordVoteBroadcast(vote bool) {
 		voteStr = StateCommitStr
 	}
 	m.VoteBroadcast.WithLabelValues(voteStr).Inc()
-}
-
-// NoOpMetrics provides a no-op implementation of MetricsRecorder for testing
-type NoOpMetrics struct{}
-
-// Ensure NoOpMetrics implements MetricsRecorder
-var _ MetricsRecorder = (*NoOpMetrics)(nil)
-
-func (n *NoOpMetrics) RecordTransactionStarted(participantCount int)                   {}
-func (n *NoOpMetrics) RecordTransactionCompleted(state string, duration time.Duration) {}
-func (n *NoOpMetrics) RecordVote(chainID string, vote bool, latency time.Duration)     {}
-func (n *NoOpMetrics) RecordTimeout()                                                  {}
-func (n *NoOpMetrics) RecordDecisionBroadcast(decision bool)                           {}
-func (n *NoOpMetrics) RecordVoteBroadcast(vote bool)                                   {}
-
-// NewNoOpMetrics creates a new no-op metrics recorder for testing
-func NewNoOpMetrics() MetricsRecorder {
-	return &NoOpMetrics{}
 }
