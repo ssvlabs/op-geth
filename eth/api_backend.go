@@ -1657,6 +1657,84 @@ func (b *EthAPIBackend) waitForPutInboxTransactionsToBeProcessed() error {
 	return nil
 }
 
+// waitForInboxVisibility waits until mailbox.read for each fulfilled dependency returns non-empty
+// in the PENDING state. This guards re-simulation against a race where the txpool has the
+// putInbox transaction, but the pending-state snapshot used by the EVM has not reflected it yet.
+// SSV
+func (b *EthAPIBackend) waitForInboxVisibility(ctx context.Context, deps []CrossRollupDependency) error {
+    if len(deps) == 0 {
+        return nil
+    }
+    // Resolve local mailbox address once
+    mailboxAddr := b.GetMailboxAddressFromChainID(b.ChainConfig().ChainID.Uint64())
+    if (mailboxAddr == common.Address{}) {
+        return fmt.Errorf("no mailbox address configured for chain %d", b.ChainConfig().ChainID)
+    }
+    parsedABI, err := abi.JSON(strings.NewReader(mailboxABI))
+    if err != nil {
+        return err
+    }
+
+    deadline := time.Now().Add(3 * time.Second)
+    // Track which deps became visible
+    visible := make(map[int]bool)
+
+    for time.Now().Before(deadline) {
+        allVisible := true
+        for i, dep := range deps {
+            if visible[i] {
+                continue
+            }
+            // Build calldata for mailbox.read(chainSrc, chainDest, receiver, sessionId, label)
+            callData, err := parsedABI.Pack(
+                "read",
+                new(big.Int).SetUint64(dep.SourceChainID),
+                new(big.Int).SetUint64(dep.DestChainID),
+                dep.Receiver,
+                dep.SessionID,
+                dep.Label,
+            )
+            if err != nil {
+                return err
+            }
+            args := ethapi.TransactionArgs{To: &mailboxAddr, Data: (*hexutil.Bytes)(&callData)}
+            // Read against the pending block so txpool effects are visible
+            res, err := ethapi.DoCall(ctx, b, args, rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber), nil, nil, 0, 0)
+            if err != nil {
+                allVisible = false
+                continue
+            }
+            if out := res.Return(); len(out) > 0 {
+                visible[i] = true
+                log.Info("[SSV] Inbox entry visible in pending state",
+                    "src", dep.SourceChainID,
+                    "dest", dep.DestChainID,
+                    "sessionId", dep.SessionID,
+                    "label", string(dep.Label),
+                )
+            } else {
+                allVisible = false
+            }
+        }
+        if allVisible {
+            return nil
+        }
+        time.Sleep(150 * time.Millisecond)
+    }
+    // Log which entries are still missing
+    for i, dep := range deps {
+        if !visible[i] {
+            log.Warn("[SSV] Inbox entry still not visible after wait",
+                "src", dep.SourceChainID,
+                "dest", dep.DestChainID,
+                "sessionId", dep.SessionID,
+                "label", string(dep.Label),
+            )
+        }
+    }
+    return fmt.Errorf("timeout waiting for inbox visibility in pending state for %d deps", len(deps))
+}
+
 func (b *EthAPIBackend) poolPayloadTx(tx *types.Transaction) {
 	b.sequencerTxMutex.Lock()
 	defer b.sequencerTxMutex.Unlock()
@@ -2006,6 +2084,11 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		// Wait for putInbox transactions to be processed
 		if err := b.waitForPutInboxTransactionsToBeProcessed(); err != nil {
 			return false, fmt.Errorf("failed to wait for putInbox transactions: %w", err)
+		}
+
+		// Extra guard: ensure inbox entries are visible in pending state before re-simulating.
+		if err := b.waitForInboxVisibility(ctx, allFulfilledDeps); err != nil {
+			log.Warn("[SSV] Pending-state inbox visibility not confirmed (continuing)", "err", err)
 		}
 
 		// Re-simulate after putInbox to detect ACK messages that need to be sent
