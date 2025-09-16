@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/ecdsa"
+	"fmt"
 	"math/big"
 	"strings"
 
@@ -11,17 +12,32 @@ import (
 )
 
 const (
-	pingPongAddr = "0x5217C9034048B1Fa9Fb1e300F94fCd7002138Ea5"
-	pingPongABI  = `[{"type":"constructor","inputs":[{"name":"_mailbox","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"mailbox","inputs":[],"outputs":[{"name":"","type":"address","internalType":"contract IMailbox"}],"stateMutability":"view"},{"type":"function","name":"ping","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"pongMessage","type":"bytes","internalType":"bytes"}],"stateMutability":"nonpayable"},{"type":"function","name":"pong","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"pingMessage","type":"bytes","internalType":"bytes"}],"stateMutability":"nonpayable"}]`
+	pingPongAddrA  = "0x97487E10f0E0302718291d1Fd6aEF040Bc87bb38"
+	pingPongAddrB  = "0xD044e7ABad4662f2243A6eF5636973Ec80EF7551"
+	rollupAChainID = uint64(77777)
+	rollupBChainID = uint64(88888)
+	pingPongABI    = `[{"type":"constructor","inputs":[{"name":"_mailbox","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"mailbox","inputs":[],"outputs":[{"name":"","type":"address","internalType":"contract IMailbox"}],"stateMutability":"view"},{"type":"function","name":"ping","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"pongMessage","type":"bytes","internalType":"bytes"}],"stateMutability":"nonpayable"},{"type":"function","name":"pong","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"pingMessage","type":"bytes","internalType":"bytes"}],"stateMutability":"nonpayable"}]`
 )
 
 type PingPongParams struct {
-	ChainSrc  *big.Int
-	ChainDest *big.Int
-	Sender    common.Address
-	Receiver  common.Address
-	SessionId *big.Int
-	Data      []byte
+	ExecChainID *big.Int
+	ChainSrc    *big.Int
+	ChainDest   *big.Int
+	Sender      common.Address
+	Receiver    common.Address
+	SessionId   *big.Int
+	Data        []byte
+}
+
+func pingPongAddress(chainID *big.Int) (common.Address, error) {
+	switch chainID.Uint64() {
+	case rollupAChainID:
+		return common.HexToAddress(pingPongAddrA), nil
+	case rollupBChainID:
+		return common.HexToAddress(pingPongAddrB), nil
+	default:
+		return common.Address{}, fmt.Errorf("unsupported chain id %s for pingpong contract", chainID.String())
+	}
 }
 
 func createPingTransaction(params PingPongParams, nonce uint64, privateKey *ecdsa.PrivateKey) (*types.Transaction, error) {
@@ -42,9 +58,14 @@ func createPingTransaction(params PingPongParams, nonce uint64, privateKey *ecds
 		return nil, err
 	}
 
-	contract := common.HexToAddress(pingPongAddr)
+	contractAddr, err := pingPongAddress(params.ExecChainID)
+	if err != nil {
+		return nil, err
+	}
+
+	contract := contractAddr
 	txData := &types.DynamicFeeTx{
-		ChainID:    params.ChainSrc,
+		ChainID:    params.ExecChainID,
 		Nonce:      nonce,
 		GasTipCap:  big.NewInt(1000000000),
 		GasFeeCap:  big.NewInt(20000000000),
@@ -56,7 +77,7 @@ func createPingTransaction(params PingPongParams, nonce uint64, privateKey *ecds
 	}
 
 	tx := types.NewTx(txData)
-	return types.SignTx(tx, types.NewLondonSigner(params.ChainSrc), privateKey)
+	return types.SignTx(tx, types.NewLondonSigner(params.ExecChainID), privateKey)
 }
 
 func createPongTransaction(params PingPongParams, nonce uint64, privateKey *ecdsa.PrivateKey) (*types.Transaction, error) {
@@ -77,9 +98,14 @@ func createPongTransaction(params PingPongParams, nonce uint64, privateKey *ecds
 		return nil, err
 	}
 
-	contract := common.HexToAddress(pingPongAddr)
+	contractAddr, err := pingPongAddress(params.ExecChainID)
+	if err != nil {
+		return nil, err
+	}
+
+	contract := contractAddr
 	txData := &types.DynamicFeeTx{
-		ChainID:    params.ChainSrc,
+		ChainID:    params.ExecChainID,
 		Nonce:      nonce,
 		GasTipCap:  big.NewInt(1000000000),
 		GasFeeCap:  big.NewInt(20000000000),
@@ -91,5 +117,5 @@ func createPongTransaction(params PingPongParams, nonce uint64, privateKey *ecds
 	}
 
 	tx := types.NewTx(txData)
-	return types.SignTx(tx, types.NewLondonSigner(params.ChainSrc), privateKey)
+	return types.SignTx(tx, types.NewLondonSigner(params.ExecChainID), privateKey)
 }

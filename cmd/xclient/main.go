@@ -93,12 +93,13 @@ func main() {
 
 	// Create a ping transaction (A -> B)
 	pingParams := PingPongParams{
-		ChainSrc:  chainAId,
-		ChainDest: chainBId,
-		Sender:    addressA,
-		Receiver:  addressB,
-		SessionId: sessionId,
-		Data:      pingData,
+		ExecChainID: chainAId,
+		ChainSrc:    chainAId,
+		ChainDest:   chainBId,
+		Sender:      addressA,
+		Receiver:    addressB,
+		SessionId:   sessionId,
+		Data:        pingData,
 	}
 
 	nonceA, err := getNonceFor(rollupA.RPC, addressA)
@@ -118,12 +119,13 @@ func main() {
 
 	// Create a pong transaction (B -> A)
 	pongParams := PingPongParams{
-		ChainSrc:  chainAId,
-		ChainDest: chainBId,
-		Sender:    addressB,
-		Receiver:  addressA,
-		SessionId: sessionId,
-		Data:      pongData,
+		ExecChainID: chainBId,
+		ChainSrc:    chainAId,
+		ChainDest:   chainBId,
+		Sender:      addressB,
+		Receiver:    addressA,
+		SessionId:   sessionId,
+		Data:        pongData,
 	}
 
 	nonceB, err := getNonceFor(rollupB.RPC, addressB)
