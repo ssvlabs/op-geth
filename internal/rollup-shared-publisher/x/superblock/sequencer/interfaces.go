@@ -16,10 +16,7 @@ type MinerNotifier interface {
 
 // CoordinatorCallbacks defines callback functions for cross-component communication
 type CoordinatorCallbacks struct {
-	OnVoteDecision    func(ctx context.Context, xtID *pb.XtID, chainID string, vote bool) error
-	OnFinalDecision   func(ctx context.Context, xtID *pb.XtID, decision bool) error
-	OnBlockReady      func(ctx context.Context, block *pb.L2Block, xtIDs []*pb.XtID) error
-	OnStateTransition func(from, to State, slot uint64, reason string)
+	OnBlockReady func(ctx context.Context, block *pb.L2Block, xtIDs []*pb.XtID) error
 
 	SendCIRC func(ctx context.Context, circ *pb.CIRCMessage) error
 	// SimulateAndVote runs local-chain simulation for the provided XT request
@@ -27,6 +24,11 @@ type CoordinatorCallbacks struct {
 	// or not (vote=false). This callback is used by the coordinator during
 	// StartSC handling and is implemented by the host SDK (e.g., geth backend).
 	SimulateAndVote func(ctx context.Context, xtReq *pb.XTRequest, xtID *pb.XtID) (bool, error)
+
+	// CleanupOriginalTransactions removes original transactions from pending list
+	// when SCP decision is abort (false). This prevents orphaned transactions
+	// from being included in subsequent blocks.
+	CleanupOriginalTransactions func(ctx context.Context, xtID *pb.XtID) error
 }
 
 // BlockLifecycleManager handles block building lifecycle events
