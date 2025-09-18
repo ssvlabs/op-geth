@@ -773,15 +773,33 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 			}
 		}
 
-		// Commit backend-ordered sequencer txs first (only in Submission)
+		// Commit backend-ordered sequencer txs first
+		// WE DO NOT COMMIT THE CLEAR TX HERE
 		sequencerTxCount := 0
+		clearTxHash := common.Hash{}
+		if backend.GetPendingClearTx() != nil {
+			clearTxHash = backend.GetPendingClearTx().Hash()
+		}
+
 		for _, tx := range orderedSequencerTxs {
 			if env.gasPool.Gas() < params.TxGas {
 				log.Error("[SSV] Not enough gas for sequencer transactions", "have", env.gasPool.Gas(), "want", params.TxGas)
 				break
 			}
+
 			env.state.SetTxContext(tx.Hash(), env.tcount)
-			log.Info("Commit tx", "tx", tx.Hash().String())
+
+			if tx.Hash() == clearTxHash {
+				_, err := miner.applyTransaction(env, tx)
+				if err != nil {
+					log.Warn("[SSV] Failed to execute clear transaction", "hash", tx.Hash(), "err", err)
+					continue
+				}
+				log.Info("[SSV] Executed clear() without including in block", "hash", tx.Hash())
+				env.tcount++
+				continue
+			}
+
 			if err := miner.commitTransaction(env, tx); err != nil {
 				log.Warn("[SSV] Failed to commit sequencer transaction", "hash", tx.Hash(), "err", err)
 				continue
