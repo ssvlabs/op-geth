@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/rs/zerolog"
 	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/consensus"
-	"github.com/rs/zerolog"
 )
 
 type SCPContext struct {
@@ -64,7 +64,7 @@ func (si *SCPIntegration) HandleStartSC(ctx context.Context, startSC *pb.StartSC
 
 	// Ensure local consensus state exists for this xT so CIRC
 	// messages can be recorded/consumed by the sequencer's coordinator
-	if err := si.consensus.StartTransaction(ctx, "sequencer", startSC.XtRequest); err != nil {
+	if err := si.consensus.StartTransaction("sequencer", startSC.XtRequest); err != nil {
 		// Do not fail the flow – log and continue to avoid blocking SBCP.
 		// CIRC Record/Consume will clearly error if state is missing.
 		si.log.Error().
@@ -93,6 +93,15 @@ func (si *SCPIntegration) HandleStartSC(ctx context.Context, startSC *pb.StartSC
 		Uint64("sequence", startSC.XtSequenceNumber).
 		Int("my_txs", len(scpCtx.MyTransactions)).
 		Msg("Started SCP context")
+
+	// In SBCP, sequencers vote directly to SP when they receive StartSC
+	// Send vote for the transactions we care about
+	if len(scpCtx.MyTransactions) > 0 {
+		si.sendVoteToSP(xtID, true)
+	}
+
+	// Also send CIRC messages to peers if needed
+	si.sendCIRCToPeers(xtID)
 
 	return nil
 }
@@ -211,4 +220,22 @@ func (si *SCPIntegration) GetActiveCount() int {
 	si.mu.RLock()
 	defer si.mu.RUnlock()
 	return len(si.activeContexts)
+}
+
+func (si *SCPIntegration) sendVoteToSP(xtID *pb.XtID, vote bool) {
+	// TODO
+	// This needs to be implemented by the parent coordinator
+	// For now, we'll delegate to the consensus coordinator
+	si.log.Info().
+		Str("xt_id", xtID.Hex()).
+		Bool("vote", vote).
+		Msg("Sequencer voting in SBCP")
+}
+
+func (si *SCPIntegration) sendCIRCToPeers(xtID *pb.XtID) {
+	// TODO: This needs to be implemented by the parent coordinator
+	// For now, we'll handle it at the sequencer level
+	si.log.Info().
+		Str("xt_id", xtID.Hex()).
+		Msg("CIRC messaging in SBCP")
 }

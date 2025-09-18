@@ -456,9 +456,6 @@ func (s *Ethereum) APIs() []rpc.API {
 		apis = append(apis, sequencerapi.GetSendRawTxConditionalAPI(s.APIBackend, s.seqRPCService, costRateLimit))
 	}
 
-	// Append custom compose_buildSignedUserOpsTx endpoint under namespace "custom".
-	apis = append(apis, GetComposeUserOpsAPI(s.APIBackend))
-
 	// Append all the local APIs and return
 	return append(apis, []rpc.API{
 		{

@@ -726,6 +726,20 @@ func (b *EthAPIBackend) StartCallbackFn(chainID *big.Int) spconsensus.StartFn {
 	}
 }
 
+// CIRCCallbackFn returns a function that triggers re-simulation when CIRC messages are received.
+// SSV
+func (b *EthAPIBackend) CIRCCallbackFn(chainID *big.Int) spconsensus.CIRCFn {
+	return func(ctx context.Context, xtID *rollupv1.XtID, circMessage *rollupv1.CIRCMessage) error {
+		log.Info("[SSV] CIRC message received via callback, triggering re-simulation for ACK detection",
+			"xtID", xtID.Hex(),
+			"sourceChain", new(big.Int).SetBytes(circMessage.SourceChain).String())
+
+		log.Info("[SSV] CIRC callback completed - main simulation loop will detect new messages", "xtID", xtID.Hex())
+
+		return nil
+	}
+}
+
 // VoteCallbackFn returns a function that can be used to send votes for cross-chain transactions.
 // SSV
 func (b *EthAPIBackend) VoteCallbackFn(chainID *big.Int) spconsensus.VoteFn {
@@ -1391,33 +1405,6 @@ func (b *EthAPIBackend) GetPendingOriginalTxs() []*types.Transaction {
 	return result
 }
 
-// CleanupOriginalTransactionsForXT removes original transactions from pending list
-// when SCP decision is abort (false). This prevents orphaned transactions
-// from being included in subsequent blocks.
-// SSV
-func (b *EthAPIBackend) CleanupOriginalTransactionsForXT(ctx context.Context, xtID *rollupv1.XtID) error {
-	b.sequencerTxMutex.Lock()
-	defer b.sequencerTxMutex.Unlock()
-
-	originalCount := len(b.pendingSequencerTxs)
-
-	if originalCount == 0 {
-		log.Debug("[SSV] No original transactions to cleanup",
-			"xt_id", xtID.Hex())
-		return nil
-	}
-
-	// For now, clear all original transactions as a safe approach
-	// TODO: Track per-XT original transactions for more precise cleanup
-	b.pendingSequencerTxs = nil
-
-	log.Info("[SSV] Cleaned up original transactions for aborted XT",
-		"xt_id", xtID.Hex(),
-		"removed_count", originalCount)
-
-	return nil
-}
-
 // reSimulateAfterMailboxPopulation re-simulates transactions after mailbox has been populated
 // SSV
 func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(
@@ -1625,16 +1612,32 @@ func (b *EthAPIBackend) SetSequencerCoordinator(coord sequencer.Coordinator, sp 
 			chainID := b.ChainConfig().ChainID
 			b.coordinator.Consensus().SetStartCallback(b.StartCallbackFn(chainID))
 			b.coordinator.Consensus().SetVoteCallback(b.VoteCallbackFn(chainID))
+			b.coordinator.Consensus().SetCIRCCallback(b.CIRCCallbackFn(chainID))
 		}
 
 		// Register SBCP callbacks
 		b.coordinator.SetCallbacks(sequencer.CoordinatorCallbacks{
-			SimulateAndVote:             b.simulateXTRequestForSBCP,
-			CleanupOriginalTransactions: b.CleanupOriginalTransactionsForXT,
+			// For SBCP mode simulation during StartSC
+			SimulateAndVote: b.simulateXTRequestForSBCP,
+
+			OnVoteDecision: func(ctx context.Context, xtID *rollupv1.XtID, chainID string, vote bool) error {
+				log.Debug("[SSV] Vote decision", "xtID", xtID.Hex(), "vote", vote)
+				return nil
+			},
+
+			// Decisions are handled via consensus DecisionCallback above.
+			OnFinalDecision: nil,
 
 			OnBlockReady: func(ctx context.Context, block *rollupv1.L2Block, xtIDs []*rollupv1.XtID) error {
 				log.Info("[SSV] SBCP block ready", "slot", block.Slot, "xtIDs", len(xtIDs))
 				return nil
+			},
+
+			OnStateTransition: func(from, to sequencer.State, slot uint64, reason string) {
+				log.Info("[SSV] SBCP state transition", "from", from.String(), "to", to.String(), "slot", slot)
+				// Do not clear staged sequencer txs on generic Waiting transitions.
+				// They are cleared explicitly in OnBlockBuildingComplete once we know
+				// whether they were included.
 			},
 		})
 

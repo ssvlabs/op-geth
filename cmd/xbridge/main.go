@@ -3,12 +3,10 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/rand"
 	"fmt"
 	"log"
 	"math/big"
 	"os"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -41,25 +39,6 @@ type Config struct {
 	Rollups map[string]Rollup `yaml:"rollups"`
 }
 
-// generateUniqueSessionId creates a unique session ID using timestamp + random component
-func generateUniqueSessionId() *big.Int {
-	// Use current timestamp (seconds) as base
-	timestamp := time.Now().Unix()
-
-	// Add random component (0-999) to avoid collisions within the same second
-	randomBytes := make([]byte, 2)
-	rand.Read(randomBytes)
-	randomComponent := big.NewInt(0).SetBytes(randomBytes)
-	randomComponent.Mod(randomComponent, big.NewInt(1000))
-
-	// Combine: timestamp * 1000 + random
-	sessionId := big.NewInt(timestamp)
-	sessionId.Mul(sessionId, big.NewInt(1000))
-	sessionId.Add(sessionId, randomComponent)
-
-	return sessionId
-}
-
 func main() {
 	config := loadConfigFromYAML(configFile)
 
@@ -89,8 +68,8 @@ func main() {
 
 	tokenA := common.HexToAddress(TokenAddr)
 
-	// Create bridge parameters with unique session ID
-	sessionId := generateUniqueSessionId()
+	// Create bridge parameters
+	sessionId := big.NewInt(12345)
 	amount := big.NewInt(100)
 
 	// Create a send transaction (A -> B)
