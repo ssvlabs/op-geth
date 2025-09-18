@@ -1130,19 +1130,19 @@ func (b *EthAPIBackend) GetOrderedTransactionsForBlock(
 }
 
 // buildSequencerOnlyList assembles only the sequencer-managed transactions in the
-// correct internal order: clear(), then putInbox(), then original txs.
+// correct internal order: putInbox(), then original txs, then clear().
 // Normal mempool transactions are not part of this list.
 func (b *EthAPIBackend) buildSequencerOnlyList() types.Transactions {
 	var orderedTxs types.Transactions
 
-	if clearTx := b.GetPendingClearTx(); clearTx != nil {
-		orderedTxs = append(orderedTxs, clearTx)
-	}
 	for _, tx := range b.GetPendingPutInboxTxs() {
 		orderedTxs = append(orderedTxs, tx)
 	}
 	for _, tx := range b.GetPendingOriginalTxs() {
 		orderedTxs = append(orderedTxs, tx)
+	}
+	if clearTx := b.GetPendingClearTx(); clearTx != nil {
+		orderedTxs = append(orderedTxs, clearTx)
 	}
 
 	log.Info("[SSV] Built sequencer-only tx list",
@@ -1167,12 +1167,6 @@ func (b *EthAPIBackend) buildFullCrossChainBlock(
 ) (types.Transactions, error) {
 	var orderedTxs types.Transactions
 
-	clearCount := 0
-	if clearTx := b.GetPendingClearTx(); clearTx != nil {
-		orderedTxs = append(orderedTxs, clearTx)
-		clearCount = 1
-	}
-
 	putInboxTxs := b.GetPendingPutInboxTxs()
 	if len(putInboxTxs) > 0 {
 		orderedTxs = append(orderedTxs, putInboxTxs...)
@@ -1181,6 +1175,12 @@ func (b *EthAPIBackend) buildFullCrossChainBlock(
 	originalTxs := b.GetPendingOriginalTxs()
 	if len(originalTxs) > 0 {
 		orderedTxs = append(orderedTxs, originalTxs...)
+	}
+
+	clearCount := 0
+	if clearTx := b.GetPendingClearTx(); clearTx != nil {
+		orderedTxs = append(orderedTxs, clearTx)
+		clearCount = 1
 	}
 
 	filteredNormalTxs := b.filterOutSequencerTransactions(normalTxs)
