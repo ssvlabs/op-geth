@@ -69,8 +69,8 @@ func main() {
 	tokenA := common.HexToAddress(TokenAddr)
 
 	// Create bridge parameters
-	sessionId := big.NewInt(12345)
-	amount := big.NewInt(100)
+	sessionId := big.NewInt(94728)
+	amount := big.NewInt(0).Exp(big.NewInt(10), big.NewInt(18), nil)
 
 	// Create a send transaction (A -> B)
 	sendParams := BridgeParams{
