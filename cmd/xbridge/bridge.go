@@ -32,11 +32,7 @@ import (
 //
 // Chain 22222
 
-const (
-	bridgeAddrA = "0x00985B36883FC0A8B1b4Aa05C06e958caA12Dc37"
-	bridgeAddrB = "0x08A906b8cc5fcA1396cb2EA7fDF6d336746CAa0E"
-	bridgeABI   = `[{"type":"constructor","inputs":[{"name":"_mailbox","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"mailbox","inputs":[],"outputs":[{"name":"","type":"address","internalType":"contract IMailbox"}],"stateMutability":"view"},{"type":"function","name":"receiveTokens","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"token","type":"address","internalType":"address"},{"name":"amount","type":"uint256","internalType":"uint256"}],"stateMutability":"nonpayable"},{"type":"function","name":"send","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"token","type":"address","internalType":"address"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"amount","type":"uint256","internalType":"uint256"},{"name":"sessionId","type":"uint256","internalType":"uint256"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"event","name":"DataWritten","inputs":[{"name":"data","type":"bytes","indexed":false,"internalType":"bytes"}],"anonymous":false},{"type":"event","name":"EmptyEvent","inputs":[],"anonymous":false}]`
-)
+const bridgeABI = `[{"type":"constructor","inputs":[{"name":"_mailbox","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"mailbox","inputs":[],"outputs":[{"name":"","type":"address","internalType":"contract IMailbox"}],"stateMutability":"view"},{"type":"function","name":"receiveTokens","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"token","type":"address","internalType":"address"},{"name":"amount","type":"uint256","internalType":"uint256"}],"stateMutability":"nonpayable"},{"type":"function","name":"send","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"token","type":"address","internalType":"address"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"amount","type":"uint256","internalType":"uint256"},{"name":"sessionId","type":"uint256","internalType":"uint256"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"event","name":"DataWritten","inputs":[{"name":"data","type":"bytes","indexed":false,"internalType":"bytes"}],"anonymous":false},{"type":"event","name":"EmptyEvent","inputs":[],"anonymous":false}]`
 
 type BridgeParams struct {
 	ChainSrc  *big.Int
@@ -48,7 +44,7 @@ type BridgeParams struct {
 	SessionId *big.Int
 }
 
-func createSendTransaction(params BridgeParams, nonce uint64, privateKey *ecdsa.PrivateKey) (*types.Transaction, error) {
+func createSendTransaction(params BridgeParams, nonce uint64, privateKey *ecdsa.PrivateKey, bridgeAddress common.Address) (*types.Transaction, error) {
 	parsedABI, err := abi.JSON(strings.NewReader(bridgeABI))
 	if err != nil {
 		return nil, err
@@ -67,7 +63,7 @@ func createSendTransaction(params BridgeParams, nonce uint64, privateKey *ecdsa.
 		return nil, err
 	}
 
-	contract := common.HexToAddress(bridgeAddrA)
+	contract := bridgeAddress
 	txData := &types.DynamicFeeTx{
 		ChainID:    params.ChainSrc,
 		Nonce:      nonce,
@@ -84,7 +80,7 @@ func createSendTransaction(params BridgeParams, nonce uint64, privateKey *ecdsa.
 	return types.SignTx(tx, types.NewLondonSigner(params.ChainSrc), privateKey)
 }
 
-func createReceiveTransaction(params BridgeParams, nonce uint64, privateKey *ecdsa.PrivateKey) (*types.Transaction, error) {
+func createReceiveTransaction(params BridgeParams, nonce uint64, privateKey *ecdsa.PrivateKey, bridgeAddress common.Address) (*types.Transaction, error) {
 	parsedABI, err := abi.JSON(strings.NewReader(bridgeABI))
 	if err != nil {
 		return nil, err
@@ -101,7 +97,7 @@ func createReceiveTransaction(params BridgeParams, nonce uint64, privateKey *ecd
 		return nil, err
 	}
 
-	contract := common.HexToAddress(bridgeAddrB)
+	contract := bridgeAddress
 	txData := &types.DynamicFeeTx{
 		ChainID:    params.ChainDest,
 		Nonce:      nonce,

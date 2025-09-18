@@ -1133,6 +1133,18 @@ Please note that --` + MetricsHTTPFlag.Name + ` must be set to start the server.
 		Value:    ethconfig.Defaults.SequencerKey,
 		Category: flags.SharedPublisherCategory,
 	}
+	MailboxAddrAFlag = &cli.StringFlag{
+		Name:     "mailbox.addr-a",
+		Usage:    `Mailbox contract address for rollup A`,
+		Value:    ethconfig.Defaults.RollupAMailboxAddr,
+		Category: flags.SharedPublisherCategory,
+	}
+	MailboxAddrBFlag = &cli.StringFlag{
+		Name:     "mailbox.addr-b",
+		Usage:    `Mailbox contract address for rollup B`,
+		Value:    ethconfig.Defaults.RollupBMailboxAddr,
+		Category: flags.SharedPublisherCategory,
+	}
 )
 
 var (
@@ -1986,6 +1998,12 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	}
 	if ctx.IsSet(RollupInteropMempoolFilteringFlag.Name) {
 		cfg.InteropMempoolFiltering = ctx.Bool(RollupInteropMempoolFilteringFlag.Name)
+	}
+	if ctx.IsSet(MailboxAddrAFlag.Name) {
+		cfg.RollupAMailboxAddr = ctx.String(MailboxAddrAFlag.Name)
+	}
+	if ctx.IsSet(MailboxAddrBFlag.Name) {
+		cfg.RollupBMailboxAddr = ctx.String(MailboxAddrBFlag.Name)
 	}
 	cfg.RollupDisableTxPoolGossip = ctx.Bool(RollupDisableTxPoolGossipFlag.Name)
 	cfg.RollupDisableTxPoolAdmission = cfg.RollupSequencerHTTP != "" && !ctx.Bool(RollupEnableTxPoolAdmissionFlag.Name)

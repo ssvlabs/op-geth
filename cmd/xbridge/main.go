@@ -22,13 +22,13 @@ import (
 const (
 	sendTxRPCMethod = "eth_sendXTransaction"
 	configFile      = "config.yml"
-	TokenAddr       = "0x2a72a18AB5293C7D436153EdD3F8c5b8FEBBA4F3"
 )
 
 type Rollup struct {
 	RPC        string `yaml:"rpc"`
 	ChainID    int64  `yaml:"chain_id"`
 	PrivateKey string `yaml:"private_key"`
+	Bridge     string `yaml:"bridge"`
 }
 
 func (r *Rollup) GetChainID() *big.Int {
@@ -36,6 +36,7 @@ func (r *Rollup) GetChainID() *big.Int {
 }
 
 type Config struct {
+	Token   string            `yaml:"token"`
 	Rollups map[string]Rollup `yaml:"rollups"`
 }
 
@@ -66,7 +67,9 @@ func main() {
 	publicKeyECDSA, _ = publicKey.(*ecdsa.PublicKey)
 	addressB := crypto.PubkeyToAddress(*publicKeyECDSA)
 
-	tokenA := common.HexToAddress(TokenAddr)
+	tokenA := common.HexToAddress(config.Token)
+	bridgeA := common.HexToAddress(rollupA.Bridge)
+	bridgeB := common.HexToAddress(rollupB.Bridge)
 
 	// Create bridge parameters
 	sessionId := big.NewInt(94728)
@@ -90,7 +93,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	signedTx1, err := createSendTransaction(sendParams, nonceA, privateKeyA)
+	signedTx1, err := createSendTransaction(sendParams, nonceA, privateKeyA, bridgeA)
 	if err != nil {
 		log.Fatal("Failed to create send transaction:", err)
 	}
@@ -116,7 +119,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	signedTx2, err := createReceiveTransaction(receiveParams, nonceB, privateKeyB)
+	signedTx2, err := createReceiveTransaction(receiveParams, nonceB, privateKeyB, bridgeB)
 	if err != nil {
 		log.Fatal("Failed to create receive transaction:", err)
 	}
@@ -171,6 +174,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("RPC call failed: %v", err)
 	}
+
+	fmt.Printf("Submitted %d transactions: %v\n", len(resultHashes), resultHashes)
 }
 
 func loadConfigFromYAML(filename string) Config {

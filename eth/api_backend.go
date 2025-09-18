@@ -77,6 +77,8 @@ type EthAPIBackend struct {
 	sequencerClients map[string]transport.Client
 	sequencerKey     *ecdsa.PrivateKey
 	sequencerAddress common.Address
+	mailboxAddresses []common.Address
+	mailboxByChainID map[uint64]common.Address
 
 	// SSV: Sequencer transaction management
 	pendingClearTx      *types.Transaction
@@ -844,22 +846,51 @@ func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *type
 	return nil
 }
 
-// GetMailboxAddresses returns the list of mailbox contract addresses to watch.package ethapi
+// ConfigureMailboxes sets the mailbox contract addresses for known rollups.
+// SSV
+func (b *EthAPIBackend) ConfigureMailboxes(raw map[uint64]string) error {
+	ordered := []uint64{native.RollupAChainID, native.RollupBChainID}
+	addresses := make([]common.Address, 0, len(ordered))
+	mailboxMap := make(map[uint64]common.Address, len(ordered))
+
+	for _, chainID := range ordered {
+		addrStr := strings.TrimSpace(raw[chainID])
+		if addrStr == "" {
+			mailboxMap[chainID] = common.Address{}
+			addresses = append(addresses, common.Address{})
+			log.Warn("[SSV] Mailbox address not configured", "chainID", chainID)
+			continue
+		}
+		if !common.IsHexAddress(addrStr) {
+			return fmt.Errorf("invalid mailbox address %q for chain %d", addrStr, chainID)
+		}
+		addr := common.HexToAddress(addrStr)
+		mailboxMap[chainID] = addr
+		addresses = append(addresses, addr)
+	}
+
+	b.mailboxAddresses = addresses
+	b.mailboxByChainID = mailboxMap
+	native.ReplaceChainIDToMailbox(mailboxMap)
+	return nil
+}
+
+// GetMailboxAddresses returns the list of mailbox contract addresses to watch.
 // SSV
 func (b *EthAPIBackend) GetMailboxAddresses() []common.Address {
-	return []common.Address{
-		common.HexToAddress(native.RollupAMailBoxAddr),
-		common.HexToAddress(native.RollupBMailBoxAddr),
+	if len(b.mailboxAddresses) == 0 {
+		return nil
 	}
+	out := make([]common.Address, len(b.mailboxAddresses))
+	copy(out, b.mailboxAddresses)
+	return out
 }
 
 func (b *EthAPIBackend) GetMailboxAddressFromChainID(chainID uint64) common.Address {
-	mailboxAddr, ok := native.ChainIDToMailbox[chainID]
-	if !ok {
+	if b.mailboxByChainID == nil {
 		return common.Address{}
 	}
-
-	return common.HexToAddress(mailboxAddr)
+	return b.mailboxByChainID[chainID]
 }
 
 // GetPendingClearTx returns the pending clear transaction for the current block.
@@ -1019,15 +1050,10 @@ func (b *EthAPIBackend) createClearTransaction(ctx context.Context) (*types.Tran
 		return nil, fmt.Errorf("failed to prepare calldata for \"clear\" method: %v", err)
 	}
 
-	var mailboxAddr common.Address
-	chainID := b.ChainConfig().ChainID.Int64()
-	switch chainID {
-	case native.RollupAChainID:
-		mailboxAddr = b.GetMailboxAddresses()[0]
-	case native.RollupBChainID:
-		mailboxAddr = b.GetMailboxAddresses()[1]
-	default:
-		return nil, fmt.Errorf("unable to select mailbox addr. Unsupported \"%d\"chain id", chainID)
+	chainID := b.ChainConfig().ChainID.Uint64()
+	mailboxAddr := b.GetMailboxAddressFromChainID(chainID)
+	if (mailboxAddr == common.Address{}) {
+		return nil, fmt.Errorf("mailbox address not configured for chain %d", chainID)
 	}
 
 	txData := &types.DynamicFeeTx{
@@ -1065,15 +1091,10 @@ func (b *EthAPIBackend) createClearTransactionWithNonce(ctx context.Context, non
 		return nil, fmt.Errorf("failed to prepare calldata for \"clear\" method: %v", err)
 	}
 
-	var mailboxAddr common.Address
-	chainID := b.ChainConfig().ChainID.Int64()
-	switch chainID {
-	case native.RollupAChainID:
-		mailboxAddr = b.GetMailboxAddresses()[0]
-	case native.RollupBChainID:
-		mailboxAddr = b.GetMailboxAddresses()[1]
-	default:
-		return nil, fmt.Errorf("unable to select mailbox addr. Unsupported \"%d\"chain id", chainID)
+	chainID := b.ChainConfig().ChainID.Uint64()
+	mailboxAddr := b.GetMailboxAddressFromChainID(chainID)
+	if (mailboxAddr == common.Address{}) {
+		return nil, fmt.Errorf("mailbox address not configured for chain %d", chainID)
 	}
 
 	txData := &types.DynamicFeeTx{
