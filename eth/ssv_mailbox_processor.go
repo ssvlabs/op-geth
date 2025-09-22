@@ -669,7 +669,7 @@ func (mp *MailboxProcessor) traceTransaction(callData []byte, mailboxAddr common
 		log.Warn("unable to parse putInbox tx trace result", "error", err)
 	} else {
 		if traceResult.Failed {
-			log.Warn("putInbox tx fails during trace", "calldata", hexutil.Encode(callData), "returnValue", traceResult.ReturnValue, "res", string(res.(json.RawMessage)))
+			log.Warn("putInbox tx fails during trace", "calldata", hexutil.Encode(callData), "returnValue", traceResult.ReturnValue)
 		}
 	}
 }

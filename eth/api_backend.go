@@ -1509,14 +1509,9 @@ func (b *EthAPIBackend) reSimulateTransaction(
 
 	// Check if execution was successful
 	if traceResult.ExecutionResult.Err != nil {
-		var returnValue string
-		if len(traceResult.ExecutionResult.ReturnData) >= 4 {
-			returnValue = hexutil.Encode(traceResult.ExecutionResult.ReturnData[:4])
-		}
 		log.Warn("[SSV] Transaction execution failed in re-simulation",
 			"txHash", tx.Hash().Hex(),
-			"failed", true,
-			"returnValue", returnValue,
+			"executionError", traceResult.ExecutionResult.Err,
 			"xtID", xtID.Hex())
 		return false, nil
 	}
