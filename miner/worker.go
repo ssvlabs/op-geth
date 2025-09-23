@@ -783,7 +783,7 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 			env.state.SetTxContext(tx.Hash(), env.tcount)
 			log.Info("Commit tx", "tx", tx.Hash().String())
 			if err := miner.commitTransaction(env, tx); err != nil {
-				log.Warn("[SSV] Failed to commit sequencer transaction", "hash", tx.Hash(), "err", err)
+				log.Warn("[SSV] Failed to commit sequencer transaction", "hash", tx.Hash(), "nonce", tx.Nonce(), "err", err)
 				continue
 			}
 			sequencerTxCount++
