@@ -17,6 +17,7 @@ const (
 )
 
 type PingPongParams struct {
+	TxChainID *big.Int
 	ChainSrc  *big.Int
 	ChainDest *big.Int
 	Sender    common.Address
@@ -45,7 +46,7 @@ func createPingTransaction(params PingPongParams, nonce uint64, privateKey *ecds
 
 	contract := common.HexToAddress(pingPongAddrA)
 	txData := &types.DynamicFeeTx{
-		ChainID:    params.ChainSrc,
+		ChainID:    params.TxChainID,
 		Nonce:      nonce,
 		GasTipCap:  big.NewInt(1000000000),
 		GasFeeCap:  big.NewInt(20000000000),
@@ -57,7 +58,7 @@ func createPingTransaction(params PingPongParams, nonce uint64, privateKey *ecds
 	}
 
 	tx := types.NewTx(txData)
-	return types.SignTx(tx, types.NewLondonSigner(params.ChainSrc), privateKey)
+	return types.SignTx(tx, types.NewLondonSigner(params.TxChainID), privateKey)
 }
 
 func createPongTransaction(params PingPongParams, nonce uint64, privateKey *ecdsa.PrivateKey) (*types.Transaction, error) {
@@ -80,7 +81,7 @@ func createPongTransaction(params PingPongParams, nonce uint64, privateKey *ecds
 
 	contract := common.HexToAddress(pingPongAddrB)
 	txData := &types.DynamicFeeTx{
-		ChainID:    params.ChainSrc,
+		ChainID:    params.TxChainID,
 		Nonce:      nonce,
 		GasTipCap:  big.NewInt(1000000000),
 		GasFeeCap:  big.NewInt(20000000000),
@@ -92,5 +93,5 @@ func createPongTransaction(params PingPongParams, nonce uint64, privateKey *ecds
 	}
 
 	tx := types.NewTx(txData)
-	return types.SignTx(tx, types.NewLondonSigner(params.ChainSrc), privateKey)
+	return types.SignTx(tx, types.NewLondonSigner(params.TxChainID), privateKey)
 }
