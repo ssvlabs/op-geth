@@ -626,7 +626,7 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 		Nonce:      nonce,
 		GasTipCap:  big.NewInt(1000000000),
 		GasFeeCap:  big.NewInt(20000000000),
-		Gas:        500000,
+		Gas:        2000000,
 		To:         &mailboxAddr,
 		Value:      big.NewInt(0),
 		Data:       callData,
