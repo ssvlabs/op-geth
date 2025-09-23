@@ -74,13 +74,14 @@ func main() {
 
 	// Create a send transaction (A -> B)
 	sendParams := BridgeParams{
-		ChainSrc:  chainAId, // 11111
-		ChainDest: chainBId, // 22222
-		Token:     tokenA,
-		Sender:    addressA,
-		Receiver:  addressB,
-		Amount:    amount,
-		SessionId: sessionId,
+		ChainSrc:   chainAId, // 11111
+		ChainDest:  chainBId, // 22222
+		Token:      tokenA,
+		Sender:     addressA,
+		Receiver:   addressB,
+		Amount:     amount,
+		SessionId:  sessionId,
+		DestBridge: common.HexToAddress(bridgeAddrB),
 	}
 
 	fmt.Println(sendParams)
@@ -109,6 +110,7 @@ func main() {
 		Receiver:  addressB,
 		Amount:    amount,
 		SessionId: sessionId,
+		SrcBridge: common.HexToAddress(bridgeAddrA),
 	}
 
 	nonceB, err := getNonceFor(rollupB.RPC, addressB)
