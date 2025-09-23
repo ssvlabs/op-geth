@@ -22,8 +22,8 @@ import (
 const RollupAChainID = 77777
 const RollupBChainID = 88888
 
-const RollupAMailBoxAddr = "0xfc83487BA02a87Ec53669cdE81367C117872e157"
-const RollupBMailBoxAddr = "0x62678733dcD7ea6D5Db1Cf508157ea5F113e7E32"
+const RollupAMailBoxAddr = "0xF67D90d846731f65313EA43c89d377Cd22602e0d"
+const RollupBMailBoxAddr = "0x859E59e5Ab1d2CDF29022aa54b5Cf4216c5f715A"
 
 var ChainIDToMailbox = map[uint64]string{
 	RollupAChainID: RollupAMailBoxAddr,

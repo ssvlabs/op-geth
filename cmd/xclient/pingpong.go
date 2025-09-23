@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	pingPongAddr = "0x5217C9034048B1Fa9Fb1e300F94fCd7002138Ea5"
-	pingPongABI  = `[{"type":"constructor","inputs":[{"name":"_mailbox","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"mailbox","inputs":[],"outputs":[{"name":"","type":"address","internalType":"contract IMailbox"}],"stateMutability":"view"},{"type":"function","name":"ping","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"pongMessage","type":"bytes","internalType":"bytes"}],"stateMutability":"nonpayable"},{"type":"function","name":"pong","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"pingMessage","type":"bytes","internalType":"bytes"}],"stateMutability":"nonpayable"}]`
+	pingPongAddrA = "0x02A96d6AD1dA3F3a0c526b4C9643cbB16D8014cc"
+	pingPongAddrB = "0x8Dd8B3E192ef19a84d7BC58a50d7a197D2DE1DEd"
+	pingPongABI   = `[{"type":"constructor","inputs":[{"name":"_mailbox","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"mailbox","inputs":[],"outputs":[{"name":"","type":"address","internalType":"contract IMailbox"}],"stateMutability":"view"},{"type":"function","name":"ping","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"pongMessage","type":"bytes","internalType":"bytes"}],"stateMutability":"nonpayable"},{"type":"function","name":"pong","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"pingMessage","type":"bytes","internalType":"bytes"}],"stateMutability":"nonpayable"},{"type":"error","name":"PingMessageEmpty","inputs":[]},{"type":"error","name":"PongMessageEmpty","inputs":[]}]`
 )
 
 type PingPongParams struct {
@@ -42,7 +43,7 @@ func createPingTransaction(params PingPongParams, nonce uint64, privateKey *ecds
 		return nil, err
 	}
 
-	contract := common.HexToAddress(pingPongAddr)
+	contract := common.HexToAddress(pingPongAddrA)
 	txData := &types.DynamicFeeTx{
 		ChainID:    params.ChainSrc,
 		Nonce:      nonce,
@@ -77,7 +78,7 @@ func createPongTransaction(params PingPongParams, nonce uint64, privateKey *ecds
 		return nil, err
 	}
 
-	contract := common.HexToAddress(pingPongAddr)
+	contract := common.HexToAddress(pingPongAddrB)
 	txData := &types.DynamicFeeTx{
 		ChainID:    params.ChainSrc,
 		Nonce:      nonce,

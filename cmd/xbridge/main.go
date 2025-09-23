@@ -22,7 +22,7 @@ import (
 const (
 	sendTxRPCMethod = "eth_sendXTransaction"
 	configFile      = "config.yml"
-	TokenAddr       = "0x2a72a18AB5293C7D436153EdD3F8c5b8FEBBA4F3"
+	TokenAddr       = "0xfBCb48d20c9eB9eD7aA32Af1CB77c50B858255B5"
 )
 
 type Rollup struct {
