@@ -23,13 +23,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/crypto"
 	rollupv1 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
 
 	"math/big"
-	"strings"
 	"sync"
 	"time"
 
@@ -79,7 +77,6 @@ type EthAPIBackend struct {
 	sequencerAddress common.Address
 
 	// SSV: Sequencer transaction management
-	pendingClearTx      *types.Transaction
 	pendingPutInboxTxs  []*types.Transaction
 	pendingSequencerTxs []*types.Transaction
 	sequencerTxMutex    sync.RWMutex
@@ -816,20 +813,15 @@ func (b *EthAPIBackend) SimulateTransaction(
 	return traceResult, nil
 }
 
-// SubmitSequencerTransaction submits a transaction with a priority flag.
+// SubmitSequencerTransaction submits a sequencer-managed transaction.
 // SSV
-func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *types.Transaction, isPutInbox bool) error {
+func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *types.Transaction) error {
 	if err := b.validateSequencerTransaction(tx); err != nil {
 		log.Error("[SSV] Sequencer transaction validation failed", "err", err, "txHash", tx.Hash().Hex())
 		return fmt.Errorf("sequencer transaction validation failed: %w", err)
 	}
 
-	if isPutInbox {
-		b.AddPendingPutInboxTx(tx)
-	} else {
-		b.SetPendingClearTx(tx)
-		log.Info("[SSV] Set clear transaction to mempool", "txHash", tx.Hash().Hex())
-	}
+	b.AddPendingPutInboxTx(tx)
 	// Also inject into the local txpool so that PENDING state reflects these txs
 	// and re-simulation against rpc.PendingBlockNumber can observe mailbox effects.
 	if err := b.sendTx(ctx, tx); err != nil {
@@ -860,22 +852,6 @@ func (b *EthAPIBackend) GetMailboxAddressFromChainID(chainID uint64) common.Addr
 	}
 
 	return common.HexToAddress(mailboxAddr)
-}
-
-// GetPendingClearTx returns the pending clear transaction for the current block.
-// SSV
-func (b *EthAPIBackend) GetPendingClearTx() *types.Transaction {
-	b.sequencerTxMutex.RLock()
-	defer b.sequencerTxMutex.RUnlock()
-	return b.pendingClearTx
-}
-
-// SetPendingClearTx sets the clear transaction for the current block.
-// SSV
-func (b *EthAPIBackend) SetPendingClearTx(tx *types.Transaction) {
-	b.sequencerTxMutex.Lock()
-	defer b.sequencerTxMutex.Unlock()
-	b.pendingClearTx = tx
 }
 
 // AddPendingPutInboxTx adds a putInbox transaction to the pending list.
@@ -937,19 +913,13 @@ func (b *EthAPIBackend) clearAllSequencerTransactions() {
 	b.sequencerTxMutex.Lock()
 	defer b.sequencerTxMutex.Unlock()
 
-	clearCount := 0
-	if b.pendingClearTx != nil {
-		clearCount = 1
-	}
 	putInboxCount := len(b.pendingPutInboxTxs)
 	originalCount := len(b.pendingSequencerTxs)
 
-	b.pendingClearTx = nil
 	b.pendingPutInboxTxs = nil
 	b.pendingSequencerTxs = nil
 
 	log.Info("[SSV] Cleared sequencer transactions",
-		"clear", clearCount,
 		"putInbox", putInboxCount,
 		"original", originalCount)
 }
@@ -989,112 +959,12 @@ func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context
 // prepareAllCrossChainTransactionsForSubmission prepares all cross-chain transactions for inclusion
 // SSV
 func (b *EthAPIBackend) prepareAllCrossChainTransactionsForSubmission(ctx context.Context) error {
-	hasCrossChain := len(b.GetPendingPutInboxTxs()) > 0 || len(b.GetPendingOriginalTxs()) > 0
-	if hasCrossChain {
-		clearTx, err := b.createClearTransaction(ctx)
-		if err != nil {
-			return err
-		}
-		b.SetPendingClearTx(clearTx)
-		log.Info("[SSV] Created clear transaction", "txHash", clearTx.Hash().Hex())
+	putInbox := len(b.GetPendingPutInboxTxs())
+	original := len(b.GetPendingOriginalTxs())
+	if putInbox > 0 || original > 0 {
+		log.Debug("[SSV] Cross-chain transactions staged without clear", "putInbox", putInbox, "original", original)
 	}
 	return nil
-}
-
-// createClearTransaction creates a transaction to clear the mailbox
-// SSV
-func (b *EthAPIBackend) createClearTransaction(ctx context.Context) (*types.Transaction, error) {
-	nonce, err := b.GetPoolNonce(ctx, b.sequencerAddress)
-	if err != nil {
-		return nil, err
-	}
-
-	parsedABI, err := abi.JSON(strings.NewReader(mailboxABI))
-	if err != nil {
-		return nil, err
-	}
-
-	callData, err := parsedABI.Pack("clear")
-	if err != nil {
-		return nil, fmt.Errorf("failed to prepare calldata for \"clear\" method: %v", err)
-	}
-
-	var mailboxAddr common.Address
-	chainID := b.ChainConfig().ChainID.Int64()
-	switch chainID {
-	case native.RollupAChainID:
-		mailboxAddr = b.GetMailboxAddresses()[0]
-	case native.RollupBChainID:
-		mailboxAddr = b.GetMailboxAddresses()[1]
-	default:
-		return nil, fmt.Errorf("unable to select mailbox addr. Unsupported \"%d\"chain id", chainID)
-	}
-
-	txData := &types.DynamicFeeTx{
-		ChainID:    b.ChainConfig().ChainID,
-		Nonce:      nonce,
-		GasTipCap:  big.NewInt(1000000000),
-		GasFeeCap:  big.NewInt(20000000000),
-		Gas:        300000,
-		To:         &mailboxAddr,
-		Value:      big.NewInt(0),
-		Data:       callData,
-		AccessList: nil,
-	}
-
-	tx := types.NewTx(txData)
-	signedTx, err := types.SignTx(tx, types.NewLondonSigner(b.ChainConfig().ChainID), b.sequencerKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign tx %v", err)
-	}
-
-	return signedTx, nil
-}
-
-// createClearTransactionWithNonce creates a clear() tx using a specific nonce (to preserve ordering
-// ahead of any subsequently-created putInbox transactions).
-// SSV
-func (b *EthAPIBackend) createClearTransactionWithNonce(ctx context.Context, nonce uint64) (*types.Transaction, error) {
-	parsedABI, err := abi.JSON(strings.NewReader(mailboxABI))
-	if err != nil {
-		return nil, err
-	}
-
-	callData, err := parsedABI.Pack("clear")
-	if err != nil {
-		return nil, fmt.Errorf("failed to prepare calldata for \"clear\" method: %v", err)
-	}
-
-	var mailboxAddr common.Address
-	chainID := b.ChainConfig().ChainID.Int64()
-	switch chainID {
-	case native.RollupAChainID:
-		mailboxAddr = b.GetMailboxAddresses()[0]
-	case native.RollupBChainID:
-		mailboxAddr = b.GetMailboxAddresses()[1]
-	default:
-		return nil, fmt.Errorf("unable to select mailbox addr. Unsupported \"%d\"chain id", chainID)
-	}
-
-	txData := &types.DynamicFeeTx{
-		ChainID:    b.ChainConfig().ChainID,
-		Nonce:      nonce,
-		GasTipCap:  big.NewInt(1000000000),
-		GasFeeCap:  big.NewInt(20000000000),
-		Gas:        300000,
-		To:         &mailboxAddr,
-		Value:      big.NewInt(0),
-		Data:       callData,
-		AccessList: nil,
-	}
-
-	tx := types.NewTx(txData)
-	signedTx, err := types.SignTx(tx, types.NewLondonSigner(b.ChainConfig().ChainID), b.sequencerKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign tx %v", err)
-	}
-
-	return signedTx, nil
 }
 
 // GetOrderedTransactionsForBlock returns only sequencer-managed transactions in
@@ -1130,14 +1000,11 @@ func (b *EthAPIBackend) GetOrderedTransactionsForBlock(
 }
 
 // buildSequencerOnlyList assembles only the sequencer-managed transactions in the
-// correct internal order: clear(), then putInbox(), then original txs.
+// correct internal order: putInbox() first, then original txs.
 // Normal mempool transactions are not part of this list.
 func (b *EthAPIBackend) buildSequencerOnlyList() types.Transactions {
 	var orderedTxs types.Transactions
 
-	if clearTx := b.GetPendingClearTx(); clearTx != nil {
-		orderedTxs = append(orderedTxs, clearTx)
-	}
 	for _, tx := range b.GetPendingPutInboxTxs() {
 		orderedTxs = append(orderedTxs, tx)
 	}
@@ -1146,12 +1013,6 @@ func (b *EthAPIBackend) buildSequencerOnlyList() types.Transactions {
 	}
 
 	log.Info("[SSV] Built sequencer-only tx list",
-		"clear", func() int {
-			if b.GetPendingClearTx() != nil {
-				return 1
-			}
-			return 0
-		}(),
 		"putInbox", len(b.GetPendingPutInboxTxs()),
 		"original", len(b.GetPendingOriginalTxs()),
 		"total", len(orderedTxs),
@@ -1167,12 +1028,6 @@ func (b *EthAPIBackend) buildFullCrossChainBlock(
 ) (types.Transactions, error) {
 	var orderedTxs types.Transactions
 
-	clearCount := 0
-	if clearTx := b.GetPendingClearTx(); clearTx != nil {
-		orderedTxs = append(orderedTxs, clearTx)
-		clearCount = 1
-	}
-
 	putInboxTxs := b.GetPendingPutInboxTxs()
 	if len(putInboxTxs) > 0 {
 		orderedTxs = append(orderedTxs, putInboxTxs...)
@@ -1187,7 +1042,6 @@ func (b *EthAPIBackend) buildFullCrossChainBlock(
 	orderedTxs = append(orderedTxs, filteredNormalTxs...)
 
 	log.Info("[SSV] Built cross-chain block",
-		"clear", clearCount,
 		"putInbox", len(putInboxTxs),
 		"original", len(originalTxs),
 		"normal", len(filteredNormalTxs),
@@ -1201,11 +1055,6 @@ func (b *EthAPIBackend) buildFullCrossChainBlock(
 func (b *EthAPIBackend) filterOutSequencerTransactions(txs types.Transactions) types.Transactions {
 	var filtered types.Transactions
 	sequencerTxHashes := make(map[common.Hash]bool)
-
-	// Build map of sequencer transaction hashes
-	if clearTx := b.GetPendingClearTx(); clearTx != nil {
-		sequencerTxHashes[clearTx.Hash()] = true
-	}
 
 	for _, putInboxTx := range b.GetPendingPutInboxTxs() {
 		sequencerTxHashes[putInboxTx.Hash()] = true
@@ -1276,7 +1125,6 @@ func (b *EthAPIBackend) validateSequencerTransaction(tx *types.Transaction) erro
 // OnBlockBuildingStart is called when block building starts
 // SSV
 func (b *EthAPIBackend) OnBlockBuildingStart(context.Context) error {
-	clearPresent := b.GetPendingClearTx() != nil
 	putInbox := b.GetPendingPutInboxTxs()
 	original := b.GetPendingOriginalTxs()
 
@@ -1293,14 +1141,8 @@ func (b *EthAPIBackend) OnBlockBuildingStart(context.Context) error {
 			}
 			return 0
 		}(),
-		"clear_present", clearPresent,
 		"putInbox_count", len(putInbox),
 		"original_count", len(original))
-
-	if clearPresent {
-		c := b.GetPendingClearTx()
-		log.Info("[SSV] Pending clear", "txHash", c.Hash().Hex(), "nonce", c.Nonce())
-	}
 	if len(putInbox) > 0 {
 		tx := putInbox[0]
 		log.Info("[SSV] Pending putInbox", "index", 0, "txHash", tx.Hash().Hex(), "nonce", tx.Nonce())
@@ -1427,7 +1269,7 @@ func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(
 	}
 
 	// Re-simulate each local transaction against PENDING state (so the view
-	// includes just-created putInbox/clear transactions not yet part of latest).
+	// includes just-created putInbox transactions not yet part of latest).
 	allSuccessful := true
 	blockNrOrHash := rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber)
 
@@ -1682,23 +1524,6 @@ func (b *EthAPIBackend) NotifyRequestSeal(requestSeal *rollupv1.RequestSeal) err
 		log.Info("[SSV] RequestSeal received with no stored block yet (will build now)", "slot", requestSeal.Slot)
 	}
 
-	// proactively stage a clear() transaction to help sealing,
-	// but only when there is at least one cross-chain transaction to include
-	// in this slot (as indicated by RequestSeal.IncludedXts).
-	// Also only if we don't already have a clear tx staged.
-	if len(requestSeal.IncludedXts) > 0 && b.GetPendingClearTx() == nil {
-		if clearTx, err := b.createClearTransaction(context.Background()); err != nil {
-			log.Warn("[SSV] Failed to create clear transaction on RequestSeal", "err", err)
-		} else {
-			b.SetPendingClearTx(clearTx)
-			// Inject into local txpool so pending state sees it and miner includes it
-			if err := b.sendTx(context.Background(), clearTx); err != nil {
-				log.Warn("[SSV] Failed to inject clear tx after RequestSeal", "err", err, "txHash", clearTx.Hash().Hex())
-			} else {
-				log.Info("[SSV] Staged clear transaction after RequestSeal", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce())
-			}
-		}
-	}
 	return nil
 }
 
@@ -1792,10 +1617,6 @@ func (b *EthAPIBackend) sendStoredL2Block(ctx context.Context) error {
 
 	b.ClearSequencerTransactionsAfterBlock()
 	log.Info("[SSV] Cleared sequencer transactions after successful L2Block submission")
-
-	// Also clear the pending clear transaction to prevent reuse
-	b.SetPendingClearTx(nil)
-	log.Info("[SSV] Cleared pending clear transaction to prevent reuse")
 
 	return nil
 }
@@ -1916,26 +1737,19 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 			return false, fmt.Errorf("failed to get nonce: %w", err)
 		}
 
-		// Create clear transaction first
-		clearTx, err := b.createClearTransactionWithNonce(ctx, nonce)
-		if err != nil {
-			log.Error("[SSV] Failed to create clear transaction", "err", err)
-		} else {
-			b.SetPendingClearTx(clearTx)
-			log.Info("[SSV] Reserved clear transaction created", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce())
-		}
-
 		// Create putInbox transactions
+		currentNonce := nonce
 		for _, dep := range allFulfilledDeps {
-			nonce++
-			putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, nonce)
+			putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, currentNonce)
 			if err != nil {
 				return false, fmt.Errorf("failed to create putInbox transaction: %w", err)
 			}
 
-			if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
+			if err := b.SubmitSequencerTransaction(ctx, putInboxTx); err != nil {
 				return false, fmt.Errorf("failed to submit putInbox transaction: %w", err)
 			}
+
+			currentNonce++
 		}
 
 		// Wait for putInbox transactions to be processed
