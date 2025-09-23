@@ -1035,7 +1035,7 @@ func (b *EthAPIBackend) createClearTransaction(ctx context.Context) (*types.Tran
 		Nonce:      nonce,
 		GasTipCap:  big.NewInt(1000000000),
 		GasFeeCap:  big.NewInt(20000000000),
-		Gas:        300000,
+		Gas:        500000,
 		To:         &mailboxAddr,
 		Value:      big.NewInt(0),
 		Data:       callData,
@@ -1081,7 +1081,7 @@ func (b *EthAPIBackend) createClearTransactionWithNonce(ctx context.Context, non
 		Nonce:      nonce,
 		GasTipCap:  big.NewInt(1000000000),
 		GasFeeCap:  big.NewInt(20000000000),
-		Gas:        300000,
+		Gas:        500000,
 		To:         &mailboxAddr,
 		Value:      big.NewInt(0),
 		Data:       callData,
@@ -1260,7 +1260,7 @@ func (b *EthAPIBackend) validateSequencerTransaction(tx *types.Transaction) erro
 		return fmt.Errorf("sequencer transaction gas too low: %d", tx.Gas())
 	}
 
-	if tx.Gas() > 1000000 { // TODO: update this
+	if tx.Gas() > 2000000 { // TODO: update this
 		log.Warn("[SSV] Sequencer transaction has high gas limit", "gas", tx.Gas())
 	}
 
