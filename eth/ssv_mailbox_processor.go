@@ -52,6 +52,7 @@ type MailboxCall struct {
 type CrossRollupDependency struct {
 	SourceChainID uint64
 	DestChainID   uint64
+	Sender        common.Address
 	Receiver      common.Address
 	SessionID     *big.Int
 	Label         []byte
@@ -192,6 +193,7 @@ func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, 
 					dep := CrossRollupDependency{
 						SourceChainID: call.ChainSrc.Uint64(),
 						DestChainID:   call.ChainDest.Uint64(),
+						Sender:        call.Sender,
 						Receiver:      call.Receiver,
 						SessionID:     call.SessionId,
 						Label:         call.Label,
@@ -317,6 +319,7 @@ func containsDependency(deps []CrossRollupDependency, dep CrossRollupDependency)
 	for _, d := range deps {
 		if d.SourceChainID == dep.SourceChainID &&
 			d.DestChainID == dep.DestChainID &&
+			d.Sender == dep.Sender &&
 			d.Receiver == dep.Receiver &&
 			d.SessionID.Cmp(dep.SessionID) == 0 &&
 			bytes.Equal(d.Label, dep.Label) &&
@@ -437,6 +440,9 @@ func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, s
 		// The Mailbox key uses (chainSrc, chainId, sender, receiver, sessionId, label),
 		// where 'sender' in the outbox is msg.sender of the contract that performed write(...).
 		// Ensure we mirror exactly what the source chain wrote so putInbox matches read(...).
+		if len(circMsg.Source) > 0 {
+			dep.Sender = common.BytesToAddress(circMsg.Source[0])
+		}
 		if len(circMsg.Receiver) > 0 {
 			dep.Receiver = common.BytesToAddress(circMsg.Receiver[0])
 		}
@@ -595,11 +601,11 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 
 	callData, err := parsedABI.Pack("putInbox",
 		new(big.Int).SetUint64(dep.SourceChainID),
-		new(big.Int).SetUint64(dep.DestChainID),
+		dep.Sender,
 		dep.Receiver,
 		dep.SessionID,
-		dep.Data,
 		dep.Label,
+		dep.Data,
 	)
 	if err != nil {
 		return nil, err
