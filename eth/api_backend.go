@@ -990,7 +990,9 @@ func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context
 // SSV
 func (b *EthAPIBackend) prepareAllCrossChainTransactionsForSubmission(ctx context.Context) error {
 	hasCrossChain := len(b.GetPendingPutInboxTxs()) > 0 || len(b.GetPendingOriginalTxs()) > 0
-	if hasCrossChain {
+
+	// Only create clear transaction if we don't already have one (avoids nonce conflicts)
+	if hasCrossChain && b.GetPendingClearTx() == nil {
 		clearTx, err := b.createClearTransaction(ctx)
 		if err != nil {
 			return err
@@ -1687,7 +1689,10 @@ func (b *EthAPIBackend) NotifyRequestSeal(requestSeal *rollupv1.RequestSeal) err
 	// in this slot (as indicated by RequestSeal.IncludedXts).
 	// Also only if we don't already have a clear tx staged.
 	if len(requestSeal.IncludedXts) > 0 && b.GetPendingClearTx() == nil {
-		if clearTx, err := b.createClearTransaction(context.Background()); err != nil {
+		currentNonce, err := b.GetPoolNonce(context.Background(), b.sequencerAddress)
+		if err != nil {
+			log.Warn("[SSV] Failed to get current nonce for clear transaction", "err", err)
+		} else if clearTx, err := b.createClearTransactionWithNonce(context.Background(), currentNonce); err != nil {
 			log.Warn("[SSV] Failed to create clear transaction on RequestSeal", "err", err)
 		} else {
 			b.SetPendingClearTx(clearTx)
@@ -1916,13 +1921,15 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 			return false, fmt.Errorf("failed to get nonce: %w", err)
 		}
 
-		// Create clear transaction first
-		clearTx, err := b.createClearTransactionWithNonce(ctx, nonce)
-		if err != nil {
-			log.Error("[SSV] Failed to create clear transaction", "err", err)
-		} else {
-			b.SetPendingClearTx(clearTx)
-			log.Info("[SSV] Reserved clear transaction created", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce())
+		// Create clear transaction first (only if we don't already have one)
+		if b.GetPendingClearTx() == nil {
+			clearTx, err := b.createClearTransactionWithNonce(ctx, nonce)
+			if err != nil {
+				log.Error("[SSV] Failed to create clear transaction", "err", err)
+			} else {
+				b.SetPendingClearTx(clearTx)
+				log.Info("[SSV] Reserved clear transaction created", "txHash", clearTx.Hash().Hex(), "nonce", clearTx.Nonce())
+			}
 		}
 
 		// Create putInbox transactions
