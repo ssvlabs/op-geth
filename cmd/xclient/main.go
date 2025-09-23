@@ -72,10 +72,10 @@ func main() {
 	pongData := []byte("hello from rollup B")
 
 	// Create a ping transaction on Chain A (77777)
-	// ping() writes PING to chainSrc(B) and reads PONG from chainSrc(B)
+	// ping() writes PING to chainSrc and reads PONG from chainSrc  
 	pingParams := PingPongParams{
 		TxChainID: chainAId,                           // Transaction runs on chain A (77777)
-		ChainSrc:  chainBId,                           // Write PING to chain B, read PONG from chain B
+		ChainSrc:  chainAId,                           // Write PING to chain A, read PONG from chain A
 		ChainDest: chainAId,                           // Not used by ping()
 		Sender:    common.HexToAddress(pingPongAddrB), // Expected sender of PONG (PingPong contract on B)
 		Receiver:  addressA,                           // Common receiver for both PING and PONG messages
@@ -99,11 +99,11 @@ func main() {
 	}
 
 	// Create a pong transaction on Chain B (88888)
-	// pong() reads PING from chainSrc(A) and writes PONG to chainDest(B)
+	// pong() reads PING from chainSrc and writes PONG to chainDest
 	pongParams := PingPongParams{
 		TxChainID: chainBId,                           // Transaction runs on chain B (88888)
-		ChainSrc:  chainBId,                           // Read PING from chain B (where A wrote it)
-		ChainDest: chainBId,                           // Write PONG to chain B (for A to read)
+		ChainSrc:  chainAId,                           // Read PING from chain A (77777) - where Chain A sent the PING
+		ChainDest: chainAId,                           // Write PONG back to chain A (77777)
 		Sender:    common.HexToAddress(pingPongAddrA), // Expected sender of PING (PingPong contract on A)
 		Receiver:  addressA,                           // Common receiver for both PING and PONG messages
 		SessionId: sessionId,
