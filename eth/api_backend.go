@@ -1942,94 +1942,72 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		if err := b.waitForPutInboxTransactionsToBeProcessed(); err != nil {
 			return false, fmt.Errorf("failed to wait for putInbox transactions: %w", err)
 		}
-
-		// Re-simulate after putInbox to detect ACK messages that need to be sent
-		for i, state := range coordinationStates {
-			traceResult, err := b.SimulateTransaction(
-				ctx,
-				state.Tx,
-				rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber),
-			)
-			if err != nil {
-				continue
-			}
-
-			newSimState, err := mailboxProcessor.AnalyzeTransaction(
-				traceResult,
-				allSentMsgs,
-				allFulfilledDeps,
-				state.Tx,
-			)
-			if err != nil {
-				continue
-			}
-
-			coordinationStates[i] = newSimState
-			log.Info(
-				"[SSV] Re-simulation successful for transaction",
-				"txHash",
-				state.Tx.Hash().Hex(),
-				"xtID",
-				xtID.Hex(),
-			)
-
-			// Send any ACK messages detected in re-simulation
-			for _, outMsg := range newSimState.OutboundMessages {
-				log.Info("[SSV] Detected new ACK message in re-simulation",
-					"xtID", xtID.Hex(),
-					"srcChain", outMsg.SourceChainID,
-					"destChain", outMsg.DestChainID,
-					"sessionId", outMsg.SessionID,
-					"label", string(outMsg.Label))
-
-				if err := mailboxProcessor.sendCIRCMessage(ctx, &outMsg, xtID); err != nil {
-					log.Error("[SSV] Failed to send ACK CIRC message", "error", err, "xtID", xtID.Hex())
-					continue
-				}
-			}
-
-			if len(newSimState.OutboundMessages) > 0 {
-				log.Info(
-					"[SSV] Successfully sent ACK CIRC messages after putInbox",
-					"count",
-					len(newSimState.OutboundMessages),
-					"xtID",
-					xtID.Hex(),
-				)
-			}
-
-			// Pool transactions immediately when they become successful
-			_, done := txDone[state.Tx.Hash().Hex()]
-			if newSimState.Success && !done && len(newSimState.Dependencies) == 0 {
-				log.Info("[SSV] Pooling transaction after re-simulation", "hash", state.Tx.Hash().Hex())
-				b.poolPayloadTx(state.Tx)
-				txDone[state.Tx.Hash().Hex()] = struct{}{}
-			}
-		}
 	}
 
-	// Final check - pool any remaining successful transactions that weren't pooled yet
+	// Re-simulate after putInbox to detect ACK messages and finalize transactions
 	for _, state := range coordinationStates {
-		tx := state.Tx
-		_, done := txDone[tx.Hash().Hex()]
-		if state.Success && !done && len(state.Dependencies) == 0 {
-			log.Info("[SSV] Pooling remaining successful transaction", "hash", tx.Hash().Hex())
-			b.poolPayloadTx(tx)
-			txDone[tx.Hash().Hex()] = struct{}{}
+		if !state.RequiresCoordination() {
+			continue
+		}
+
+		traceResult, err := b.SimulateTransaction(
+			ctx,
+			state.Tx,
+			rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber),
+		)
+		if err != nil {
+			log.Error("[SSV] Re-simulation failed", "txHash", state.Tx.Hash().Hex(), "err", err)
+			continue
+		}
+
+		// Analyze re-simulation to detect ACK messages
+		newSimState, err := mailboxProcessor.AnalyzeTransaction(
+			traceResult,
+			allSentMsgs,
+			allFulfilledDeps,
+			state.Tx,
+		)
+		if err != nil {
+			log.Error("[SSV] Re-simulation analysis failed", "txHash", state.Tx.Hash().Hex(), "err", err)
+			continue
+		}
+
+		// Persist the updated simulation outcome so downstream checks use
+		// the latest view of dependencies and success state.
+		state.Success = newSimState.Success
+		state.Dependencies = newSimState.Dependencies
+		state.OutboundMessages = newSimState.OutboundMessages
+
+		if len(newSimState.OutboundMessages) > 0 {
+			allSentMsgs = append(allSentMsgs, newSimState.OutboundMessages...)
+		}
+
+		// Send any ACK messages detected in re-simulation
+		for _, outMsg := range newSimState.OutboundMessages {
+			log.Info("[SSV] Sending ACK message detected in re-simulation",
+				"xtID", xtID.Hex(),
+				"srcChain", outMsg.SourceChainID,
+				"destChain", outMsg.DestChainID,
+				"sessionId", outMsg.SessionID)
+
+			if err := mailboxProcessor.sendCIRCMessage(ctx, &outMsg, xtID); err != nil {
+				log.Error("[SSV] Failed to send ACK CIRC message", "error", err, "xtID", xtID.Hex())
+			}
+		}
+
+		// Pool transaction if it's now successful
+		if newSimState.Success && len(newSimState.Dependencies) == 0 {
+			log.Info("[SSV] Pooling transaction after coordination", "txHash", state.Tx.Hash().Hex())
+			b.poolPayloadTx(state.Tx)
 		}
 	}
 
 	// Check if all transactions are successful
 	allSuccessful := successfulAll(coordinationStates)
-	log.Info(
-		"[SSV] SBCP simulation completed",
-		"xtID",
-		xtID.Hex(),
-		"allSuccessful",
-		allSuccessful,
-		"pooled_original_txs",
-		len(b.GetPendingOriginalTxs()),
-	)
+	log.Info("[SSV] SBCP coordination completed",
+		"xtID", xtID.Hex(),
+		"allSuccessful", allSuccessful,
+		"pooledTransactions", len(b.GetPendingOriginalTxs()))
 
 	return allSuccessful, nil
 }
