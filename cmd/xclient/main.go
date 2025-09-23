@@ -66,18 +66,19 @@ func main() {
 	publicKeyECDSA, _ = publicKey.(*ecdsa.PublicKey)
 	addressB := crypto.PubkeyToAddress(*publicKeyECDSA)
 
-	// Create ping-pong parameters
+	// Create ping-pong parameters as per POC specification
 	sessionId := big.NewInt(12345)
 	pingData := []byte("hello from rollup A")
 	pongData := []byte("hello from rollup B")
 
-	// Create a ping transaction (A -> B)
+	// Create a ping transaction on Chain A (77777)
+	// ping() writes PING to chainSrc(B) and reads PONG from chainSrc(B)
 	pingParams := PingPongParams{
-		TxChainID: chainAId,
-		ChainSrc:  chainBId,
-		ChainDest: chainAId,
-		Sender:    common.HexToAddress(pingPongAddrB),
-		Receiver:  addressB,
+		TxChainID: chainAId,                           // Transaction runs on chain A (77777)
+		ChainSrc:  chainBId,                           // Write PING to chain B, read PONG from chain B
+		ChainDest: chainAId,                           // Not used by ping()
+		Sender:    common.HexToAddress(pingPongAddrB), // Expected sender of PONG (PingPong contract on B)
+		Receiver:  addressA,                           // Common receiver for both PING and PONG messages
 		SessionId: sessionId,
 		Data:      pingData,
 	}
@@ -97,13 +98,14 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Create a pong transaction (B -> A)
+	// Create a pong transaction on Chain B (88888)
+	// pong() reads PING from chainSrc(A) and writes PONG to chainDest(B)
 	pongParams := PingPongParams{
-		TxChainID: chainBId,
-		ChainSrc:  chainAId,
-		ChainDest: chainAId,
-		Sender:    common.HexToAddress(pingPongAddrA),
-		Receiver:  addressB,
+		TxChainID: chainBId,                           // Transaction runs on chain B (88888)
+		ChainSrc:  chainBId,                           // Read PING from chain B (where A wrote it)
+		ChainDest: chainBId,                           // Write PONG to chain B (for A to read)
+		Sender:    common.HexToAddress(pingPongAddrA), // Expected sender of PING (PingPong contract on A)
+		Receiver:  addressA,                           // Common receiver for both PING and PONG messages
 		SessionId: sessionId,
 		Data:      pongData,
 	}
