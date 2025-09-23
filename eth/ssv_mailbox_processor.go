@@ -633,8 +633,11 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 		AccessList: nil,
 	}
 
-	// TODO: unmarshalling JSON might be cpu intensive, remove later
-	mp.traceTransaction(callData, mailboxAddr)
+	// Validate that the putInbox transaction would succeed before creating it
+	if err := mp.traceTransaction(callData, mailboxAddr); err != nil {
+		log.Error("putInbox transaction validation failed", "err", err)
+		return nil, fmt.Errorf("putInbox transaction validation failed: %w", err)
+	}
 
 	tx := types.NewTx(txData)
 	signedTx, err := types.SignTx(tx, types.NewLondonSigner(new(big.Int).SetUint64(mp.chainID)), mp.sequencerKey)
@@ -645,7 +648,7 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 	return signedTx, nil
 }
 
-func (mp *MailboxProcessor) traceTransaction(callData []byte, mailboxAddr common.Address) {
+func (mp *MailboxProcessor) traceTransaction(callData []byte, mailboxAddr common.Address) error {
 	api := tracers.NewAPI(mp.backend.(tracers.Backend))
 	res, err := api.TraceCall(context.Background(), ethapi.TransactionArgs{
 		Data:  (*hexutil.Bytes)(&callData),
@@ -657,7 +660,7 @@ func (mp *MailboxProcessor) traceTransaction(callData []byte, mailboxAddr common
 	)
 	if err != nil {
 		log.Warn("putInbox tx tracing failed", "calldata", string(callData), "err", err)
-		return
+		return fmt.Errorf("failed to trace putInbox transaction: %w", err)
 	}
 
 	var traceResult struct {
@@ -667,11 +670,19 @@ func (mp *MailboxProcessor) traceTransaction(callData []byte, mailboxAddr common
 
 	if err := json.Unmarshal(res.(json.RawMessage), &traceResult); err != nil {
 		log.Warn("unable to parse putInbox tx trace result", "error", err)
+		return fmt.Errorf("failed to parse trace result: %w", err)
 	} else {
 		if traceResult.Failed {
-			log.Warn("putInbox tx fails during trace", "calldata", hexutil.Encode(callData), "returnValue", traceResult.ReturnValue)
+			log.Error("putInbox tx fails during trace - rejecting transaction",
+				"calldata", hexutil.Encode(callData),
+				"returnValue", traceResult.ReturnValue,
+				"destChain", mp.chainID)
+			return fmt.Errorf("putInbox transaction would fail during execution: returnValue=%s", traceResult.ReturnValue)
 		}
 	}
+
+	log.Debug("putInbox tx trace succeeded", "destChain", mp.chainID)
+	return nil
 }
 
 func (mp *MailboxProcessor) isMailboxAddress(addr common.Address) bool {
