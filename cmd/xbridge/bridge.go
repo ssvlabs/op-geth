@@ -39,13 +39,15 @@ const (
 )
 
 type BridgeParams struct {
-	ChainSrc  *big.Int
-	ChainDest *big.Int
-	Token     common.Address
-	Sender    common.Address
-	Receiver  common.Address
-	Amount    *big.Int
-	SessionId *big.Int
+	ChainSrc   *big.Int
+	ChainDest  *big.Int
+	Token      common.Address
+	Sender     common.Address
+	Receiver   common.Address
+	Amount     *big.Int
+	SessionId  *big.Int
+	DestBridge common.Address
+	SrcBridge  common.Address
 }
 
 func createSendTransaction(params BridgeParams, nonce uint64, privateKey *ecdsa.PrivateKey) (*types.Transaction, error) {
@@ -55,13 +57,13 @@ func createSendTransaction(params BridgeParams, nonce uint64, privateKey *ecdsa.
 	}
 
 	calldata, err := parsedABI.Pack("send",
-		params.ChainSrc,
 		params.ChainDest,
 		params.Token,
 		params.Sender,
 		params.Receiver,
 		params.Amount,
 		params.SessionId,
+		params.DestBridge,
 	)
 	if err != nil {
 		return nil, err
@@ -92,10 +94,10 @@ func createReceiveTransaction(params BridgeParams, nonce uint64, privateKey *ecd
 
 	calldata, err := parsedABI.Pack("receiveTokens",
 		params.ChainSrc,
-		params.ChainDest,
 		params.Sender,
 		params.Receiver,
 		params.SessionId,
+		params.SrcBridge,
 	)
 	if err != nil {
 		return nil, err
