@@ -17,11 +17,11 @@ const (
 )
 
 type PingPongParams struct {
-	TxChainID *big.Int
-	ChainSrc  *big.Int
-	ChainDest *big.Int
-	Sender    common.Address
-	Receiver  common.Address
+	TxChainID *big.Int       // Chain ID for transaction signing
+	ChainSrc  *big.Int       // Source chain (not used in ping/pong calls directly)
+	ChainDest *big.Int       // Destination chain (used as otherChain parameter)
+	Sender    common.Address // Expected sender of the other message
+	Receiver  common.Address // Receiver on the other chain
 	SessionId *big.Int
 	Data      []byte
 }
@@ -33,12 +33,11 @@ func createPingTransaction(params PingPongParams, nonce uint64, privateKey *ecds
 	}
 
 	calldata, err := parsedABI.Pack("ping",
-		params.ChainSrc,
-		params.ChainDest,
-		params.Sender,
-		params.Receiver,
-		params.SessionId,
-		params.Data,
+		params.ChainDest, // otherChain (destination chain)
+		params.Sender,    // pongSender (expected sender of PONG message)
+		params.Receiver,  // pingReceiver (receiver on destination chain)
+		params.SessionId, // sessionId
+		params.Data,      // data
 	)
 	if err != nil {
 		return nil, err
@@ -68,12 +67,11 @@ func createPongTransaction(params PingPongParams, nonce uint64, privateKey *ecds
 	}
 
 	calldata, err := parsedABI.Pack("pong",
-		params.ChainSrc,
-		params.ChainDest,
-		params.Sender,
-		params.Receiver,
-		params.SessionId,
-		params.Data,
+		params.ChainSrc,  // otherChain (source chain where PING came from)
+		params.Sender,    // pingSender (expected sender of PING message)
+		params.Receiver,  // pongReceiver (receiver on source chain)
+		params.SessionId, // sessionId
+		params.Data,      // data
 	)
 	if err != nil {
 		return nil, err

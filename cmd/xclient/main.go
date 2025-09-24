@@ -66,19 +66,21 @@ func main() {
 	publicKeyECDSA, _ = publicKey.(*ecdsa.PublicKey)
 	addressB := crypto.PubkeyToAddress(*publicKeyECDSA)
 
-	// Create ping-pong parameters as per POC specification
+	// Create ping-pong parameters
 	sessionId := big.NewInt(12345)
 	pingData := []byte("hello from rollup A")
 	pongData := []byte("hello from rollup B")
 
-	// Create a ping transaction on Chain A (77777)
-	// ping() writes PING to chainSrc and reads PONG from chainSrc (same destination!)
+	// Create a ping transaction on Chain A
+	// ping() on chain A:
+	// - Writes PING message to chain B (otherChain = chainB)
+	// - Reads PONG message from chain B (expecting it to come from pingPongAddrB)
 	pingParams := PingPongParams{
-		TxChainID: chainAId, // Runs on chain A
-		ChainSrc:  chainAId, // Source is chain A
-		ChainDest: chainBId,
-		Sender:    common.HexToAddress(pingPongAddrB), // Expected sender of PONG
-		Receiver:  addressA,
+		TxChainID: chainAId,                           // Transaction runs on chain A
+		ChainSrc:  chainAId,                           // Source chain (for reference)
+		ChainDest: chainBId,                           // otherChain parameter = chain B
+		Sender:    common.HexToAddress(pingPongAddrB), // pongSender: who will send PONG from chain B
+		Receiver:  common.HexToAddress(pingPongAddrB), // pingReceiver: who receives PING on chain B
 		SessionId: sessionId,
 		Data:      pingData,
 	}
@@ -98,14 +100,16 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Create a pong transaction on Chain B (88888)
-	// pong() reads PING from chainSrc and writes PONG to chainDest (both target Chain A!)
+	// Create a pong transaction on Chain B
+	// pong() on chain B:
+	// - Reads PING message from chain A (otherChain = chainA)
+	// - Writes PONG message to chain A
 	pongParams := PingPongParams{
-		TxChainID: chainBId, // Runs on chain B
-		ChainSrc:  chainAId, // Read PING from chain A
-		ChainDest: chainAId, // Write PONG to chain A
-		Sender:    common.HexToAddress(pingPongAddrA),
-		Receiver:  addressA,
+		TxChainID: chainBId,                           // Transaction runs on chain B
+		ChainSrc:  chainAId,                           // otherChain parameter = chain A (where PING comes from)
+		ChainDest: chainBId,                           // Destination chain (for reference)
+		Sender:    common.HexToAddress(pingPongAddrA), // pingSender: who sent PING from chain A
+		Receiver:  common.HexToAddress(pingPongAddrA), // pongReceiver: who receives PONG on chain A
 		SessionId: sessionId,
 		Data:      pongData,
 	}
@@ -156,8 +160,12 @@ func main() {
 
 	fmt.Printf("Successfully encoded ping-pong payload. Size: %d bytes\n", len(encodedPayload))
 	fmt.Printf("Session ID: %d\n", sessionId.Int64())
+	fmt.Printf("Chain A ID: %d\n", chainAId.Int64())
+	fmt.Printf("Chain B ID: %d\n", chainBId.Int64())
 	fmt.Printf("Ping data: %s\n", string(pingData))
 	fmt.Printf("Pong data: %s\n", string(pongData))
+	fmt.Printf("PingPong contract A: %s\n", pingPongAddrA)
+	fmt.Printf("PingPong contract B: %s\n", pingPongAddrB)
 
 	l1Client, err := rpc.Dial(rollupA.RPC)
 	if err != nil {
@@ -169,6 +177,14 @@ func main() {
 	err = l1Client.CallContext(context.Background(), &resultHashes, sendTxRPCMethod, hexutil.Encode(encodedPayload))
 	if err != nil {
 		log.Fatalf("RPC call failed: %v", err)
+	}
+
+	fmt.Printf("Transaction submitted successfully\n")
+	if len(resultHashes) > 0 {
+		fmt.Printf("Result hashes:\n")
+		for i, hash := range resultHashes {
+			fmt.Printf("  [%d]: %s\n", i, hash.Hex())
+		}
 	}
 }
 
