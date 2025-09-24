@@ -1247,142 +1247,6 @@ func (b *EthAPIBackend) GetPendingOriginalTxs() []*types.Transaction {
 	return result
 }
 
-// reSimulateAfterMailboxPopulation re-simulates transactions after mailbox has been populated
-// SSV
-func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(
-	ctx context.Context,
-	xtReq *rollupv1.XTRequest,
-	xtID *rollupv1.XtID,
-	coordinationStates []*SimulationState,
-) (bool, error) {
-	chainID := b.ChainConfig().ChainID
-
-	log.Info("[SSV] Starting re-simulation after mailbox population",
-		"xtID", xtID.Hex(),
-		"chainID", chainID,
-		"transactions", len(xtReq.Transactions))
-
-	// Wait for putInbox transactions to be processed
-	if err := b.waitForPutInboxTransactionsToBeProcessed(); err != nil {
-		log.Error("[SSV] Failed waiting for putInbox transactions", "error", err, "xtID", xtID.Hex())
-		return false, err
-	}
-
-	// Re-simulate each local transaction against PENDING state (so the view
-	// includes just-created putInbox transactions not yet part of latest).
-	allSuccessful := true
-	blockNrOrHash := rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber)
-
-	for _, txReq := range xtReq.Transactions {
-		txChainID := new(big.Int).SetBytes(txReq.ChainId)
-
-		// Only re-simulate transactions for our local chain
-		if txChainID.Cmp(chainID) != 0 {
-			continue
-		}
-
-		log.Info("[SSV] Re-simulating local transactions against pending state",
-			"chainID", txChainID,
-			"txCount", len(txReq.Transaction))
-
-		for i, txBytes := range txReq.Transaction {
-			tx := new(types.Transaction)
-			if err := tx.UnmarshalBinary(txBytes); err != nil {
-				log.Error("[SSV] Failed to unmarshal transaction for re-simulation",
-					"error", err,
-					"index", i,
-					"xtID", xtID.Hex())
-				allSuccessful = false
-				continue
-			}
-
-			// Re-simulate the transaction
-			success, err := b.reSimulateTransaction(ctx, tx, blockNrOrHash, xtID)
-			if err != nil {
-				log.Error("[SSV] Re-simulation error",
-					"txHash", tx.Hash().Hex(),
-					"error", err,
-					"xtID", xtID.Hex())
-				allSuccessful = false
-				continue
-			}
-
-			if !success {
-				log.Warn("[SSV] Re-simulation failed for transaction",
-					"txHash", tx.Hash().Hex(),
-					"xtID", xtID.Hex())
-				allSuccessful = false
-			} else {
-				log.Info("[SSV] Re-simulation successful for transaction",
-					"txHash", tx.Hash().Hex(),
-					"xtID", xtID.Hex())
-			}
-		}
-	}
-
-	log.Info("[SSV] Re-simulation completed",
-		"xtID", xtID.Hex(),
-		"allSuccessful", allSuccessful)
-
-	return allSuccessful, nil
-}
-
-// reSimulateTransaction re-simulates a single transaction and checks for success
-// SSV
-func (b *EthAPIBackend) reSimulateTransaction(
-	ctx context.Context,
-	tx *types.Transaction,
-	blockNrOrHash rpc.BlockNumberOrHash,
-	xtID *rollupv1.XtID,
-) (bool, error) {
-	log.Debug("[SSV] Re-simulating transaction",
-		"txHash", tx.Hash().Hex(),
-		"xtID", xtID.Hex())
-
-	// Simulate with SSV tracing to detect mailbox interactions
-	traceResult, err := b.SimulateTransaction(ctx, tx, blockNrOrHash)
-	if err != nil {
-		log.Error("[SSV] Transaction simulation with trace failed",
-			"txHash", tx.Hash().Hex(),
-			"error", err,
-			"xtID", xtID.Hex())
-		return false, err
-	}
-
-	// Check if execution was successful
-	if traceResult.ExecutionResult.Err != nil {
-		log.Warn("[SSV] Transaction execution failed in re-simulation",
-			"txHash", tx.Hash().Hex(),
-			"executionError", traceResult.ExecutionResult.Err,
-			"xtID", xtID.Hex())
-		return false, nil
-	}
-
-	// Validate that the transaction used reasonable gas (not failed silently)
-	if traceResult.ExecutionResult.UsedGas == 0 {
-		log.Warn("[SSV] Transaction used no gas, likely failed silently",
-			"txHash", tx.Hash().Hex(),
-			"xtID", xtID.Hex())
-		return false, nil
-	}
-
-	// Check that mailbox operations were traced (indicating they succeeded)
-	if len(traceResult.Operations) == 0 {
-		log.Warn("[SSV] No mailbox operations detected in re-simulation",
-			"txHash", tx.Hash().Hex(),
-			"xtID", xtID.Hex())
-		return false, nil
-	}
-
-	log.Debug("[SSV] Transaction re-simulation successful",
-		"txHash", tx.Hash().Hex(),
-		"gasUsed", traceResult.ExecutionResult.UsedGas,
-		"mailboxOps", len(traceResult.Operations),
-		"xtID", xtID.Hex())
-
-	return true, nil
-}
-
 // waitForPutInboxTransactionsToBeProcessed waits for putInbox transactions to be included
 // SSV
 func (b *EthAPIBackend) waitForPutInboxTransactionsToBeProcessed() error {
@@ -1658,198 +1522,149 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		b,
 	)
 
-	// Ensure this sequencer is the coordinator before attempting coordination
+	// check if sequencer is coordinator
 	if err := b.isCoordinator(ctx, mailboxProcessor); err != nil {
-		log.Error("[SSV] Sequencer is not coordinator for mailbox", "err", err)
+		log.Error("[SSV] Sequencer is not coordinator", "err", err)
 		return false, err
 	}
 
-	coordinationStates := make([]*SimulationState, 0)
-	txDone := make(map[string]struct{})
+	var newFulfilledDeps []CrossRollupDependency
+	historicalSentCIRCMsgs := make([]CrossRollupMessage, 0)
+	historicalCIRCDeps := make([]CrossRollupDependency, 0)
 
-	// Simulate each local transaction
-	for _, txReq := range localTxs {
-		for _, txBytes := range txReq.Transaction {
-			tx := &types.Transaction{}
-			if err := tx.UnmarshalBinary(txBytes); err != nil {
-				return false, fmt.Errorf("failed to unmarshal transaction: %w", err)
-			}
+	startNonce, err := b.GetPoolNonce(ctx, sequencerAddr)
+	if err != nil {
+		return false, fmt.Errorf("failed to get nonce: %v", err)
+	}
 
-			traceResult, err := b.SimulateTransaction(ctx, tx, rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber))
+	txDone := make(map[string]interface{}, 0)
+	timeout := time.After(30 * time.Second) // Shorter timeout for SBCP
+
+	sequencerNonce := startNonce // start from current nonce
+
+	for {
+		// Populate mempool with new putInbox txs
+		for _, dep := range newFulfilledDeps {
+			putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, sequencerNonce)
 			if err != nil {
-				return false, fmt.Errorf("failed to simulate transaction: %w", err)
+				return false, fmt.Errorf("failed to createPutInboxTx: %v", err)
 			}
 
-			simState, err := mailboxProcessor.AnalyzeTransaction(traceResult, nil, nil, tx)
+			err = b.SubmitSequencerTransaction(ctx, putInboxTx)
 			if err != nil {
-				return false, fmt.Errorf("failed to analyze transaction: %w", err)
+				return false, fmt.Errorf(
+					"failed to SubmitSequencerTransaction (txHash=%s): %v",
+					putInboxTx.Hash().Hex(),
+					err,
+				)
 			}
+			sequencerNonce++
+		}
 
-			coordinationStates = append(coordinationStates, simState)
-			log.Info("[SSV] Transaction analyzed",
-				"txHash", tx.Hash().Hex(),
-				"requiresCoordination", simState.RequiresCoordination(),
-				"dependencies", len(simState.Dependencies),
-				"outbound", len(simState.OutboundMessages))
+		historicalCIRCDeps = append(historicalCIRCDeps, newFulfilledDeps...)
+		newFulfilledDeps = make([]CrossRollupDependency, 0)
 
-			// Pool successful transactions immediately
+		var coordinationStates []*SimulationState
+		for _, txReq := range localTxs {
+			for _, txBytes := range txReq.Transaction {
+				tx := new(types.Transaction)
+				if err := tx.UnmarshalBinary(txBytes); err != nil {
+					return false, err
+				}
+
+				traceResult, err := b.SimulateTransaction(
+					ctx,
+					tx,
+					rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber),
+				)
+				if err != nil {
+					log.Error(
+						"[SSV] Cross-chain transaction simulation failed",
+						"txHash",
+						tx.Hash().Hex(),
+						"error",
+						err,
+					)
+					return false, fmt.Errorf("simulation failed: %w", err)
+				}
+
+				simState, err := mailboxProcessor.AnalyzeTransaction(
+					traceResult,
+					historicalSentCIRCMsgs,
+					historicalCIRCDeps,
+					tx,
+				)
+				if err != nil {
+					log.Error("[SSV] Failed to process transaction", "error", err, "txHash", tx.Hash().Hex())
+					return false, err
+				}
+				coordinationStates = append(coordinationStates, simState)
+
+				log.Info(
+					"[SSV] Transaction analyzed",
+					"txHash",
+					tx.Hash().Hex(),
+					"requiresCoordination",
+					simState.RequiresCoordination(),
+					"dependencies",
+					len(simState.Dependencies),
+					"outbound",
+					len(simState.OutboundMessages),
+				)
+			}
+		}
+
+		if requiresCoordination(coordinationStates) {
+			// Handle cross-rollup coordination for each transaction that needs it
+			for _, state := range coordinationStates {
+				if state.RequiresCoordination() {
+					var sentOutboundMsgs []CrossRollupMessage
+					var fulFilledDeps []CrossRollupDependency
+					sentOutboundMsgs, fulFilledDeps, err = mailboxProcessor.handleCrossRollupCoordination(
+						ctx,
+						state,
+						xtID,
+					)
+					if err != nil {
+						log.Error("[SSV] Cross-rollup coordination failed", "error", err, "xtID", xtID.Hex())
+						return false, err
+					}
+
+					newFulfilledDeps = append(newFulfilledDeps, fulFilledDeps...)
+					historicalSentCIRCMsgs = append(historicalSentCIRCMsgs, sentOutboundMsgs...)
+				}
+			}
+			log.Info("[SSV] Cross-rollup coordination phase completed", "xtID", xtID.Hex())
+		}
+
+		for _, state := range coordinationStates {
+			tx := state.Tx
 			_, done := txDone[tx.Hash().Hex()]
-			if simState.Success && !done && len(simState.Dependencies) == 0 {
-				log.Info("[SSV] Pooling successful transaction immediately", "hash", tx.Hash().Hex())
-				b.poolPayloadTx(tx)
+			// Add to mempool if: 1. no revert() 2. not added before 3. no CIRCMessages to be processed
+			if state.Success && !done && (len(state.Dependencies) == 0) {
+				log.Info(
+					"[SSV] Payload tx done, adding to payload mempool",
+					"hash",
+					tx.Hash().Hex(),
+					"count",
+					len(b.pendingSequencerTxs),
+				)
+				b.poolPayloadTx(tx) // user tx
 				txDone[tx.Hash().Hex()] = struct{}{}
 			}
 		}
-	}
 
-	allSentMsgs := make([]CrossRollupMessage, 0)
-	allFulfilledDeps := make([]CrossRollupDependency, 0)
-
-	for _, state := range coordinationStates {
-		if !state.RequiresCoordination() {
-			continue
+		// successful when no tx ends up with revert()
+		if successfulAll(coordinationStates) {
+			return true, nil
 		}
 
-		log.Info("[SSV] Transaction requires cross-rollup coordination",
-			"txHash", state.Tx.Hash().Hex(),
-			"dependencies", len(state.Dependencies),
-			"outbound", len(state.OutboundMessages))
-
-		sentMsgs, fulfilledDeps, err := mailboxProcessor.handleCrossRollupCoordination(ctx, state, xtID)
-		if err != nil {
-			return false, fmt.Errorf("failed to handle cross-rollup coordination: %w", err)
-		}
-
-		log.Info(
-			"[SSV] Cross-rollup coordination completed",
-			"xtID",
-			xtID.Hex(),
-			"sent",
-			len(sentMsgs),
-			"received",
-			len(fulfilledDeps),
-		)
-
-		allSentMsgs = append(allSentMsgs, sentMsgs...)
-		allFulfilledDeps = append(allFulfilledDeps, fulfilledDeps...)
-	}
-
-	// Create putInbox transactions for fulfilled dependencies
-	if len(allFulfilledDeps) > 0 {
-		log.Info("[SSV] Creating putInbox transactions for fulfilled dependencies", "count", len(allFulfilledDeps))
-
-		nonce, err := b.GetPoolNonce(ctx, sequencerAddr)
-		if err != nil {
-			return false, fmt.Errorf("failed to get nonce: %w", err)
-		}
-
-		// Create putInbox transactions
-		currentNonce := nonce
-		for _, dep := range allFulfilledDeps {
-			putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, currentNonce)
-			if err != nil {
-				return false, fmt.Errorf("failed to create putInbox transaction: %w", err)
-			}
-
-			if err := b.SubmitSequencerTransaction(ctx, putInboxTx); err != nil {
-				return false, fmt.Errorf("failed to submit putInbox transaction: %w", err)
-			}
-
-			currentNonce++
-		}
-
-		// Wait for putInbox transactions to be processed
-		if err := b.waitForPutInboxTransactionsToBeProcessed(); err != nil {
-			return false, fmt.Errorf("failed to wait for putInbox transactions: %w", err)
-		}
-
-		// Re-simulate after putInbox to detect ACK messages that need to be sent
-		for i, state := range coordinationStates {
-			traceResult, err := b.SimulateTransaction(
-				ctx,
-				state.Tx,
-				rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber),
-			)
-			if err != nil {
-				continue
-			}
-
-			newSimState, err := mailboxProcessor.AnalyzeTransaction(
-				traceResult,
-				allSentMsgs,
-				allFulfilledDeps,
-				state.Tx,
-			)
-			if err != nil {
-				continue
-			}
-
-			coordinationStates[i] = newSimState
-			log.Info(
-				"[SSV] Re-simulation successful for transaction",
-				"txHash",
-				state.Tx.Hash().Hex(),
-				"xtID",
-				xtID.Hex(),
-			)
-
-			// Send any ACK messages detected in re-simulation
-			for _, outMsg := range newSimState.OutboundMessages {
-				log.Info("[SSV] Detected new ACK message in re-simulation",
-					"xtID", xtID.Hex(),
-					"srcChain", outMsg.SourceChainID,
-					"destChain", outMsg.DestChainID,
-					"sessionId", outMsg.SessionID,
-					"label", string(outMsg.Label))
-
-				if err := mailboxProcessor.sendCIRCMessage(ctx, &outMsg, xtID); err != nil {
-					log.Error("[SSV] Failed to send ACK CIRC message", "error", err, "xtID", xtID.Hex())
-					continue
-				}
-			}
-
-			if len(newSimState.OutboundMessages) > 0 {
-				log.Info(
-					"[SSV] Successfully sent ACK CIRC messages after putInbox",
-					"count",
-					len(newSimState.OutboundMessages),
-					"xtID",
-					xtID.Hex(),
-				)
-			}
-
-			// Pool transactions immediately when they become successful
-			_, done := txDone[state.Tx.Hash().Hex()]
-			if newSimState.Success && !done && len(newSimState.Dependencies) == 0 {
-				log.Info("[SSV] Pooling transaction after re-simulation", "hash", state.Tx.Hash().Hex())
-				b.poolPayloadTx(state.Tx)
-				txDone[state.Tx.Hash().Hex()] = struct{}{}
-			}
+		log.Info("[SSV] Transaction requires another round of simulation", "xtID", xtID.Hex())
+		select {
+		case <-timeout:
+			log.Error("[SSV] Cross-rollup coordination timeout", "xtID", xtID.Hex())
+			return false, fmt.Errorf("coordination timeout")
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
-
-	// Final check - pool any remaining successful transactions that weren't pooled yet
-	for _, state := range coordinationStates {
-		tx := state.Tx
-		_, done := txDone[tx.Hash().Hex()]
-		if state.Success && !done && len(state.Dependencies) == 0 {
-			log.Info("[SSV] Pooling remaining successful transaction", "hash", tx.Hash().Hex())
-			b.poolPayloadTx(tx)
-			txDone[tx.Hash().Hex()] = struct{}{}
-		}
-	}
-
-	// Check if all transactions are successful
-	allSuccessful := successfulAll(coordinationStates)
-	log.Info(
-		"[SSV] SBCP simulation completed",
-		"xtID",
-		xtID.Hex(),
-		"allSuccessful",
-		allSuccessful,
-		"pooled_original_txs",
-		len(b.GetPendingOriginalTxs()),
-	)
-
-	return allSuccessful, nil
 }
