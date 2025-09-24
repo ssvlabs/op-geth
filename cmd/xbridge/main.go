@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/rand"
 	"fmt"
 	"log"
 	"math/big"
@@ -69,7 +70,7 @@ func main() {
 	tokenA := common.HexToAddress(TokenAddr)
 
 	// Create bridge parameters
-	sessionId := big.NewInt(12345)
+	sessionId := generateRandomSessionID()
 	amount := big.NewInt(100)
 
 	// Create a send transaction (A -> B)
@@ -221,4 +222,15 @@ func getNonceFor(networkRPCAddr string, address common.Address) (uint64, error) 
 	}
 
 	return nonce, nil
+}
+
+// generateRandomSessionID returns a random big.Int in the range [0, 2^63-1]
+func generateRandomSessionID() *big.Int {
+	// You can adjust the max value depending on your needs
+	max := new(big.Int).Lsh(big.NewInt(1), 63) // 2^63
+	n, err := rand.Int(rand.Reader, max)
+	if err != nil {
+		log.Fatalf("failed to generate random session ID: %v", err)
+	}
+	return n
 }

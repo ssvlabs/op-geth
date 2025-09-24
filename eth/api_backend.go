@@ -1784,10 +1784,6 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 				continue
 			}
 
-			if traceResult.ExecutionResult.Err == nil {
-				newSimState.Success = true // Mark as successful after mailbox population
-			}
-
 			coordinationStates[i] = newSimState
 			log.Info(
 				"[SSV] Re-simulation successful for transaction",
