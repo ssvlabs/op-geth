@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -34,15 +33,26 @@ import (
 const mailboxABI = `[{"type":"constructor","inputs":[{"name":"_coordinator","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"COORDINATOR","inputs":[],"outputs":[{"name":"","type":"address","internalType":"address"}],"stateMutability":"view"},{"type":"function","name":"chainIDsInbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"uint256","internalType":"uint256"}],"stateMutability":"view"},{"type":"function","name":"chainIDsOutbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"uint256","internalType":"uint256"}],"stateMutability":"view"},{"type":"function","name":"computeKey","inputs":[{"name":"id","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"createdKeys","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"used","type":"bool","internalType":"bool"}],"stateMutability":"view"},{"type":"function","name":"getKey","inputs":[{"name":"chainMessageSender","type":"uint256","internalType":"uint256"},{"name":"chainMessageRecipient","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"stateMutability":"pure"},{"type":"function","name":"inbox","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"inboxRootPerChain","inputs":[{"name":"chainId","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"inboxRoot","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"messageHeaderListInbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"messageHeaderListOutbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"outbox","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"outboxRootPerChain","inputs":[{"name":"chainId","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"outboxRoot","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"putInbox","inputs":[{"name":"chainMessageSender","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"function","name":"read","inputs":[{"name":"chainMessageSender","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"write","inputs":[{"name":"chainMessageRecipient","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"event","name":"NewInboxKey","inputs":[{"name":"index","type":"uint256","indexed":true,"internalType":"uint256"},{"name":"key","type":"bytes32","indexed":false,"internalType":"bytes32"}],"anonymous":false},{"type":"event","name":"NewOutboxKey","inputs":[{"name":"index","type":"uint256","indexed":true,"internalType":"uint256"},{"name":"key","type":"bytes32","indexed":false,"internalType":"bytes32"}],"anonymous":false},{"type":"error","name":"InvalidCoordinator","inputs":[]},{"type":"error","name":"MessageNotFound","inputs":[]}]`
 
 type MailboxCall struct {
-	ChainSrc  *big.Int
-	ChainDest *big.Int
-	Sender    common.Address
-	Receiver  common.Address
+	// For read() calls
+	ChainMessageSender *big.Int       // chainMessageSender parameter
+	Sender             common.Address // sender parameter (on source chain)
+
+	// For write() calls
+	ChainMessageRecipient *big.Int       // chainMessageRecipient parameter
+	Receiver              common.Address // receiver parameter (on dest chain)
+
+	// Common fields
 	SessionId *big.Int
-	Data      []byte
 	Label     []byte
-	IsRead    bool
-	IsWrite   bool
+	Data      []byte
+
+	// Call type flags
+	IsRead  bool
+	IsWrite bool
+
+	// Derived fields for processing
+	ChainSrc  *big.Int // Computed: block.chainid for write, chainMessageSender for read
+	ChainDest *big.Int // Computed: chainMessageRecipient for write, block.chainid for read
 }
 
 type CrossRollupDependency struct {
@@ -70,8 +80,7 @@ type CrossRollupMessage struct {
 }
 
 type SimulationState struct {
-	// TODO: consider naming Revert and invert bool checks
-	Success          bool // success when not revert()'ed
+	Success          bool
 	Dependencies     []CrossRollupDependency
 	OutboundMessages []CrossRollupMessage
 	Tx               *types.Transaction
@@ -125,17 +134,6 @@ func (mp *MailboxProcessor) AnalyzeTransaction(traceResult *ssv.SSVTraceResult, 
 	return simState, nil
 }
 
-func parseCallType(call *MailboxCall) string {
-	if call.IsRead {
-		return "read"
-	}
-	if call.IsWrite {
-		return "write"
-	}
-
-	return "unknown"
-}
-
 func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, sentOutboundMsgs []CrossRollupMessage, fullfilledDeps []CrossRollupDependency, txHashHex string) (*SimulationState, error) {
 	simState := &SimulationState{
 		Success:          traceResult.ExecutionResult.Err == nil,
@@ -176,21 +174,21 @@ func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, 
 				continue
 			}
 
-			log.Info(fmt.Sprintf("[SSV] Parsed mailbox %s call", parseCallType(call)),
-				"chainSrc", call.ChainSrc,
-				"chainDest", call.ChainDest,
-				"receiver", call.Receiver.Hex(),
-				"sessionId", call.SessionId)
-
-			// mailbox.read(...)
+			// Process read() calls
 			if call.IsRead {
-				// If we're reading (chainDest  == chainID) this is a dependency
-				if awaitRead(call, mp.chainID) {
+				log.Info("[SSV] Parsed mailbox read call",
+					"chainMessageSender", call.ChainMessageSender,
+					"sender", call.Sender.Hex(),
+					"sessionId", call.SessionId,
+					"label", string(call.Label))
+
+				// Check if we need to wait for this message (from another chain to us)
+				if call.ChainMessageSender.Uint64() != mp.chainID {
 					dep := CrossRollupDependency{
-						SourceChainID: call.ChainSrc.Uint64(),
-						DestChainID:   call.ChainDest.Uint64(),
+						SourceChainID: call.ChainMessageSender.Uint64(),
+						DestChainID:   mp.chainID,
 						Sender:        call.Sender,
-						Receiver:      call.Receiver,
+						Receiver:      op.From, // The contract calling read() is the receiver
 						SessionID:     call.SessionId,
 						Label:         call.Label,
 						RequiredData:  true,
@@ -199,34 +197,31 @@ func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, 
 
 					if !containsDependency(fullfilledDeps, dep) {
 						simState.Dependencies = append(simState.Dependencies, dep)
-
-						log.Info("[SSV] Detected new mailbox read call",
+						log.Info("[SSV] Detected new mailbox read dependency",
 							"chainSrc", dep.SourceChainID,
 							"chainDest", dep.DestChainID,
+							"sender", dep.Sender.Hex(),
 							"receiver", dep.Receiver.Hex(),
 							"sessionId", dep.SessionID)
-					} else {
-						log.Info("[SSV] Ignore mailbox read call: already fulfilled",
-							"chainSrc", call.ChainSrc.Uint64(),
-							"chainDest", call.ChainDest.Uint64(),
-							"localChain", mp.chainID)
 					}
-				} else {
-					log.Info("[SSV] Ignore mailbox read call: chainDest is another chain",
-						"chainSrc", call.ChainSrc.Uint64(),
-						"chainDest", call.ChainDest.Uint64(),
-						"localChain", mp.chainID)
 				}
 			}
 
-			// mailbox.write(...)
+			// Process write() calls
 			if call.IsWrite {
-				// If we're writing (chainSrc == chainID) this is an outbound message
-				if mustWrite(call, mp.chainID) {
+				log.Info("[SSV] Parsed mailbox write call",
+					"chainMessageRecipient", call.ChainMessageRecipient,
+					"receiver", call.Receiver.Hex(),
+					"sessionId", call.SessionId,
+					"label", string(call.Label),
+					"dataLen", len(call.Data))
+
+				// Check if we're writing to another chain
+				if call.ChainMessageRecipient.Uint64() != mp.chainID {
 					msg := CrossRollupMessage{
-						SourceChainID: call.ChainSrc.Uint64(),
-						DestChainID:   call.ChainDest.Uint64(),
-						Sender:        op.From,
+						SourceChainID: mp.chainID,
+						DestChainID:   call.ChainMessageRecipient.Uint64(),
+						Sender:        op.From, // The contract calling write() is the sender
 						Receiver:      call.Receiver,
 						SessionID:     call.SessionId,
 						Data:          call.Data,
@@ -237,29 +232,15 @@ func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, 
 
 					if !alreadySent(sentOutboundMsgs, msg) {
 						simState.OutboundMessages = append(simState.OutboundMessages, msg)
-
-						log.Info("[SSV] Detected new mailbox write call",
+						log.Info("[SSV] Detected new mailbox write message",
 							"chainSrc", msg.SourceChainID,
 							"chainDest", msg.DestChainID,
 							"sender", msg.Sender.Hex(),
 							"receiver", msg.Receiver.Hex(),
-							"sessionId", msg.SessionID,
-							"dataLen", len(msg.Data))
-					} else {
-						log.Info("[SSV] Ignore mailbox write call: already sent",
-							"chainSrc", call.ChainSrc.Uint64(),
-							"chainDest", call.ChainDest.Uint64(),
-							"localChain", mp.chainID)
+							"sessionId", msg.SessionID)
 					}
-				} else {
-					log.Info("[SSV] Ignore mailbox write call: chainSrc is another chain",
-						"chainSrc", call.ChainSrc.Uint64(),
-						"chainDest", call.ChainDest.Uint64(),
-						"localChain", mp.chainID)
 				}
 			}
-		} else if op.Type != vm.CALL && op.Type != vm.STATICCALL {
-			log.Debug("[SSV] Ignoring non-CALL/STATICCALL operation to mailbox", "type", op.Type.String(), "address", op.Address.Hex())
 		}
 	}
 
@@ -268,27 +249,6 @@ func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, 
 		"requiresCoordination", simState.RequiresCoordination(),
 		"dependencies", len(simState.Dependencies),
 		"outboundMessages", len(simState.OutboundMessages))
-
-	// Log detailed dependency information
-	for i, dep := range simState.Dependencies {
-		log.Info("[SSV] Dependency details",
-			"index", i,
-			"chainSrc", dep.SourceChainID,
-			"chainDest", dep.DestChainID,
-			"sessionId", dep.SessionID,
-			"label", string(dep.Label))
-	}
-
-	// Log detailed outbound message information
-	for i, msg := range simState.OutboundMessages {
-		log.Info("[SSV] Outbound message details",
-			"index", i,
-			"chainSrc", msg.SourceChainID,
-			"chainDest", msg.DestChainID,
-			"sessionId", msg.SessionID,
-			"dataLen", len(msg.Data),
-			"label", string(msg.Label))
-	}
 
 	return simState, nil
 }
@@ -307,7 +267,6 @@ func alreadySent(msgs []CrossRollupMessage, msg CrossRollupMessage) bool {
 			return true
 		}
 	}
-
 	return false
 }
 
@@ -324,18 +283,7 @@ func containsDependency(deps []CrossRollupDependency, dep CrossRollupDependency)
 			return true
 		}
 	}
-
 	return false
-}
-
-// Check whether our sequencer must write
-func mustWrite(call *MailboxCall, chainID uint64) bool {
-	return call.ChainSrc.Uint64() == chainID && call.ChainDest.Uint64() != chainID
-}
-
-// Checker whether our sequencer should wait for other sequencer "mustWrite"
-func awaitRead(call *MailboxCall, chainID uint64) bool {
-	return call.ChainSrc.Uint64() != chainID && call.ChainDest.Uint64() == chainID
 }
 
 func (mp *MailboxProcessor) parseMailboxCall(callData []byte) (*MailboxCall, error) {
@@ -344,29 +292,34 @@ func (mp *MailboxProcessor) parseMailboxCall(callData []byte) (*MailboxCall, err
 	}
 
 	methodSig := callData[:4]
-
-	// Parse using method signatures directly
 	parsedABI, err := abi.JSON(strings.NewReader(mailboxABI))
 	if err != nil {
 		return nil, err
 	}
 
-	// Check method by comparing signatures
+	// Check for read() method - 4 parameters
 	if bytes.Equal(methodSig, parsedABI.Methods["read"].ID) {
 		call, err := mp.parseReadCall(callData[4:])
 		if err != nil {
 			return nil, err
 		}
 		call.IsRead = true
+		// For read: chainSrc = chainMessageSender, chainDest = this chain
+		call.ChainSrc = call.ChainMessageSender
+		call.ChainDest = new(big.Int).SetUint64(mp.chainID)
 		return call, nil
 	}
 
+	// Check for write() method - 5 parameters
 	if bytes.Equal(methodSig, parsedABI.Methods["write"].ID) {
 		call, err := mp.parseWriteCall(callData[4:])
 		if err != nil {
 			return nil, err
 		}
 		call.IsWrite = true
+		// For write: chainSrc = this chain, chainDest = chainMessageRecipient
+		call.ChainSrc = new(big.Int).SetUint64(mp.chainID)
+		call.ChainDest = call.ChainMessageRecipient
 		return call, nil
 	}
 
@@ -380,13 +333,12 @@ func (mp *MailboxProcessor) parseReadCall(data []byte) (*MailboxCall, error) {
 		return nil, err
 	}
 
+	// read(chainMessageSender, sender, sessionId, label)
 	return &MailboxCall{
-		ChainSrc:  values[0].(*big.Int),
-		ChainDest: new(big.Int).SetUint64(mp.chainID),
-		Sender:    values[1].(common.Address),
-		Receiver:  values[2].(common.Address),
-		SessionId: values[3].(*big.Int),
-		Label:     values[4].([]byte),
+		ChainMessageSender: values[0].(*big.Int),
+		Sender:             values[1].(common.Address),
+		SessionId:          values[2].(*big.Int),
+		Label:              values[3].([]byte),
 	}, nil
 }
 
@@ -397,13 +349,13 @@ func (mp *MailboxProcessor) parseWriteCall(data []byte) (*MailboxCall, error) {
 		return nil, err
 	}
 
+	// write(chainMessageRecipient, receiver, sessionId, label, data)
 	return &MailboxCall{
-		ChainSrc:  new(big.Int).SetUint64(mp.chainID),
-		ChainDest: values[0].(*big.Int),
-		Receiver:  values[1].(common.Address),
-		SessionId: values[2].(*big.Int),
-		Label:     values[3].([]byte),
-		Data:      values[4].([]byte),
+		ChainMessageRecipient: values[0].(*big.Int),
+		Receiver:              values[1].(common.Address),
+		SessionId:             values[2].(*big.Int),
+		Label:                 values[3].([]byte),
+		Data:                  values[4].([]byte),
 	}, nil
 }
 
@@ -595,6 +547,7 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 		return nil, err
 	}
 
+	// putInbox(chainMessageSender, sender, receiver, sessionId, label, data)
 	callData, err := parsedABI.Pack("putInbox",
 		new(big.Int).SetUint64(dep.SourceChainID),
 		dep.Sender,
@@ -614,20 +567,18 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 	case native.RollupBChainID:
 		mailboxAddr = mp.mailboxAddresses[1]
 	default:
-		return nil, fmt.Errorf("unable to select mailbox addr. Unsupported \"%d\"chain id", mp.chainID)
+		return nil, fmt.Errorf("unable to select mailbox addr. Unsupported \"%d\" chain id", mp.chainID)
 	}
 
 	log.Info("[SSV] Created putInbox transaction",
 		"nonce", nonce,
 		"mailbox", mailboxAddr.Hex(),
-		"sourceChain", dep.SourceChainID,
-		"destChain", dep.DestChainID,
+		"chainMessageSender", dep.SourceChainID,
+		"sender", dep.Sender.Hex(),
+		"receiver", dep.Receiver.Hex(),
 		"sessionId", dep.SessionID,
-		"data", hex.EncodeToString(dep.Data),
-		"dataLen", len(callData),
-		"receiver", dep.Receiver,
-		"label", dep.Label,
-	)
+		"label", string(dep.Label),
+		"dataLen", len(dep.Data))
 
 	txData := &types.DynamicFeeTx{
 		ChainID:    new(big.Int).SetUint64(mp.chainID),
@@ -641,7 +592,6 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 		AccessList: nil,
 	}
 
-	// TODO: unmarshalling JSON might be cpu intensive, remove later
 	mp.traceTransaction(callData, mailboxAddr)
 
 	tx := types.NewTx(txData)
