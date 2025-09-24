@@ -513,8 +513,8 @@ func (mp *MailboxProcessor) getCoordinatorAddress(ctx context.Context, addr comm
 		return common.Address{}, err
 	}
 
-	// The Mailbox ABI exposes the coordinator under the "coordinator" view
-	callData, err := parsedABI.Pack("coordinator")
+	// The Mailbox ABI exposes the coordinator under the "COORDINATOR" view
+	callData, err := parsedABI.Pack("COORDINATOR")
 	if err != nil {
 		return common.Address{}, err
 	}
