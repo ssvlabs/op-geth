@@ -1658,6 +1658,12 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		b,
 	)
 
+	// Ensure this sequencer is the coordinator before attempting coordination
+	if err := b.isCoordinator(ctx, mailboxProcessor); err != nil {
+		log.Error("[SSV] Sequencer is not coordinator for mailbox", "err", err)
+		return false, err
+	}
+
 	coordinationStates := make([]*SimulationState, 0)
 	txDone := make(map[string]struct{})
 
