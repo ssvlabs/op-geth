@@ -1785,13 +1785,18 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 			log.Info("[SSV] Applied putInbox tx to re-simulation state", "txHash", putInboxTx.Hash().Hex())
 		}
 
-		// Now, re-simulate the original transactions against the modified state
-		for i, state := range coordinationStates {
-			snapshot := stateDB.Snapshot()
+		// Get a new stateDB with the changes committed
+		root := stateDB.IntermediateRoot(b.ChainConfig().IsEIP158(header.Number))
+		cleanStateDB, err := b.eth.BlockChain().StateAt(root)
+		if err != nil {
+			return false, fmt.Errorf("failed to get intermediate state for re-simulation: %w", err)
+		}
 
+		// Now, re-simulate the original transactions against the new clean stateDB
+		for i, state := range coordinationStates {
+			// Since we have a fresh stateDB, we don't need to snapshot if only one tx.
 			msg, err := core.TransactionToMessage(state.Tx, signer, header.BaseFee)
 			if err != nil {
-				stateDB.RevertToSnapshot(snapshot)
 				continue
 			}
 
@@ -1801,18 +1806,16 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 			vmConfig.Tracer = tracer.Hooks()
 			vmConfig.EnablePreimageRecording = true
 
-			blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
-			evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), vmConfig)
-			stateDB.SetTxContext(state.Tx.Hash(), stateDB.TxIndex()+1)
+			blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), cleanStateDB)
+			evm := vm.NewEVM(blockContext, cleanStateDB, b.ChainConfig(), vmConfig)
+			cleanStateDB.SetTxContext(state.Tx.Hash(), cleanStateDB.TxIndex()+1)
+
 			result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(header.GasLimit))
 			if err != nil {
-				stateDB.RevertToSnapshot(snapshot)
 				continue
 			}
 			traceResult := tracer.GetTraceResult()
 			traceResult.ExecutionResult = result
-
-			stateDB.RevertToSnapshot(snapshot) // Revert for the next tx in the loop
 
 			newSimState, err := mailboxProcessor.AnalyzeTransaction(
 				traceResult,
