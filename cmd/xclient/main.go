@@ -72,16 +72,17 @@ func main() {
 	pingData := []byte("hello from rollup A")
 	pongData := []byte("hello from rollup B")
 
+	pingPongContractAddr := common.HexToAddress(pingPongAddr)
+
 	// Create a ping transaction on Chain A
-	// ping() on chain A:
-	// - Writes PING message to chain B (otherChain = chainB)
-	// - Reads PONG message from chain B (expecting it to come from pingPongAddrB)
+	// The `ping` function sends a PING message and expects a PONG message back.
+	// The sender/receiver of these cross-chain messages are the PingPong contracts themselves.
 	pingParams := PingPongParams{
-		TxChainID: chainAId,                           // Transaction runs on chain A
-		ChainSrc:  chainAId,                           // Source chain (for reference)
-		ChainDest: chainBId,                           // otherChain parameter = chain B
-		Sender:    common.HexToAddress(pingPongAddrB), // pongSender: who will send PONG from chain B
-		Receiver:  common.HexToAddress(pingPongAddrB), // pingReceiver: who receives PING on chain B
+		TxChainID: chainAId,             // Transaction runs on chain A
+		ChainSrc:  chainAId,             // Source chain (for reference)
+		ChainDest: chainBId,             // otherChain parameter = chain B
+		Sender:    pingPongContractAddr, // pongSender: the PingPong contract on chain B
+		Receiver:  pingPongContractAddr, // pingReceiver: the PingPong contract on chain B
 		SessionId: sessionId,
 		Data:      pingData,
 	}
@@ -102,15 +103,14 @@ func main() {
 	}
 
 	// Create a pong transaction on Chain B
-	// pong() on chain B:
-	// - Reads PING message from chain A (otherChain = chainA)
-	// - Writes PONG message to chain A
+	// The `pong` function sends a PONG message and expects a PING message back.
+	// The sender/receiver of these cross-chain messages are the PingPong contracts themselves.
 	pongParams := PingPongParams{
-		TxChainID: chainBId,                           // Transaction runs on chain B
-		ChainSrc:  chainAId,                           // otherChain parameter = chain A (where PING comes from)
-		ChainDest: chainBId,                           // Destination chain (for reference)
-		Sender:    common.HexToAddress(pingPongAddrA), // pingSender: who sent PING from chain A
-		Receiver:  common.HexToAddress(pingPongAddrA), // pongReceiver: who receives PONG on chain A
+		TxChainID: chainBId,             // Transaction runs on chain B
+		ChainSrc:  chainAId,             // otherChain parameter = chain A (where PING comes from)
+		ChainDest: chainBId,             // Destination chain (for reference)
+		Sender:    pingPongContractAddr, // pingSender: the PingPong contract on chain A
+		Receiver:  pingPongContractAddr, // pongReceiver: the PingPong contract on chain A
 		SessionId: sessionId,
 		Data:      pongData,
 	}
@@ -165,8 +165,8 @@ func main() {
 	fmt.Printf("Chain B ID: %d\n", chainBId.Int64())
 	fmt.Printf("Ping data: %s\n", string(pingData))
 	fmt.Printf("Pong data: %s\n", string(pongData))
-	fmt.Printf("PingPong contract A: %s\n", pingPongAddrA)
-	fmt.Printf("PingPong contract B: %s\n", pingPongAddrB)
+	fmt.Printf("PingPong contract A: %s\n", pingPongAddr)
+	fmt.Printf("PingPong contract B: %s\n", pingPongAddr)
 
 	l1Client, err := rpc.Dial(rollupA.RPC)
 	if err != nil {

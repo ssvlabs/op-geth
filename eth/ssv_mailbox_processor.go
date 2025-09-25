@@ -583,8 +583,8 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 	txData := &types.DynamicFeeTx{
 		ChainID:    new(big.Int).SetUint64(mp.chainID),
 		Nonce:      nonce,
-		GasTipCap:  big.NewInt(1000000000),
-		GasFeeCap:  big.NewInt(20000000000),
+		GasTipCap:  big.NewInt(2000000000),
+		GasFeeCap:  big.NewInt(22000000000),
 		Gas:        300000,
 		To:         &mailboxAddr,
 		Value:      big.NewInt(0),
