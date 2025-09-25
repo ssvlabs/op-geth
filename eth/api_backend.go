@@ -1620,6 +1620,12 @@ func (b *EthAPIBackend) sendStoredL2Block(ctx context.Context) error {
 	return nil
 }
 
+const (
+	mailboxReSimMaxAttempts = 5
+)
+
+var mailboxReSimDelay = 200 * time.Millisecond
+
 func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	ctx context.Context,
 	xtReq *rollupv1.XTRequest,
@@ -1665,6 +1671,12 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 
 	coordinationStates := make([]*SimulationState, 0)
 	txDone := make(map[string]struct{})
+	allSentMsgs := make([]CrossRollupMessage, 0)
+	allFulfilledDeps := make([]CrossRollupDependency, 0)
+	addedPutInbox := make(map[string]struct{})
+	sentMsgSeen := make(map[string]struct{})
+	fulfilledDepSeen := make(map[string]struct{})
+	mailboxReSimAttempts := 0
 
 	// Simulate each local transaction
 	for _, txReq := range localTxs {
@@ -1679,7 +1691,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 				return false, fmt.Errorf("failed to simulate transaction: %w", err)
 			}
 
-			simState, err := mailboxProcessor.AnalyzeTransaction(traceResult, nil, nil, tx)
+			simState, err := mailboxProcessor.AnalyzeTransaction(traceResult, allSentMsgs, allFulfilledDeps, tx)
 			if err != nil {
 				return false, fmt.Errorf("failed to analyze transaction: %w", err)
 			}
@@ -1700,9 +1712,6 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 			}
 		}
 	}
-
-	allSentMsgs := make([]CrossRollupMessage, 0)
-	allFulfilledDeps := make([]CrossRollupDependency, 0)
 
 	for _, state := range coordinationStates {
 		if !state.RequiresCoordination() {
@@ -1729,32 +1738,55 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 			len(fulfilledDeps),
 		)
 
-		allSentMsgs = append(allSentMsgs, sentMsgs...)
-		allFulfilledDeps = append(allFulfilledDeps, fulfilledDeps...)
+		for _, msg := range sentMsgs {
+			key := messageKey(msg)
+			if _, exists := sentMsgSeen[key]; !exists {
+				sentMsgSeen[key] = struct{}{}
+				allSentMsgs = append(allSentMsgs, msg)
+			}
+		}
+
+		for _, dep := range fulfilledDeps {
+			key := dependencyKey(dep)
+			if _, exists := fulfilledDepSeen[key]; !exists {
+				fulfilledDepSeen[key] = struct{}{}
+				allFulfilledDeps = append(allFulfilledDeps, dep)
+			}
+		}
 	}
 
-	// Create and process putInbox transactions before re-simulating
-	if len(allFulfilledDeps) > 0 {
-		log.Info("[SSV] Creating putInbox transactions for fulfilled dependencies", "count", len(allFulfilledDeps))
+	allSuccessful := false
 
-		nonce, err := b.GetPoolNonce(ctx, sequencerAddr)
-		if err != nil {
-			return false, fmt.Errorf("failed to get nonce: %w", err)
-		}
-
-		// Create putInbox transactions
-		currentNonce := nonce
+	for {
+		newDeps := make([]CrossRollupDependency, 0)
 		for _, dep := range allFulfilledDeps {
-			putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, currentNonce)
-			if err != nil {
-				return false, fmt.Errorf("failed to create putInbox transaction: %w", err)
+			key := dependencyKey(dep)
+			if _, exists := addedPutInbox[key]; exists {
+				continue
 			}
-			// We only need to stage them, not submit to the pool, as we will apply them manually
-			b.AddPendingPutInboxTx(putInboxTx)
-			currentNonce++
+			newDeps = append(newDeps, dep)
 		}
 
-		// Re-simulate transactions against a state that includes the putInbox transactions.
+		if len(newDeps) > 0 {
+			log.Info("[SSV] Creating putInbox transactions for fulfilled dependencies", "count", len(newDeps))
+
+			nonce, err := b.GetPoolNonce(ctx, sequencerAddr)
+			if err != nil {
+				return false, fmt.Errorf("failed to get nonce: %w", err)
+			}
+
+			currentNonce := nonce
+			for _, dep := range newDeps {
+				putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, currentNonce)
+				if err != nil {
+					return false, fmt.Errorf("failed to create putInbox transaction: %w", err)
+				}
+				b.AddPendingPutInboxTx(putInboxTx)
+				addedPutInbox[dependencyKey(dep)] = struct{}{}
+				currentNonce++
+			}
+		}
+
 		log.Info("[SSV] Starting stateful re-simulation", "xtID", xtID.Hex())
 		stateDB, header, err := b.StateAndHeaderByNumber(ctx, rpc.LatestBlockNumber)
 		if err != nil {
@@ -1762,7 +1794,6 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		}
 		signer := types.MakeSigner(b.ChainConfig(), header.Number, header.Time)
 
-		// Apply putInbox transactions to the state
 		putInboxTxs := b.GetPendingPutInboxTxs()
 		for _, putInboxTx := range putInboxTxs {
 			msg, err := core.TransactionToMessage(putInboxTx, signer, header.BaseFee)
@@ -1784,7 +1815,6 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 			log.Info("[SSV] Applied putInbox tx to re-simulation state", "txHash", putInboxTx.Hash().Hex())
 		}
 
-		// Now, re-simulate the original transactions against the modified state
 		for i, state := range coordinationStates {
 			snapshot := stateDB.Snapshot()
 
@@ -1811,7 +1841,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 			traceResult := tracer.GetTraceResult()
 			traceResult.ExecutionResult = result
 
-			stateDB.RevertToSnapshot(snapshot) // Revert for the next tx in the loop
+			stateDB.RevertToSnapshot(snapshot)
 
 			newSimState, err := mailboxProcessor.AnalyzeTransaction(
 				traceResult,
@@ -1829,17 +1859,20 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 				"txHash", state.Tx.Hash().Hex(), "xtID", xtID.Hex(), "success", newSimState.Success,
 			)
 
-			// Send any ACK messages detected in re-simulation
 			for _, outMsg := range newSimState.OutboundMessages {
+				key := messageKey(outMsg)
+				if _, exists := sentMsgSeen[key]; exists {
+					continue
+				}
 				log.Info("[SSV] Detected new ACK message in re-simulation", "xtID", xtID.Hex(), "destChain", outMsg.DestChainID)
 				if err := mailboxProcessor.sendCIRCMessage(ctx, &outMsg, xtID); err != nil {
 					log.Error("[SSV] Failed to send ACK CIRC message", "error", err, "xtID", xtID.Hex())
 				} else {
+					sentMsgSeen[key] = struct{}{}
 					allSentMsgs = append(allSentMsgs, outMsg)
 				}
 			}
 
-			// Pool transactions immediately when they become successful
 			_, done := txDone[state.Tx.Hash().Hex()]
 			if newSimState.Success && !done && len(newSimState.Dependencies) == 0 {
 				log.Info("[SSV] Pooling transaction after re-simulation", "hash", state.Tx.Hash().Hex())
@@ -1847,30 +1880,53 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 				txDone[state.Tx.Hash().Hex()] = struct{}{}
 			}
 		}
-	}
 
-	// Final check - pool any remaining successful transactions that weren't pooled yet
-	for _, state := range coordinationStates {
-		tx := state.Tx
-		_, done := txDone[tx.Hash().Hex()]
-		if state.Success && !done && len(state.Dependencies) == 0 {
-			log.Info("[SSV] Pooling remaining successful transaction", "hash", tx.Hash().Hex())
-			b.poolPayloadTx(tx)
-			txDone[tx.Hash().Hex()] = struct{}{}
+		for _, state := range coordinationStates {
+			tx := state.Tx
+			_, done := txDone[tx.Hash().Hex()]
+			if state.Success && !done && len(state.Dependencies) == 0 {
+				log.Info("[SSV] Pooling remaining successful transaction", "hash", tx.Hash().Hex())
+				b.poolPayloadTx(tx)
+				txDone[tx.Hash().Hex()] = struct{}{}
+			}
 		}
-	}
 
-	// Check if all transactions are successful
-	allSuccessful := successfulAll(coordinationStates)
-	log.Info(
-		"[SSV] SBCP simulation completed",
-		"xtID",
-		xtID.Hex(),
-		"allSuccessful",
-		allSuccessful,
-		"pooled_original_txs",
-		len(b.GetPendingOriginalTxs()),
-	)
+		allSuccessful = successfulAll(coordinationStates)
+		log.Info(
+			"[SSV] SBCP simulation completed",
+			"xtID",
+			xtID.Hex(),
+			"allSuccessful",
+			allSuccessful,
+			"pooled_original_txs",
+			len(b.GetPendingOriginalTxs()),
+		)
+
+		if allSuccessful {
+			return true, nil
+		}
+
+		pendingMailbox := false
+		for _, state := range coordinationStates {
+			if state != nil && state.PendingMailboxRead() {
+				pendingMailbox = true
+				break
+			}
+		}
+
+		if pendingMailbox {
+			if mailboxReSimAttempts >= mailboxReSimMaxAttempts {
+				log.Warn("[SSV] Mailbox reads still pending after maximum retries", "xtID", xtID.Hex(), "attempts", mailboxReSimAttempts)
+				break
+			}
+			mailboxReSimAttempts++
+			log.Info("[SSV] Mailbox reads pending after re-simulation; retrying", "xtID", xtID.Hex(), "attempt", mailboxReSimAttempts, "delay", mailboxReSimDelay)
+			time.Sleep(mailboxReSimDelay)
+			continue
+		}
+
+		break
+	}
 
 	if !allSuccessful {
 		for _, state := range coordinationStates {
@@ -1905,4 +1961,38 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	}
 
 	return allSuccessful, nil
+}
+
+func dependencyKey(dep CrossRollupDependency) string {
+	session := ""
+	if dep.SessionID != nil {
+		session = dep.SessionID.String()
+	}
+	return fmt.Sprintf("%d|%d|%s|%s|%s|%x|%t|%t",
+		dep.SourceChainID,
+		dep.DestChainID,
+		dep.Sender.Hex(),
+		dep.Receiver.Hex(),
+		session,
+		dep.Label,
+		dep.RequiredData,
+		dep.IsInboxRead,
+	)
+}
+
+func messageKey(msg CrossRollupMessage) string {
+	session := ""
+	if msg.SessionID != nil {
+		session = msg.SessionID.String()
+	}
+	return fmt.Sprintf("%d|%d|%s|%s|%s|%x|%s|%t",
+		msg.SourceChainID,
+		msg.DestChainID,
+		msg.Sender.Hex(),
+		msg.Receiver.Hex(),
+		session,
+		msg.Data,
+		msg.MessageType,
+		msg.IsOutboxWrite,
+	)
 }
