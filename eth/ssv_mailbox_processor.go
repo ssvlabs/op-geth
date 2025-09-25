@@ -802,12 +802,16 @@ func (mp *MailboxProcessor) parseReadCall(data []byte) (*MailboxCall, error) {
 	}
 
 	// read(chainMessageSender, sender, sessionId, label)
-	return &MailboxCall{
+	call := &MailboxCall{
 		ChainMessageSender: values[0].(*big.Int),
 		Sender:             values[1].(common.Address),
 		SessionId:          values[2].(*big.Int),
 		Label:              values[3].([]byte),
-	}, nil
+	}
+	// For read: chainSrc = chainMessageSender, chainDest = this chain
+	call.ChainSrc = call.ChainMessageSender
+	call.ChainDest = new(big.Int).SetUint64(mp.chainID)
+	return call, nil
 }
 
 func (mp *MailboxProcessor) parseWriteCall(data []byte) (*MailboxCall, error) {
@@ -818,13 +822,17 @@ func (mp *MailboxProcessor) parseWriteCall(data []byte) (*MailboxCall, error) {
 	}
 
 	// write(chainMessageRecipient, receiver, sessionId, label, data)
-	return &MailboxCall{
+	call := &MailboxCall{
 		ChainMessageRecipient: values[0].(*big.Int),
 		Receiver:              values[1].(common.Address),
 		SessionId:             values[2].(*big.Int),
 		Label:                 values[3].([]byte),
 		Data:                  values[4].([]byte),
-	}, nil
+	}
+	// For write: chainSrc = this chain, chainDest = chainMessageRecipient
+	call.ChainSrc = new(big.Int).SetUint64(mp.chainID)
+	call.ChainDest = call.ChainMessageRecipient
+	return call, nil
 }
 
 func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, simState *SimulationState, xtID *rollupv1.XtID) ([]CrossRollupMessage, []CrossRollupDependency, error) {
