@@ -98,8 +98,8 @@ func main() {
 
 	// Create a pong transaction (B -> A)
 	pongParams := PingPongParams{
-		ChainSrc:  chainAId,
-		ChainDest: chainBId,
+		ChainSrc:  chainBId,
+		ChainDest: chainAId,
 		Sender:    addressB,
 		Receiver:  addressA,
 		SessionId: sessionId,
