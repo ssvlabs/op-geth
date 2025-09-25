@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/rand"
 	"fmt"
 	"log"
 	"math/big"
@@ -17,7 +18,6 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
-	"math/rand/v2"
 )
 
 const (
@@ -68,7 +68,6 @@ func main() {
 	publicKeyECDSA, _ = publicKey.(*ecdsa.PublicKey)
 	addressB := crypto.PubkeyToAddress(*publicKeyECDSA)
 
-
 	log.Printf("using address: %v", addressA)
 
 	tokenA := common.HexToAddress(config.Token)
@@ -76,18 +75,20 @@ func main() {
 	bridgeB := common.HexToAddress(rollupB.Bridge)
 
 	// Create bridge parameters
-	sessionId := big.NewInt(rand.Int64())
-	amount := big.NewInt(0).Exp(big.NewInt(10), big.NewInt(18), nil)
+	sessionId := generateRandomSessionID()
+	amount := big.NewInt(100)
 
 	// Create a send transaction (A -> B)
 	sendParams := BridgeParams{
-		ChainSrc:  chainAId, // 11111
-		ChainDest: chainBId, // 22222
-		Token:     tokenA,
-		Sender:    addressA,
-		Receiver:  addressB,
-		Amount:    amount,
-		SessionId: sessionId,
+		ChainSrc:   chainAId, // 11111
+		ChainDest:  chainBId, // 22222
+		Token:      tokenA,
+		Sender:     addressA,
+		Receiver:   addressB,
+		Amount:     amount,
+		SessionId:  sessionId,
+		DestBridge: bridgeB,
+		SrcBridge:  bridgeA,
 	}
 
 	fmt.Println(sendParams)
@@ -109,13 +110,15 @@ func main() {
 
 	// Create a receive transaction (B -> A)
 	receiveParams := BridgeParams{
-		ChainSrc:  chainAId, // 11111
-		ChainDest: chainBId, // 22222
-		Token:     tokenA,
-		Sender:    addressA,
-		Receiver:  addressB,
-		Amount:    amount,
-		SessionId: sessionId,
+		ChainSrc:   chainAId, // 11111
+		ChainDest:  chainBId, // 22222
+		Token:      tokenA,
+		Sender:     addressA,
+		Receiver:   addressB,
+		Amount:     amount,
+		SessionId:  sessionId,
+		DestBridge: bridgeB,
+		SrcBridge:  bridgeA,
 	}
 
 	nonceB, err := getNonceFor(rollupB.RPC, addressB)
@@ -226,4 +229,14 @@ func getNonceFor(networkRPCAddr string, address common.Address) (uint64, error) 
 	}
 
 	return nonce, nil
+}
+
+// generateRandomSessionID returns a random big.Int in the range [0, 2^63-1]
+func generateRandomSessionID() *big.Int {
+	max := new(big.Int).Lsh(big.NewInt(1), 63)
+	n, err := rand.Int(rand.Reader, max)
+	if err != nil {
+		log.Fatalf("failed to generate random session ID: %v", err)
+	}
+	return n
 }
