@@ -1755,26 +1755,64 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		}
 
 		// Re-simulate transactions against a state that includes the putInbox transactions.
-		log.Info("[SSV] Starting re-simulation against pending block", "xtID", xtID.Hex())
-		if err := b.waitForPutInboxTransactionsToBeProcessed(); err != nil {
-			return false, fmt.Errorf("failed waiting for putInbox transactions to be processed: %w", err)
+		log.Info("[SSV] Starting stateful re-simulation", "xtID", xtID.Hex())
+		stateDB, header, err := b.StateAndHeaderByNumber(ctx, rpc.LatestBlockNumber)
+		if err != nil {
+			return false, fmt.Errorf("failed to get latest state for re-simulation: %w", err)
+		}
+		signer := types.MakeSigner(b.ChainConfig(), header.Number, header.Time)
+
+		// Apply putInbox transactions to the state
+		putInboxTxs := b.GetPendingPutInboxTxs()
+		for _, putInboxTx := range putInboxTxs {
+			msg, err := core.TransactionToMessage(putInboxTx, signer, header.BaseFee)
+			if err != nil {
+				log.Warn("[SSV] Failed to create message from putInbox tx", "err", err)
+				continue
+			}
+			blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, &sequencerAddr, b.ChainConfig(), stateDB)
+			evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), *b.eth.blockchain.GetVMConfig())
+			result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(header.GasLimit))
+			if err != nil {
+				log.Warn("[SSV] Failed to apply putInbox tx to state (setup err)", "err", err, "txHash", putInboxTx.Hash().Hex())
+				continue
+			}
+			if result.Err != nil {
+				log.Warn("[SSV] Failed to apply putInbox tx to state (reverted)", "err", result.Err, "txHash", putInboxTx.Hash().Hex())
+				continue
+			}
+			log.Info("[SSV] Applied putInbox tx to re-simulation state", "txHash", putInboxTx.Hash().Hex())
 		}
 
+		// Now, re-simulate the original transactions against the modified state
 		for i, state := range coordinationStates {
-			// Skip transactions that don't require re-simulation
-			if !state.RequiresCoordination() && state.Success {
-				continue
-			}
+			snapshot := stateDB.Snapshot()
 
-			// Re-simulate the transaction against the pending block
-			traceResult, err := b.SimulateTransaction(ctx, state.Tx, rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber))
+			msg, err := core.TransactionToMessage(state.Tx, signer, header.BaseFee)
 			if err != nil {
-				log.Error("[SSV] Re-simulation failed for transaction", "txHash", state.Tx.Hash().Hex(), "err", err)
-				state.Success = false // Mark as failed
+				stateDB.RevertToSnapshot(snapshot)
 				continue
 			}
 
-			// Re-analyze the transaction based on the new trace
+			mailboxAddresses := b.GetMailboxAddresses()
+			tracer := native.NewSSVTracer(mailboxAddresses)
+			vmConfig := *b.eth.blockchain.GetVMConfig()
+			vmConfig.Tracer = tracer.Hooks()
+			vmConfig.EnablePreimageRecording = true
+
+			blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, &sequencerAddr, b.ChainConfig(), stateDB)
+			evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), vmConfig)
+			stateDB.SetTxContext(state.Tx.Hash(), stateDB.TxIndex()+1)
+			result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(header.GasLimit))
+			if err != nil {
+				stateDB.RevertToSnapshot(snapshot)
+				continue
+			}
+			traceResult := tracer.GetTraceResult()
+			traceResult.ExecutionResult = result
+
+			stateDB.RevertToSnapshot(snapshot) // Revert for the next tx in the loop
+
 			newSimState, err := mailboxProcessor.AnalyzeTransaction(
 				traceResult,
 				allSentMsgs,
@@ -1782,33 +1820,22 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 				state.Tx,
 			)
 			if err != nil {
-				log.Error("[SSV] Failed to analyze re-simulated transaction", "txHash", state.Tx.Hash().Hex(), "err", err)
-				state.Success = false // Mark as failed
 				continue
 			}
+
 			coordinationStates[i] = newSimState
 			log.Info(
-				"[SSV] Re-simulation complete for transaction",
+				"[SSV] Stateful re-simulation complete for transaction",
 				"txHash", state.Tx.Hash().Hex(), "xtID", xtID.Hex(), "success", newSimState.Success,
 			)
 
 			// Send any ACK messages detected in re-simulation
 			for _, outMsg := range newSimState.OutboundMessages {
-				// Avoid re-sending messages
-				isNew := true
-				for _, sentMsg := range allSentMsgs {
-					if crypto.Keccak256Hash(sentMsg.Data) == crypto.Keccak256Hash(outMsg.Data) {
-						isNew = false
-						break
-					}
-				}
-				if isNew {
-					log.Info("[SSV] Detected new ACK message in re-simulation", "xtID", xtID.Hex(), "destChain", outMsg.DestChainID)
-					if err := mailboxProcessor.sendCIRCMessage(ctx, &outMsg, xtID); err != nil {
-						log.Error("[SSV] Failed to send ACK CIRC message", "error", err, "xtID", xtID.Hex())
-					} else {
-						allSentMsgs = append(allSentMsgs, outMsg)
-					}
+				log.Info("[SSV] Detected new ACK message in re-simulation", "xtID", xtID.Hex(), "destChain", outMsg.DestChainID)
+				if err := mailboxProcessor.sendCIRCMessage(ctx, &outMsg, xtID); err != nil {
+					log.Error("[SSV] Failed to send ACK CIRC message", "error", err, "xtID", xtID.Hex())
+				} else {
+					allSentMsgs = append(allSentMsgs, outMsg)
 				}
 			}
 
