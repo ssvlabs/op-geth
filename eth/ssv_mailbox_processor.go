@@ -168,6 +168,12 @@ func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, 
 
 		// Handle both CALL (write) and STATICCALL (read) operations
 		if (op.Type == vm.CALL || op.Type == vm.STATICCALL) && len(op.CallData) >= 4 {
+			log.Info("[SSV] Analyzing Mailbox EVM Operation",
+				"op.Type", op.Type.String(),
+				"op.From", op.From.Hex(),
+				"op.To", op.Address.Hex(),
+				"op.CallData", hexutil.Encode(op.CallData))
+
 			call, err := mp.parseMailboxCall(op.CallData)
 			if err != nil {
 				log.Debug("[SSV] Failed to parse mailbox call", "error", err)
@@ -383,6 +389,7 @@ func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, s
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to wait for CIRC message: %w", err)
 		}
+		log.Info("[SSV] Received and Consumed CIRC Message", "xtID", xtID.Hex(), "from_chain", sourceKey, "message", circMsg.String())
 
 		// Populate dependency with authoritative fields from the CIRC message.
 		// The Mailbox key uses (chainSrc, chainId, sender, receiver, sessionId, label),
@@ -403,6 +410,8 @@ func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, s
 }
 
 func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollupMessage, xtID *rollupv1.XtID) error {
+	log.Info("[SSV] Preparing to send CIRC Message", "xtID", xtID.Hex(), "dest_chain", msg.DestChainID, "message", fmt.Sprintf("%+v", msg))
+
 	// Build CIRC payload
 	circMsg := &rollupv1.CIRCMessage{
 		SourceChain:      new(big.Int).SetUint64(msg.SourceChainID).Bytes(),
@@ -546,6 +555,14 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 	if err != nil {
 		return nil, err
 	}
+
+	log.Info("[SSV] Packing putInbox calldata",
+		"dep.SourceChainID", dep.SourceChainID,
+		"dep.Sender", dep.Sender.Hex(),
+		"dep.Receiver", dep.Receiver.Hex(),
+		"dep.SessionID", dep.SessionID.String(),
+		"dep.Label", string(dep.Label),
+		"dep.Data", hexutil.Encode(dep.Data))
 
 	// putInbox(chainMessageSender, sender, receiver, sessionId, label, data)
 	callData, err := parsedABI.Pack("putInbox",
