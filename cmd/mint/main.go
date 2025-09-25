@@ -64,8 +64,7 @@ func main() {
 
 	// Create bridge parameters
 	sessionId := big.NewInt(12345)
-	amount := new(big.Int)
-	amount.SetString("100000000000000000000", 10) // 100 tokens
+	amount := big.NewInt(100000000000000000)
 
 	// Create a mint transaction (A -> B)
 	mintParams := MintParams{

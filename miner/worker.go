@@ -762,6 +762,9 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 			}
 		} else {
 			// Building-* states: skip ALL pending sequencer-managed txs (to avoid premature inclusion)
+			if c := backend.GetPendingClearTx(); c != nil {
+				skip[c.Hash()] = struct{}{}
+			}
 			for _, tx := range backend.GetPendingPutInboxTxs() {
 				skip[tx.Hash()] = struct{}{}
 			}

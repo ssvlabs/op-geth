@@ -74,6 +74,8 @@ func (c Config) MarshalTOML() (interface{}, error) {
 		RollupHaltOnIncompatibleProtocolVersion   string
 		InteropMessageRPC                         string `toml:",omitempty"`
 		InteropMempoolFiltering                   bool   `toml:",omitempty"`
+		RollupAMailboxAddr                        string
+		RollupBMailboxAddr                        string
 	}
 	var enc Config
 	enc.Genesis = c.Genesis
@@ -133,6 +135,8 @@ func (c Config) MarshalTOML() (interface{}, error) {
 	enc.RollupHaltOnIncompatibleProtocolVersion = c.RollupHaltOnIncompatibleProtocolVersion
 	enc.InteropMessageRPC = c.InteropMessageRPC
 	enc.InteropMempoolFiltering = c.InteropMempoolFiltering
+	enc.RollupAMailboxAddr = c.RollupAMailboxAddr
+	enc.RollupBMailboxAddr = c.RollupBMailboxAddr
 	return &enc, nil
 }
 
@@ -196,6 +200,8 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 		RollupHaltOnIncompatibleProtocolVersion   *string
 		InteropMessageRPC                         *string `toml:",omitempty"`
 		InteropMempoolFiltering                   *bool   `toml:",omitempty"`
+		RollupAMailboxAddr                        *string
+		RollupBMailboxAddr                        *string
 	}
 	var dec Config
 	if err := unmarshal(&dec); err != nil {
@@ -371,6 +377,12 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 	}
 	if dec.InteropMempoolFiltering != nil {
 		c.InteropMempoolFiltering = *dec.InteropMempoolFiltering
+	}
+	if dec.RollupAMailboxAddr != nil {
+		c.RollupAMailboxAddr = *dec.RollupAMailboxAddr
+	}
+	if dec.RollupBMailboxAddr != nil {
+		c.RollupBMailboxAddr = *dec.RollupBMailboxAddr
 	}
 	return nil
 }

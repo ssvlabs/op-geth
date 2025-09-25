@@ -78,6 +78,10 @@ type BackendWithSequencerTransactions interface {
 	// SSV
 	GetOrderedTransactionsForBlock(ctx context.Context) (types.Transactions, error)
 
+	// GetPendingClearTx returns the pending clear transaction, if any
+	// SSV
+	GetPendingClearTx() *types.Transaction
+
 	// GetPendingPutInboxTxs returns all pending put inbox transactions
 	// SSV
 	GetPendingPutInboxTxs() []*types.Transaction
@@ -357,7 +361,8 @@ func (miner *Miner) Close() {
 // SSV: Check if there are cross-chain transactions before notifying
 func (miner *Miner) hasCrossChainTransactions() bool {
 	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
-		return len(backend.GetPendingPutInboxTxs()) > 0 ||
+		return backend.GetPendingClearTx() != nil ||
+			len(backend.GetPendingPutInboxTxs()) > 0 ||
 			len(backend.GetPendingOriginalTxs()) > 0
 	}
 	return false
