@@ -547,8 +547,8 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 		return nil, err
 	}
 
-	labelBytes32 := [32]byte{}
-	copy(labelBytes32[:], dep.Label)
+	paddedLabel := make([]byte, 32)
+	copy(paddedLabel, dep.Label)
 
 	// putInbox(chainMessageSender, sender, receiver, sessionId, label, data)
 	callData, err := parsedABI.Pack("putInbox",
@@ -556,7 +556,7 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 		dep.Sender,
 		dep.Receiver,
 		dep.SessionID,
-		labelBytes32,
+		paddedLabel,
 		dep.Data,
 	)
 	if err != nil {
