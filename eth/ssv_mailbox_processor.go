@@ -800,21 +800,6 @@ func revertIndicatesMissingMessage(revert []byte) bool {
 		bytes.Equal(selector, pingMessageEmptySelector)
 }
 
-func (s *SimulationState) PendingMailboxRead() bool {
-	if len(s.Dependencies) == 0 || len(s.ReadDeps) == 0 {
-		return false
-	}
-	if !revertIndicatesMissingMessage(s.RevertData) {
-		return false
-	}
-	for _, dep := range s.Dependencies {
-		if dep.IsInboxRead {
-			return true
-		}
-	}
-	return false
-}
-
 func (mp *MailboxProcessor) parseMailboxCall(callData []byte) (*MailboxCall, error) {
 	if len(callData) < 4 {
 		return nil, fmt.Errorf("invalid call data length")
