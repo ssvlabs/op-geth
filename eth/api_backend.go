@@ -1773,12 +1773,16 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 			}
 			blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
 			evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), *b.eth.blockchain.GetVMConfig())
-			_, err = core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(header.GasLimit))
+			result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(header.GasLimit))
 			if err != nil {
-				log.Warn("[SSV] Failed to apply putInbox tx to state", "err", err, "txHash", putInboxTx.Hash().Hex())
-			} else {
-				log.Info("[SSV] Applied putInbox tx to re-simulation state", "txHash", putInboxTx.Hash().Hex())
+				log.Warn("[SSV] Failed to apply putInbox tx to state (setup err)", "err", err, "txHash", putInboxTx.Hash().Hex())
+				continue
 			}
+			if result.Err != nil {
+				log.Warn("[SSV] Failed to apply putInbox tx to state (reverted)", "err", result.Err, "txHash", putInboxTx.Hash().Hex())
+				continue
+			}
+			log.Info("[SSV] Applied putInbox tx to re-simulation state", "txHash", putInboxTx.Hash().Hex())
 		}
 
 		// Now, re-simulate the original transactions against the modified state
