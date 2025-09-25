@@ -775,7 +775,6 @@ func (b *EthAPIBackend) SimulateTransaction(
 		return nil, err
 	}
 
-	stateDB.Finalise(true)
 	snapshot := stateDB.Snapshot()
 	defer stateDB.RevertToSnapshot(snapshot)
 
