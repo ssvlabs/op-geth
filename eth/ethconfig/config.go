@@ -74,8 +74,8 @@ var Defaults = Config{
 	SPListenAddr:       ":9898",
 	SPServerAddr:       "localhost:18080",
 	SequencerAddrs:     "77777:localhost:9898,88888:localhost:10898",
-	RollupAMailboxAddr: "0x4ADF52bFe881aB0281c7dbD01fB0eE0AD432657d",
-	RollupBMailboxAddr: "0x4ADF52bFe881aB0281c7dbD01fB0eE0AD432657d",
+	RollupAMailboxAddr: "0xD74CA64401349626711A81b7473C3649BAAc6886",
+	RollupBMailboxAddr: "0xD74CA64401349626711A81b7473C3649BAAc6886",
 }
 
 //go:generate go run github.com/fjl/gencodec -type Config -formats toml -out gen_config.go

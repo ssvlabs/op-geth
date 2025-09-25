@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/rand"
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -67,16 +68,21 @@ func main() {
 	addressB := crypto.PubkeyToAddress(*publicKeyECDSA)
 
 	// Create ping-pong parameters
-	sessionId := big.NewInt(12345)
+	sessionId := generateRandomSessionID()
 	pingData := []byte("hello from rollup A")
 	pongData := []byte("hello from rollup B")
 
-	// Create a ping transaction (A -> B)
+	pingPongContractAddr := common.HexToAddress(pingPongAddr)
+
+	// Create a ping transaction on Chain A
+	// The `ping` function sends a PING message and expects a PONG message back.
+	// The sender/receiver of these cross-chain messages are the PingPong contracts themselves.
 	pingParams := PingPongParams{
-		ChainSrc:  chainAId,
-		ChainDest: chainBId,
-		Sender:    addressA,
-		Receiver:  addressB,
+		TxChainID: chainAId,             // Transaction runs on chain A
+		ChainSrc:  chainAId,             // Source chain (for reference)
+		ChainDest: chainBId,             // otherChain parameter = chain B
+		Sender:    pingPongContractAddr, // pongSender: the PingPong contract on chain B
+		Receiver:  pingPongContractAddr, // pingReceiver: the PingPong contract on chain B
 		SessionId: sessionId,
 		Data:      pingData,
 	}
@@ -96,12 +102,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Create a pong transaction (B -> A)
+	// Create a pong transaction on Chain B
+	// The `pong` function sends a PONG message and expects a PING message back.
+	// The sender/receiver of these cross-chain messages are the PingPong contracts themselves.
 	pongParams := PingPongParams{
-		ChainSrc:  chainBId,
-		ChainDest: chainAId,
-		Sender:    addressB,
-		Receiver:  addressA,
+		TxChainID: chainBId,             // Transaction runs on chain B
+		ChainSrc:  chainAId,             // otherChain parameter = chain A (where PING comes from)
+		ChainDest: chainBId,             // Destination chain (for reference)
+		Sender:    pingPongContractAddr, // pingSender: the PingPong contract on chain A
+		Receiver:  pingPongContractAddr, // pongReceiver: the PingPong contract on chain A
 		SessionId: sessionId,
 		Data:      pongData,
 	}
@@ -152,8 +161,12 @@ func main() {
 
 	fmt.Printf("Successfully encoded ping-pong payload. Size: %d bytes\n", len(encodedPayload))
 	fmt.Printf("Session ID: %d\n", sessionId.Int64())
+	fmt.Printf("Chain A ID: %d\n", chainAId.Int64())
+	fmt.Printf("Chain B ID: %d\n", chainBId.Int64())
 	fmt.Printf("Ping data: %s\n", string(pingData))
 	fmt.Printf("Pong data: %s\n", string(pongData))
+	fmt.Printf("PingPong contract A: %s\n", pingPongAddr)
+	fmt.Printf("PingPong contract B: %s\n", pingPongAddr)
 
 	l1Client, err := rpc.Dial(rollupA.RPC)
 	if err != nil {
@@ -165,6 +178,14 @@ func main() {
 	err = l1Client.CallContext(context.Background(), &resultHashes, sendTxRPCMethod, hexutil.Encode(encodedPayload))
 	if err != nil {
 		log.Fatalf("RPC call failed: %v", err)
+	}
+
+	fmt.Printf("Transaction submitted successfully\n")
+	if len(resultHashes) > 0 {
+		fmt.Printf("Result hashes:\n")
+		for i, hash := range resultHashes {
+			fmt.Printf("  [%d]: %s\n", i, hash.Hex())
+		}
 	}
 }
 
@@ -212,4 +233,14 @@ func getNonceFor(networkRPCAddr string, address common.Address) (uint64, error) 
 	}
 
 	return nonce, nil
+}
+
+// generateRandomSessionID returns a random big.Int in the range [0, 2^63-1]
+func generateRandomSessionID() *big.Int {
+	max := new(big.Int).Lsh(big.NewInt(1), 63) // 2^63
+	n, err := rand.Int(rand.Reader, max)
+	if err != nil {
+		log.Fatalf("failed to generate random session ID: %v", err)
+	}
+	return n
 }
