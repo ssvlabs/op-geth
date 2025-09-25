@@ -547,16 +547,13 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 		return nil, err
 	}
 
-	labelBytes32 := [32]byte{}
-	copy(labelBytes32[:], dep.Label)
-
 	// putInbox(chainMessageSender, sender, receiver, sessionId, label, data)
 	callData, err := parsedABI.Pack("putInbox",
 		new(big.Int).SetUint64(dep.SourceChainID),
 		dep.Sender,
 		dep.Receiver,
 		dep.SessionID,
-		labelBytes32,
+		dep.Label,
 		dep.Data,
 	)
 	if err != nil {
