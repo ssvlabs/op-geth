@@ -548,6 +548,7 @@ type SimulationState struct {
 	Tx               *types.Transaction
 	ExecutionErr     error
 	RevertData       []byte
+	ReadDeps         []CrossRollupDependency
 }
 
 func (s SimulationState) RequiresCoordination() bool {
@@ -603,6 +604,7 @@ func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, 
 		Success:          traceResult.ExecutionResult.Err == nil,
 		Dependencies:     make([]CrossRollupDependency, 0),
 		OutboundMessages: make([]CrossRollupMessage, 0),
+		ReadDeps:         make([]CrossRollupDependency, 0),
 	}
 
 	if traceResult != nil && traceResult.ExecutionResult != nil {
@@ -674,6 +676,8 @@ func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, 
 						IsInboxRead:   true,
 					}
 
+					simState.ReadDeps = append(simState.ReadDeps, dep)
+
 					if !containsDependency(fullfilledDeps, dep) {
 						simState.Dependencies = append(simState.Dependencies, dep)
 						log.Info("[SSV] Detected new mailbox read dependency",
@@ -723,6 +727,18 @@ func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, 
 		}
 	}
 
+	if !simState.Success && len(simState.Dependencies) == 0 && len(simState.ReadDeps) > 0 && revertIndicatesMissingMessage(simState.RevertData) {
+		for _, dep := range simState.ReadDeps {
+			if !containsDependency(simState.Dependencies, dep) {
+				simState.Dependencies = append(simState.Dependencies, dep)
+			}
+		}
+		log.Info("[SSV] Mailbox read still pending after re-simulation",
+			"txHash", txHashHex,
+			"reads", len(simState.ReadDeps),
+			"revert", hexutil.Encode(simState.RevertData))
+	}
+
 	log.Info("[SSV] Transaction analysis complete",
 		"txHash", txHashHex,
 		"requiresCoordination", simState.RequiresCoordination(),
@@ -763,6 +779,25 @@ func containsDependency(deps []CrossRollupDependency, dep CrossRollupDependency)
 		}
 	}
 	return false
+}
+
+var (
+	messageNotFoundSelector  = []byte{0x28, 0x91, 0x5a, 0xc7}
+	pongMessageEmptySelector = []byte{0x24, 0x87, 0xe8, 0x7c}
+	pingMessageEmptySelector = []byte{0x33, 0x99, 0x32, 0x81}
+)
+
+func revertIndicatesMissingMessage(revert []byte) bool {
+	if len(revert) == 0 {
+		return true
+	}
+	if len(revert) < 4 {
+		return false
+	}
+	selector := revert[:4]
+	return bytes.Equal(selector, messageNotFoundSelector) ||
+		bytes.Equal(selector, pongMessageEmptySelector) ||
+		bytes.Equal(selector, pingMessageEmptySelector)
 }
 
 func (mp *MailboxProcessor) parseMailboxCall(callData []byte) (*MailboxCall, error) {
