@@ -1798,9 +1798,9 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		}
 
 		// Create putInbox transactions
+		nextNonce := nonce
 		for _, dep := range allFulfilledDeps {
-			nonce++
-			putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, nonce)
+			putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, nextNonce)
 			if err != nil {
 				return false, fmt.Errorf("failed to create putInbox transaction: %w", err)
 			}
@@ -1808,6 +1808,8 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 			if err := b.SubmitSequencerTransaction(ctx, putInboxTx, true); err != nil {
 				return false, fmt.Errorf("failed to submit putInbox transaction: %w", err)
 			}
+
+			nextNonce++
 		}
 
 		// Wait for putInbox transactions to be processed
