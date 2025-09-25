@@ -1771,7 +1771,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 				log.Warn("[SSV] Failed to create message from putInbox tx", "err", err)
 				continue
 			}
-			blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
+			blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, &sequencerAddr, b.ChainConfig(), stateDB)
 			evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), *b.eth.blockchain.GetVMConfig())
 			result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(header.GasLimit))
 			if err != nil {
@@ -1801,7 +1801,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 			vmConfig.Tracer = tracer.Hooks()
 			vmConfig.EnablePreimageRecording = true
 
-			blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, nil, b.ChainConfig(), stateDB)
+			blockContext := core.NewEVMBlockContext(header, b.eth.blockchain, &sequencerAddr, b.ChainConfig(), stateDB)
 			evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), vmConfig)
 			stateDB.SetTxContext(state.Tx.Hash(), stateDB.TxIndex()+1)
 			result, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(header.GasLimit))
