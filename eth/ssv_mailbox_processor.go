@@ -546,6 +546,8 @@ type SimulationState struct {
 	Dependencies     []CrossRollupDependency
 	OutboundMessages []CrossRollupMessage
 	Tx               *types.Transaction
+	ExecutionErr     error
+	RevertData       []byte
 }
 
 func (s SimulationState) RequiresCoordination() bool {
@@ -601,6 +603,15 @@ func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, 
 		Success:          traceResult.ExecutionResult.Err == nil,
 		Dependencies:     make([]CrossRollupDependency, 0),
 		OutboundMessages: make([]CrossRollupMessage, 0),
+	}
+
+	if traceResult != nil && traceResult.ExecutionResult != nil {
+		simState.ExecutionErr = traceResult.ExecutionResult.Err
+		revert := traceResult.ExecutionResult.Revert()
+		if len(revert) > 0 {
+			simState.RevertData = make([]byte, len(revert))
+			copy(simState.RevertData, revert)
+		}
 	}
 
 	log.Info("[SSV] Analyzing transaction trace",

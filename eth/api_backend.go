@@ -1872,5 +1872,37 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		len(b.GetPendingOriginalTxs()),
 	)
 
+	if !allSuccessful {
+		for _, state := range coordinationStates {
+			if state == nil || state.Success {
+				continue
+			}
+
+			txHash := "(nil)"
+			if state.Tx != nil {
+				txHash = state.Tx.Hash().Hex()
+			}
+
+			errStr := ""
+			if state.ExecutionErr != nil {
+				errStr = state.ExecutionErr.Error()
+			}
+
+			revertHex := ""
+			if len(state.RevertData) > 0 {
+				revertHex = hexutil.Encode(state.RevertData)
+			}
+
+			log.Error("[SSV] Transaction still failing after SBCP simulation",
+				"xtID", xtID.Hex(),
+				"txHash", txHash,
+				"dependencies", len(state.Dependencies),
+				"outbound", len(state.OutboundMessages),
+				"executionErr", errStr,
+				"revert", revertHex,
+			)
+		}
+	}
+
 	return allSuccessful, nil
 }
