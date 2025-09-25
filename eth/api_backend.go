@@ -1761,7 +1761,6 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		if err != nil {
 			return false, fmt.Errorf("failed to get latest state for re-simulation: %w", err)
 		}
-		stateDB.Finalise(true)
 		signer := types.MakeSigner(b.ChainConfig(), header.Number, header.Time)
 
 		// Apply putInbox transactions to the state
