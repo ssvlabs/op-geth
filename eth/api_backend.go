@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/core/ssv"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/eth/tracers/native"
 
 	"github.com/ethereum/go-ethereum"
@@ -804,6 +805,34 @@ func (b *EthAPIBackend) SimulateTransaction(
 
 	evm := vm.NewEVM(blockContext, stateDB, b.ChainConfig(), vmConfig)
 
+	if ctx.Value("simulation") != nil {
+		for _, staged := range b.GetPendingPutInboxTxs() {
+			if staged == nil || staged.Hash() == tx.Hash() {
+				continue
+			}
+
+			stageMsg, err := core.TransactionToMessage(staged, signer, header.BaseFee)
+			if err != nil {
+				log.Warn("[SSV] Failed to build staged putInbox message", "txHash", staged.Hash(), "err", err)
+				continue
+			}
+
+			stageGasPool := new(core.GasPool).AddGas(header.GasLimit)
+			stateDB.SetTxContext(staged.Hash(), stateDB.TxIndex()+1)
+			if wants := staged.Nonce(); stateDB.GetNonce(stageMsg.From) != wants {
+				stateDB.SetNonce(stageMsg.From, wants, tracing.NonceChangeUnspecified)
+			}
+			if _, err := core.ApplyMessage(evm, stageMsg, stageGasPool); err != nil {
+				log.Warn("[SSV] Failed to pre-apply putInbox transaction", "txHash", staged.Hash(), "err", err)
+				continue
+			}
+			log.Info("[SSV] Pre-applied putInbox for simulation",
+				"stagedHash", staged.Hash().Hex(),
+			)
+			stateDB.Finalise(true)
+		}
+	}
+
 	stateDB.SetTxContext(tx.Hash(), stateDB.TxIndex()+1)
 
 	gasPool := new(core.GasPool).AddGas(header.GasLimit)
@@ -1151,19 +1180,23 @@ func (b *EthAPIBackend) GetOrderedTransactionsForBlock(
 }
 
 // buildSequencerOnlyList assembles only the sequencer-managed transactions in the
-// correct internal order: putInbox(), then original txs, then clear().
+// correct internal order: clear(), then putInbox(), then the original user txs.
 // Normal mempool transactions are not part of this list.
 func (b *EthAPIBackend) buildSequencerOnlyList() types.Transactions {
 	var orderedTxs types.Transactions
 
+	if clearTx := b.GetPendingClearTx(); clearTx != nil {
+		// Clear must execute at the start of the block (per poc.md) so we
+		// push it first, ensuring later putInbox/outbox operations see a
+		// fresh mailbox state and the nonce ordering (clear -> putInbox)
+		// matches the staged transactions created during coordination.
+		orderedTxs = append(orderedTxs, clearTx)
+	}
 	for _, tx := range b.GetPendingPutInboxTxs() {
 		orderedTxs = append(orderedTxs, tx)
 	}
 	for _, tx := range b.GetPendingOriginalTxs() {
 		orderedTxs = append(orderedTxs, tx)
-	}
-	if clearTx := b.GetPendingClearTx(); clearTx != nil {
-		orderedTxs = append(orderedTxs, clearTx)
 	}
 
 	log.Info("[SSV] Built sequencer-only tx list",
@@ -1985,6 +2018,11 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 				continue
 			}
 
+			log.Info("[SSV] Re-simulation mailbox state",
+				"txHash", state.Tx.Hash().Hex(),
+				"success", newSimState.Success,
+				"deps", len(newSimState.Dependencies),
+			)
 			coordinationStates[i] = newSimState
 			log.Info(
 				"[SSV] Re-simulation successful for transaction",

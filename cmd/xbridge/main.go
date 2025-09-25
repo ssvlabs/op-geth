@@ -17,6 +17,7 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
+	"math/rand/v2"
 )
 
 const (
@@ -67,12 +68,15 @@ func main() {
 	publicKeyECDSA, _ = publicKey.(*ecdsa.PublicKey)
 	addressB := crypto.PubkeyToAddress(*publicKeyECDSA)
 
+
+	log.Printf("using address: %v", addressA)
+
 	tokenA := common.HexToAddress(config.Token)
 	bridgeA := common.HexToAddress(rollupA.Bridge)
 	bridgeB := common.HexToAddress(rollupB.Bridge)
 
 	// Create bridge parameters
-	sessionId := big.NewInt(94728)
+	sessionId := big.NewInt(rand.Int64())
 	amount := big.NewInt(0).Exp(big.NewInt(10), big.NewInt(18), nil)
 
 	// Create a send transaction (A -> B)
