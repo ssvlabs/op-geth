@@ -158,7 +158,7 @@ func (miner *Miner) generateWork(params *generateParams, witness bool) *newPaylo
 	misc.EnsureCreate2Deployer(miner.chainConfig, work.header.Time, work.state)
 
 	// SSV: Notify backend that block building is starting
-	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok && miner.hasCrossChainTransactions() {
+	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
 		if err := backend.OnBlockBuildingStart(work.rpcCtx); err != nil {
 			log.Error("[SSV] Failed to notify block building start", "err", err)
 		}
@@ -241,14 +241,14 @@ func (miner *Miner) generateWork(params *generateParams, witness bool) *newPaylo
 	block, err := miner.engine.FinalizeAndAssemble(miner.chain, work.header, work.state, &body, work.receipts)
 	if err != nil {
 		// SSV: Notify backend that block building failed
-		if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok && miner.hasCrossChainTransactions() {
+		if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
 			backend.OnBlockBuildingComplete(work.rpcCtx, nil, false, params.simulation)
 		}
 		return &newPayloadResult{err: err}
 	}
 
 	// SSV: Notify backend that block building completed successfully
-	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok && miner.hasCrossChainTransactions() {
+	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
 		backend.OnBlockBuildingComplete(work.rpcCtx, block, true, params.simulation)
 	}
 
