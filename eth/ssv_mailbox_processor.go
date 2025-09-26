@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -31,22 +30,37 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
-const mailboxABI = `[{"type":"constructor","inputs":[{"name":"_coordinator","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"clear","inputs":[],"outputs":[],"stateMutability":"nonpayable"},{"type":"function","name":"coordinator","inputs":[],"outputs":[{"name":"","type":"address","internalType":"address"}],"stateMutability":"view"},{"type":"function","name":"getKey","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"stateMutability":"pure"},{"type":"function","name":"inbox","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"keyListInbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"keyListOutbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"outbox","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"putInbox","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"function","name":"read","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"write","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"error","name":"InvalidCoordinator","inputs":[]}]`
+const mailboxABI = `[{"type":"constructor","inputs":[{"name":"_coordinator","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"COORDINATOR","inputs":[],"outputs":[{"name":"","type":"address","internalType":"address"}],"stateMutability":"view"},{"type":"function","name":"chainIDsInbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"uint256","internalType":"uint256"}],"stateMutability":"view"},{"type":"function","name":"chainIDsOutbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"uint256","internalType":"uint256"}],"stateMutability":"view"},{"type":"function","name":"computeKey","inputs":[{"name":"id","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"createdKeys","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"used","type":"bool","internalType":"bool"}],"stateMutability":"view"},{"type":"function","name":"getKey","inputs":[{"name":"chainMessageSender","type":"uint256","internalType":"uint256"},{"name":"chainMessageRecipient","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"stateMutability":"pure"},{"type":"function","name":"inbox","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"inboxRootPerChain","inputs":[{"name":"chainId","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"inboxRoot","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"messageHeaderListInbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"messageHeaderListOutbox","inputs":[{"name":"","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"outbox","inputs":[{"name":"key","type":"bytes32","internalType":"bytes32"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"outboxRootPerChain","inputs":[{"name":"chainId","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"outboxRoot","type":"bytes32","internalType":"bytes32"}],"stateMutability":"view"},{"type":"function","name":"putInbox","inputs":[{"name":"chainMessageSender","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"function","name":"read","inputs":[{"name":"chainMessageSender","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"message","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"write","inputs":[{"name":"chainMessageRecipient","type":"uint256","internalType":"uint256"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"label","type":"bytes","internalType":"bytes"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"event","name":"NewInboxKey","inputs":[{"name":"index","type":"uint256","indexed":true,"internalType":"uint256"},{"name":"key","type":"bytes32","indexed":false,"internalType":"bytes32"}],"anonymous":false},{"type":"event","name":"NewOutboxKey","inputs":[{"name":"index","type":"uint256","indexed":true,"internalType":"uint256"},{"name":"key","type":"bytes32","indexed":false,"internalType":"bytes32"}],"anonymous":false},{"type":"error","name":"InvalidCoordinator","inputs":[]},{"type":"error","name":"MessageNotFound","inputs":[]}]`
+
+var messageNotFoundSelector = []byte{0x28, 0x91, 0x5a, 0xc7}
 
 type MailboxCall struct {
-	ChainSrc  *big.Int
-	ChainDest *big.Int
-	Receiver  common.Address
+	// For read() calls
+	ChainMessageSender *big.Int       // chainMessageSender parameter
+	Sender             common.Address // sender parameter (on source chain)
+
+	// For write() calls
+	ChainMessageRecipient *big.Int       // chainMessageRecipient parameter
+	Receiver              common.Address // receiver parameter (on dest chain)
+
+	// Common fields
 	SessionId *big.Int
-	Data      []byte
 	Label     []byte
-	IsRead    bool
-	IsWrite   bool
+	Data      []byte
+
+	// Call type flags
+	IsRead  bool
+	IsWrite bool
+
+	// Derived fields for processing
+	ChainSrc  *big.Int // Computed: block.chainid for write, chainMessageSender for read
+	ChainDest *big.Int // Computed: chainMessageRecipient for write, block.chainid for read
 }
 
 type CrossRollupDependency struct {
 	SourceChainID uint64
 	DestChainID   uint64
+	Sender        common.Address
 	Receiver      common.Address
 	SessionID     *big.Int
 	Label         []byte
@@ -174,11 +188,20 @@ func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, 
 				continue
 			}
 
-			log.Info(fmt.Sprintf("[SSV] Parsed mailbox %s call", parseCallType(call)),
-				"chainSrc", call.ChainSrc,
-				"chainDest", call.ChainDest,
-				"receiver", call.Receiver.Hex(),
-				"sessionId", call.SessionId)
+			if call.IsRead {
+				log.Info("[SSV] Parsed mailbox read call",
+					"chainMessageSender", call.ChainMessageSender,
+					"sender", call.Sender.Hex(),
+					"sessionId", call.SessionId,
+					"label", string(call.Label))
+			} else if call.IsWrite {
+				log.Info("[SSV] Parsed mailbox write call",
+					"chainMessageRecipient", call.ChainMessageRecipient,
+					"receiver", call.Receiver.Hex(),
+					"sessionId", call.SessionId,
+					"label", string(call.Label),
+					"dataLen", len(call.Data))
+			}
 
 			// mailbox.read(...)
 			if call.IsRead {
@@ -187,7 +210,8 @@ func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, 
 					dep := CrossRollupDependency{
 						SourceChainID: call.ChainSrc.Uint64(),
 						DestChainID:   call.ChainDest.Uint64(),
-						Receiver:      call.Receiver,
+						Sender:        call.Sender,
+						Receiver:      op.From, // The contract calling read() is the receiver
 						SessionID:     call.SessionId,
 						Label:         call.Label,
 						RequiredData:  true,
@@ -200,6 +224,7 @@ func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, 
 						log.Info("[SSV] Detected new mailbox read call",
 							"chainSrc", dep.SourceChainID,
 							"chainDest", dep.DestChainID,
+							"sender", dep.Sender.Hex(),
 							"receiver", dep.Receiver.Hex(),
 							"sessionId", dep.SessionID)
 					} else {
@@ -312,6 +337,7 @@ func containsDependency(deps []CrossRollupDependency, dep CrossRollupDependency)
 	for _, d := range deps {
 		if d.SourceChainID == dep.SourceChainID &&
 			d.DestChainID == dep.DestChainID &&
+			d.Sender == dep.Sender &&
 			d.Receiver == dep.Receiver &&
 			d.SessionID.Cmp(dep.SessionID) == 0 &&
 			bytes.Equal(d.Label, dep.Label) &&
@@ -340,29 +366,34 @@ func (mp *MailboxProcessor) parseMailboxCall(callData []byte) (*MailboxCall, err
 	}
 
 	methodSig := callData[:4]
-
-	// Parse using method signatures directly
 	parsedABI, err := abi.JSON(strings.NewReader(mailboxABI))
 	if err != nil {
 		return nil, err
 	}
 
-	// Check method by comparing signatures
+	// Check for read() method - 4 parameters
 	if bytes.Equal(methodSig, parsedABI.Methods["read"].ID) {
 		call, err := mp.parseReadCall(callData[4:])
 		if err != nil {
 			return nil, err
 		}
 		call.IsRead = true
+		// For read: chainSrc = chainMessageSender, chainDest = this chain
+		call.ChainSrc = call.ChainMessageSender
+		call.ChainDest = new(big.Int).SetUint64(mp.chainID)
 		return call, nil
 	}
 
+	// Check for write() method - 5 parameters
 	if bytes.Equal(methodSig, parsedABI.Methods["write"].ID) {
 		call, err := mp.parseWriteCall(callData[4:])
 		if err != nil {
 			return nil, err
 		}
 		call.IsWrite = true
+		// For write: chainSrc = this chain, chainDest = chainMessageRecipient
+		call.ChainSrc = new(big.Int).SetUint64(mp.chainID)
+		call.ChainDest = call.ChainMessageRecipient
 		return call, nil
 	}
 
@@ -376,13 +407,17 @@ func (mp *MailboxProcessor) parseReadCall(data []byte) (*MailboxCall, error) {
 		return nil, err
 	}
 
-	return &MailboxCall{
-		ChainSrc:  values[0].(*big.Int),
-		ChainDest: values[1].(*big.Int),
-		Receiver:  values[2].(common.Address),
-		SessionId: values[3].(*big.Int),
-		Label:     values[4].([]byte),
-	}, nil
+	// read(chainMessageSender, sender, sessionId, label)
+	call := &MailboxCall{
+		ChainMessageSender: values[0].(*big.Int),
+		Sender:             values[1].(common.Address),
+		SessionId:          values[2].(*big.Int),
+		Label:              values[3].([]byte),
+	}
+	// For read: chainSrc = chainMessageSender, chainDest = this chain
+	call.ChainSrc = call.ChainMessageSender
+	call.ChainDest = new(big.Int).SetUint64(mp.chainID)
+	return call, nil
 }
 
 func (mp *MailboxProcessor) parseWriteCall(data []byte) (*MailboxCall, error) {
@@ -392,14 +427,18 @@ func (mp *MailboxProcessor) parseWriteCall(data []byte) (*MailboxCall, error) {
 		return nil, err
 	}
 
-	return &MailboxCall{
-		ChainSrc:  values[0].(*big.Int),
-		ChainDest: values[1].(*big.Int),
-		Receiver:  values[2].(common.Address),
-		SessionId: values[3].(*big.Int),
-		Data:      values[4].([]byte),
-		Label:     values[5].([]byte),
-	}, nil
+	// write(chainMessageRecipient, receiver, sessionId, label, data)
+	call := &MailboxCall{
+		ChainMessageRecipient: values[0].(*big.Int),
+		Receiver:              values[1].(common.Address),
+		SessionId:             values[2].(*big.Int),
+		Label:                 values[3].([]byte),
+		Data:                  values[4].([]byte),
+	}
+	// For write: chainSrc = this chain, chainDest = chainMessageRecipient
+	call.ChainSrc = new(big.Int).SetUint64(mp.chainID)
+	call.ChainDest = call.ChainMessageRecipient
+	return call, nil
 }
 
 func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, simState *SimulationState, xtID *rollupv1.XtID) ([]CrossRollupMessage, []CrossRollupDependency, error) {
@@ -431,6 +470,9 @@ func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, s
 		// The Mailbox key uses (chainSrc, chainId, sender, receiver, sessionId, label),
 		// where 'sender' in the outbox is msg.sender of the contract that performed write(...).
 		// Ensure we mirror exactly what the source chain wrote so putInbox matches read(...).
+		if len(circMsg.Source) > 0 {
+			dep.Sender = common.BytesToAddress(circMsg.Source[0])
+		}
 		if len(circMsg.Receiver) > 0 {
 			dep.Receiver = common.BytesToAddress(circMsg.Receiver[0])
 		}
@@ -553,8 +595,8 @@ func (mp *MailboxProcessor) getCoordinatorAddress(ctx context.Context, addr comm
 		return common.Address{}, err
 	}
 
-	// The Mailbox ABI exposes the coordinator under the "coordinator" view
-	callData, err := parsedABI.Pack("coordinator")
+	// The Mailbox ABI exposes the coordinator under the "COORDINATOR" view
+	callData, err := parsedABI.Pack("COORDINATOR")
 	if err != nil {
 		return common.Address{}, err
 	}
@@ -587,13 +629,22 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 		return nil, err
 	}
 
+	log.Info("[SSV] Packing putInbox calldata",
+		"dep.SourceChainID", dep.SourceChainID,
+		"dep.Sender", dep.Sender.Hex(),
+		"dep.Receiver", dep.Receiver.Hex(),
+		"dep.SessionID", dep.SessionID.String(),
+		"dep.Label", string(dep.Label),
+		"dep.Data", hexutil.Encode(dep.Data))
+
+	// putInbox(chainMessageSender, sender, receiver, sessionId, label, data)
 	callData, err := parsedABI.Pack("putInbox",
 		new(big.Int).SetUint64(dep.SourceChainID),
-		new(big.Int).SetUint64(dep.DestChainID),
+		dep.Sender,
 		dep.Receiver,
 		dep.SessionID,
-		dep.Data,
 		dep.Label,
+		dep.Data,
 	)
 	if err != nil {
 		return nil, err
@@ -606,34 +657,31 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 	case native.RollupBChainID:
 		mailboxAddr = mp.mailboxAddresses[1]
 	default:
-		return nil, fmt.Errorf("unable to select mailbox addr. Unsupported \"%d\"chain id", mp.chainID)
+		return nil, fmt.Errorf("unable to select mailbox addr. Unsupported \"%d\" chain id", mp.chainID)
 	}
 
 	log.Info("[SSV] Created putInbox transaction",
 		"nonce", nonce,
 		"mailbox", mailboxAddr.Hex(),
-		"sourceChain", dep.SourceChainID,
-		"destChain", dep.DestChainID,
+		"chainMessageSender", dep.SourceChainID,
+		"sender", dep.Sender.Hex(),
+		"receiver", dep.Receiver.Hex(),
 		"sessionId", dep.SessionID,
-		"data", hex.EncodeToString(dep.Data),
-		"dataLen", len(callData),
-		"receiver", dep.Receiver,
-		"label", dep.Label,
-	)
+		"label", string(dep.Label),
+		"dataLen", len(dep.Data))
 
 	txData := &types.DynamicFeeTx{
 		ChainID:    new(big.Int).SetUint64(mp.chainID),
 		Nonce:      nonce,
 		GasTipCap:  big.NewInt(1000000000),
 		GasFeeCap:  big.NewInt(20000000000),
-		Gas:        300000,
+		Gas:        500000,
 		To:         &mailboxAddr,
 		Value:      big.NewInt(0),
 		Data:       callData,
 		AccessList: nil,
 	}
 
-	// TODO: unmarshalling JSON might be cpu intensive, remove later
 	mp.traceTransaction(callData, mailboxAddr)
 
 	tx := types.NewTx(txData)

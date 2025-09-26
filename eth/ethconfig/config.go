@@ -71,9 +71,11 @@ var Defaults = Config{
 	GPO:                FullNodeGPO,
 	RPCTxFeeCap:        1, // 1 ether
 
-	SPListenAddr:   ":9898",
-	SPServerAddr:   "localhost:18080",
-	SequencerAddrs: "77777:localhost:9898,88888:localhost:10898",
+	SPListenAddr:       ":9898",
+	SPServerAddr:       "localhost:18080",
+	SequencerAddrs:     "77777:localhost:9898,88888:localhost:10898",
+	RollupAMailboxAddr: "0xD74CA64401349626711A81b7473C3649BAAc6886",
+	RollupBMailboxAddr: "0xD74CA64401349626711A81b7473C3649BAAc6886",
 }
 
 //go:generate go run github.com/fjl/gencodec -type Config -formats toml -out gen_config.go
@@ -199,10 +201,12 @@ type Config struct {
 	InteropMessageRPC       string `toml:",omitempty"`
 	InteropMempoolFiltering bool   `toml:",omitempty"`
 
-	SPListenAddr   string
-	SPServerAddr   string
-	SequencerAddrs string
-	SequencerKey   string
+	SPListenAddr       string
+	SPServerAddr       string
+	SequencerAddrs     string
+	SequencerKey       string
+	RollupAMailboxAddr string
+	RollupBMailboxAddr string
 }
 
 // CreateConsensusEngine creates a consensus engine for the given chain config.

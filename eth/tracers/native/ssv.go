@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -22,12 +23,41 @@ import (
 const RollupAChainID = 77777
 const RollupBChainID = 88888
 
-const RollupAMailBoxAddr = "0xfc83487BA02a87Ec53669cdE81367C117872e157"
-const RollupBMailBoxAddr = "0x62678733dcD7ea6D5Db1Cf508157ea5F113e7E32"
+var (
+	chainIDToMailboxMu sync.RWMutex
+	ChainIDToMailbox   = map[uint64]string{}
+)
 
-var ChainIDToMailbox = map[uint64]string{
-	RollupAChainID: RollupAMailBoxAddr,
-	RollupBChainID: RollupBMailBoxAddr,
+// ReplaceChainIDToMailbox swaps the exported ChainIDToMailbox map with the
+// provided mapping, skipping any zero-value addresses so callers don't read
+// placeholders.
+func ReplaceChainIDToMailbox(mapping map[uint64]common.Address) {
+	chainIDToMailboxMu.Lock()
+	defer chainIDToMailboxMu.Unlock()
+
+	updated := make(map[uint64]string, len(mapping))
+	for chainID, addr := range mapping {
+		if (addr == common.Address{}) {
+			continue
+		}
+		updated[chainID] = addr.Hex()
+	}
+
+	ChainIDToMailbox = updated
+}
+
+// MailboxAddressForChain returns the configured mailbox address for the
+// supplied chain ID, if present.
+func MailboxAddressForChain(chainID uint64) (common.Address, bool) {
+	chainIDToMailboxMu.RLock()
+	defer chainIDToMailboxMu.RUnlock()
+
+	addrHex, ok := ChainIDToMailbox[chainID]
+	if !ok || !common.IsHexAddress(addrHex) {
+		return common.Address{}, false
+	}
+
+	return common.HexToAddress(addrHex), true
 }
 
 func init() {
@@ -50,11 +80,8 @@ type SSVTracer struct {
 func newSSVTracer(ctx *tracers.Context, cfg json.RawMessage, chainConfig *params.ChainConfig) (*tracers.Tracer, error) {
 
 	t := &SSVTracer{
-		operations: make([]ssv.SSVOperation, 0),
-		watchedAddresses: map[common.Address]bool{
-			common.HexToAddress(RollupAMailBoxAddr): true,
-			common.HexToAddress(RollupBMailBoxAddr): true,
-		},
+		operations:       make([]ssv.SSVOperation, 0),
+		watchedAddresses: make(map[common.Address]bool),
 	}
 
 	return &tracers.Tracer{

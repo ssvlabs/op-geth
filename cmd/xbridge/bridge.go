@@ -33,47 +33,47 @@ import (
 // Chain 22222
 
 const (
-	bridgeAddrA = "0x920e081762018D9a10e3248fC46f23702d1AEF61"
-	bridgeAddrB = "0x5b0a10821EE37e84714898d5418f650d8d802c71"
-	bridgeABI   = `[{"type":"constructor","inputs":[{"name":"_mailbox","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"mailbox","inputs":[],"outputs":[{"name":"","type":"address","internalType":"contract IMailbox"}],"stateMutability":"view"},{"type":"function","name":"receiveTokens","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"token","type":"address","internalType":"address"},{"name":"amount","type":"uint256","internalType":"uint256"}],"stateMutability":"nonpayable"},{"type":"function","name":"send","inputs":[{"name":"chainSrc","type":"uint256","internalType":"uint256"},{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"token","type":"address","internalType":"address"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"amount","type":"uint256","internalType":"uint256"},{"name":"sessionId","type":"uint256","internalType":"uint256"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"event","name":"DataWritten","inputs":[{"name":"data","type":"bytes","indexed":false,"internalType":"bytes"}],"anonymous":false},{"type":"event","name":"EmptyEvent","inputs":[],"anonymous":false}]`
+	bridgeABI = `[{"type":"constructor","inputs":[{"name":"_mailbox","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"checkAck","inputs":[{"name":"chainDest","type":"uint256","internalType":"uint256"},{"name":"destBridge","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"}],"outputs":[{"name":"","type":"bytes","internalType":"bytes"}],"stateMutability":"view"},{"type":"function","name":"mailbox","inputs":[],"outputs":[{"name":"","type":"address","internalType":"contract IMailbox"}],"stateMutability":"view"},{"type":"function","name":"receiveTokens","inputs":[{"name":"otherChainId","type":"uint256","internalType":"uint256"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"srcBridge","type":"address","internalType":"address"}],"outputs":[{"name":"token","type":"address","internalType":"address"},{"name":"amount","type":"uint256","internalType":"uint256"}],"stateMutability":"nonpayable"},{"type":"function","name":"send","inputs":[{"name":"otherChainId","type":"uint256","internalType":"uint256"},{"name":"token","type":"address","internalType":"address"},{"name":"sender","type":"address","internalType":"address"},{"name":"receiver","type":"address","internalType":"address"},{"name":"amount","type":"uint256","internalType":"uint256"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"destBridge","type":"address","internalType":"address"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"event","name":"DataWritten","inputs":[{"name":"data","type":"bytes","indexed":false,"internalType":"bytes"}],"anonymous":false},{"type":"event","name":"TokensReceived","inputs":[{"name":"token","type":"address","indexed":false,"internalType":"address"},{"name":"amount","type":"uint256","indexed":false,"internalType":"uint256"}],"anonymous":false}]`
 )
 
 type BridgeParams struct {
-	ChainSrc  *big.Int
-	ChainDest *big.Int
-	Token     common.Address
-	Sender    common.Address
-	Receiver  common.Address
-	Amount    *big.Int
-	SessionId *big.Int
+	ChainSrc   *big.Int
+	ChainDest  *big.Int
+	Token      common.Address
+	Sender     common.Address
+	Receiver   common.Address
+	Amount     *big.Int
+	SessionId  *big.Int
+	DestBridge common.Address
+	SrcBridge  common.Address
 }
 
-func createSendTransaction(params BridgeParams, nonce uint64, privateKey *ecdsa.PrivateKey) (*types.Transaction, error) {
+func createSendTransaction(params BridgeParams, nonce uint64, privateKey *ecdsa.PrivateKey, bridgeAddress common.Address) (*types.Transaction, error) {
 	parsedABI, err := abi.JSON(strings.NewReader(bridgeABI))
 	if err != nil {
 		return nil, err
 	}
 
 	calldata, err := parsedABI.Pack("send",
-		params.ChainSrc,
 		params.ChainDest,
 		params.Token,
 		params.Sender,
 		params.Receiver,
 		params.Amount,
 		params.SessionId,
+		params.DestBridge,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	contract := common.HexToAddress(bridgeAddrA)
+	contract := bridgeAddress
 	txData := &types.DynamicFeeTx{
 		ChainID:    params.ChainSrc,
 		Nonce:      nonce,
 		GasTipCap:  big.NewInt(1000000000),
 		GasFeeCap:  big.NewInt(20000000000),
-		Gas:        300000,
+		Gas:        900000,
 		To:         &contract,
 		Value:      big.NewInt(0),
 		Data:       calldata,
@@ -84,7 +84,7 @@ func createSendTransaction(params BridgeParams, nonce uint64, privateKey *ecdsa.
 	return types.SignTx(tx, types.NewLondonSigner(params.ChainSrc), privateKey)
 }
 
-func createReceiveTransaction(params BridgeParams, nonce uint64, privateKey *ecdsa.PrivateKey) (*types.Transaction, error) {
+func createReceiveTransaction(params BridgeParams, nonce uint64, privateKey *ecdsa.PrivateKey, bridgeAddress common.Address) (*types.Transaction, error) {
 	parsedABI, err := abi.JSON(strings.NewReader(bridgeABI))
 	if err != nil {
 		return nil, err
@@ -92,22 +92,22 @@ func createReceiveTransaction(params BridgeParams, nonce uint64, privateKey *ecd
 
 	calldata, err := parsedABI.Pack("receiveTokens",
 		params.ChainSrc,
-		params.ChainDest,
 		params.Sender,
 		params.Receiver,
 		params.SessionId,
+		params.SrcBridge,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	contract := common.HexToAddress(bridgeAddrB)
+	contract := bridgeAddress
 	txData := &types.DynamicFeeTx{
 		ChainID:    params.ChainDest,
 		Nonce:      nonce,
 		GasTipCap:  big.NewInt(1000000000),
 		GasFeeCap:  big.NewInt(20000000000),
-		Gas:        300000,
+		Gas:        900000,
 		To:         &contract,
 		Value:      big.NewInt(0),
 		Data:       calldata,

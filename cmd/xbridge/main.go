@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/rand"
 	"fmt"
 	"log"
 	"math/big"
@@ -22,13 +23,13 @@ import (
 const (
 	sendTxRPCMethod = "eth_sendXTransaction"
 	configFile      = "config.yml"
-	TokenAddr       = "0x2a72a18AB5293C7D436153EdD3F8c5b8FEBBA4F3"
 )
 
 type Rollup struct {
 	RPC        string `yaml:"rpc"`
 	ChainID    int64  `yaml:"chain_id"`
 	PrivateKey string `yaml:"private_key"`
+	Bridge     string `yaml:"bridge"`
 }
 
 func (r *Rollup) GetChainID() *big.Int {
@@ -36,6 +37,7 @@ func (r *Rollup) GetChainID() *big.Int {
 }
 
 type Config struct {
+	Token   string            `yaml:"token"`
 	Rollups map[string]Rollup `yaml:"rollups"`
 }
 
@@ -66,21 +68,27 @@ func main() {
 	publicKeyECDSA, _ = publicKey.(*ecdsa.PublicKey)
 	addressB := crypto.PubkeyToAddress(*publicKeyECDSA)
 
-	tokenA := common.HexToAddress(TokenAddr)
+	log.Printf("using address: %v", addressA)
+
+	tokenA := common.HexToAddress(config.Token)
+	bridgeA := common.HexToAddress(rollupA.Bridge)
+	bridgeB := common.HexToAddress(rollupB.Bridge)
 
 	// Create bridge parameters
-	sessionId := big.NewInt(12345)
+	sessionId := generateRandomSessionID()
 	amount := big.NewInt(100)
 
 	// Create a send transaction (A -> B)
 	sendParams := BridgeParams{
-		ChainSrc:  chainAId, // 11111
-		ChainDest: chainBId, // 22222
-		Token:     tokenA,
-		Sender:    addressA,
-		Receiver:  addressB,
-		Amount:    amount,
-		SessionId: sessionId,
+		ChainSrc:   chainAId, // 11111
+		ChainDest:  chainBId, // 22222
+		Token:      tokenA,
+		Sender:     addressA,
+		Receiver:   addressB,
+		Amount:     amount,
+		SessionId:  sessionId,
+		DestBridge: bridgeB,
+		SrcBridge:  bridgeA,
 	}
 
 	fmt.Println(sendParams)
@@ -90,7 +98,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	signedTx1, err := createSendTransaction(sendParams, nonceA, privateKeyA)
+	signedTx1, err := createSendTransaction(sendParams, nonceA, privateKeyA, bridgeA)
 	if err != nil {
 		log.Fatal("Failed to create send transaction:", err)
 	}
@@ -102,13 +110,15 @@ func main() {
 
 	// Create a receive transaction (B -> A)
 	receiveParams := BridgeParams{
-		ChainSrc:  chainAId, // 11111
-		ChainDest: chainBId, // 22222
-		Token:     tokenA,
-		Sender:    addressA,
-		Receiver:  addressB,
-		Amount:    amount,
-		SessionId: sessionId,
+		ChainSrc:   chainAId, // 11111
+		ChainDest:  chainBId, // 22222
+		Token:      tokenA,
+		Sender:     addressA,
+		Receiver:   addressB,
+		Amount:     amount,
+		SessionId:  sessionId,
+		DestBridge: bridgeB,
+		SrcBridge:  bridgeA,
 	}
 
 	nonceB, err := getNonceFor(rollupB.RPC, addressB)
@@ -116,7 +126,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	signedTx2, err := createReceiveTransaction(receiveParams, nonceB, privateKeyB)
+	signedTx2, err := createReceiveTransaction(receiveParams, nonceB, privateKeyB, bridgeB)
 	if err != nil {
 		log.Fatal("Failed to create receive transaction:", err)
 	}
@@ -171,6 +181,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("RPC call failed: %v", err)
 	}
+
+	fmt.Printf("Submitted %d transactions: %v\n", len(resultHashes), resultHashes)
 }
 
 func loadConfigFromYAML(filename string) Config {
@@ -217,4 +229,14 @@ func getNonceFor(networkRPCAddr string, address common.Address) (uint64, error) 
 	}
 
 	return nonce, nil
+}
+
+// generateRandomSessionID returns a random big.Int in the range [0, 2^63-1]
+func generateRandomSessionID() *big.Int {
+	max := new(big.Int).Lsh(big.NewInt(1), 63)
+	n, err := rand.Int(rand.Reader, max)
+	if err != nil {
+		log.Fatalf("failed to generate random session ID: %v", err)
+	}
+	return n
 }
