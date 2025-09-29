@@ -10,11 +10,12 @@ const unknownString = "Unknown"
 type MessageType int
 
 const (
-	MsgUnknown     MessageType = iota
-	MsgXTRequest               // Cross-chain transaction request
-	MsgVote                    // Sequencer vote
-	MsgDecided                 // SP decision
-	MsgCIRCMessage             // Inter-rollup communication
+	MsgUnknown            MessageType = iota
+	MsgXTRequest                      // Cross-chain transaction request
+	MsgVote                           // Sequencer vote
+	MsgDecided                        // SP decision
+	MsgCIRCMessage                    // Inter-rollup communication
+	MsgCrossChainTxResult             // Cross-chain transaction result (hash mapping)
 )
 
 // String returns a human-readable message type name
@@ -30,6 +31,8 @@ func (t MessageType) String() string {
 		return "Decided"
 	case MsgCIRCMessage:
 		return "CIRCMessage"
+	case MsgCrossChainTxResult:
+		return "CrossChainTxResult"
 	}
 	// Fallback for unrecognized values
 	return unknownString
@@ -37,7 +40,7 @@ func (t MessageType) String() string {
 
 // IsValid returns true if a message type is valid
 func (t MessageType) IsValid() bool {
-	return t > MsgUnknown && t <= MsgCIRCMessage
+	return t > MsgUnknown && t <= MsgCrossChainTxResult
 }
 
 // ClassifyMessage returns an SCP message type from a protobuf message
@@ -55,6 +58,8 @@ func ClassifyMessage(msg *pb.Message) MessageType {
 		return MsgDecided
 	case *pb.Message_CircMessage:
 		return MsgCIRCMessage
+	case *pb.Message_CrossChainTxResult:
+		return MsgCrossChainTxResult
 	default:
 		return MsgUnknown
 	}

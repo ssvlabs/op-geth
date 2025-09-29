@@ -36,6 +36,15 @@ func NewMessageRouter(
 func (mr *MessageRouter) Route(ctx context.Context, from string, msg *pb.Message) error {
 	start := time.Now()
 
+	// CrossChainTxResult messages are handled at a higher level (in handleSequencerMessage)
+	// and should not be routed through protocol handlers
+	if _, ok := msg.Payload.(*pb.Message_CrossChainTxResult); ok {
+		mr.log.Debug().
+			Str("from", from).
+			Msg("Skipping CrossChainTxResult routing - handled at higher level")
+		return nil
+	}
+
 	// Classify the protocol
 	protocolType := ClassifyProtocol(msg)
 	if protocolType == ProtocolUnknown {
