@@ -836,6 +836,10 @@ func (b *EthAPIBackend) SimulateTransaction(
 	gasPool := new(core.GasPool).AddGas(header.GasLimit)
 	result, err := core.ApplyMessage(evm, msg, gasPool)
 	if err != nil {
+		log.Error("[SSV] EVM execution failed during simulation - REASON: evm_apply_message_error",
+			"txHash", tx.Hash().Hex(),
+			"error", err,
+			"failure_reason", "evm_apply_message_error")
 		return nil, err
 	}
 
@@ -1348,10 +1352,11 @@ func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(
 		for i, txBytes := range txReq.Transaction {
 			tx := new(types.Transaction)
 			if err := tx.UnmarshalBinary(txBytes); err != nil {
-				log.Error("[SSV] Failed to unmarshal transaction for re-simulation",
+				log.Error("[SSV] Failed to unmarshal transaction for re-simulation - REASON: transaction_unmarshal_failed",
 					"error", err,
 					"index", i,
-					"xtID", xtID.Hex())
+					"xtID", xtID.Hex(),
+					"failure_reason", "transaction_unmarshal_failed")
 				allSuccessful = false
 				continue
 			}
@@ -1359,18 +1364,20 @@ func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(
 			// Re-simulate the transaction
 			success, err := b.reSimulateTransaction(ctx, tx, blockNrOrHash, xtID)
 			if err != nil {
-				log.Error("[SSV] Re-simulation error",
+				log.Error("[SSV] Re-simulation error - REASON: simulation_error",
 					"txHash", tx.Hash().Hex(),
 					"error", err,
-					"xtID", xtID.Hex())
+					"xtID", xtID.Hex(),
+					"failure_reason", "simulation_error")
 				allSuccessful = false
 				continue
 			}
 
 			if !success {
-				log.Warn("[SSV] Re-simulation failed for transaction",
+				log.Warn("[SSV] Re-simulation failed for transaction - REASON: see transaction-specific logs above",
 					"txHash", tx.Hash().Hex(),
-					"xtID", xtID.Hex())
+					"xtID", xtID.Hex(),
+					"failure_reason", "simulation_returned_false")
 				allSuccessful = false
 			} else {
 				log.Info("[SSV] Re-simulation successful for transaction",
@@ -1402,35 +1409,39 @@ func (b *EthAPIBackend) reSimulateTransaction(
 	// Simulate with SSV tracing to detect mailbox interactions
 	traceResult, err := b.SimulateTransaction(ctx, tx, blockNrOrHash)
 	if err != nil {
-		log.Error("[SSV] Transaction simulation with trace failed",
+		log.Error("[SSV] Transaction simulation with trace failed - REASON: simulation_trace_error",
 			"txHash", tx.Hash().Hex(),
 			"error", err,
-			"xtID", xtID.Hex())
+			"xtID", xtID.Hex(),
+			"failure_reason", "simulation_trace_error")
 		return false, err
 	}
 
 	// Check if execution was successful
 	if traceResult.ExecutionResult.Err != nil {
-		log.Warn("[SSV] Transaction execution failed in re-simulation",
+		log.Warn("[SSV] Transaction execution failed in re-simulation - REASON: execution_error",
 			"txHash", tx.Hash().Hex(),
 			"executionError", traceResult.ExecutionResult.Err,
-			"xtID", xtID.Hex())
+			"xtID", xtID.Hex(),
+			"failure_reason", "execution_error")
 		return false, nil
 	}
 
 	// Validate that the transaction used reasonable gas (not failed silently)
 	if traceResult.ExecutionResult.UsedGas == 0 {
-		log.Warn("[SSV] Transaction used no gas, likely failed silently",
+		log.Warn("[SSV] Transaction used no gas, likely failed silently - REASON: zero_gas_used",
 			"txHash", tx.Hash().Hex(),
-			"xtID", xtID.Hex())
+			"xtID", xtID.Hex(),
+			"failure_reason", "zero_gas_used")
 		return false, nil
 	}
 
 	// Check that mailbox operations were traced (indicating they succeeded)
 	if len(traceResult.Operations) == 0 {
-		log.Warn("[SSV] No mailbox operations detected in re-simulation",
+		log.Warn("[SSV] No mailbox operations detected in re-simulation - REASON: no_mailbox_operations",
 			"txHash", tx.Hash().Hex(),
-			"xtID", xtID.Hex())
+			"xtID", xtID.Hex(),
+			"failure_reason", "no_mailbox_operations")
 		return false, nil
 	}
 
