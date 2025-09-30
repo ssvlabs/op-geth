@@ -1803,31 +1803,46 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	if len(allFulfilledDeps) > 0 {
 		log.Info("[SSV] Creating putInbox transactions for fulfilled dependencies", "count", len(allFulfilledDeps))
 
-		// Count total number of XTRequest transactions for this chain (regardless of pooling status)
-		// Each of these transactions has a pre-signed nonce from the frontend
-		// We must assign putInbox nonces AFTER all XTRequest transactions to avoid collisions
-		xtTxCount := len(coordinationStates)
-
 		nonce, err := b.GetPoolNonce(ctx, sequencerAddr)
 		if err != nil {
 			return false, fmt.Errorf("failed to get nonce: %w", err)
 		}
 
-		// IMPORTANT: putInbox txs use nonces AFTER ALL XTRequest transactions
-		// Even if some XTRequest txs aren't pooled yet (due to dependencies), they still have
-		// pre-signed nonces from the frontend that we must not collide with
-		// The block builder (buildSequencerOnlyList) will reorder them correctly:
-		// putInbox txs will be placed BEFORE original txs in the block, regardless of nonces
-		nextNonce := nonce + uint64(xtTxCount)
+		// CRITICAL: We need to assign nonces that DON'T collide with pre-signed XTRequest transactions
+		// The key insight: pre-signed XTRequest transactions use consecutive nonces starting from poolNonce
+		// We must track which nonces are used by XTRequest txs and assign putInbox different nonces
+
+		// Collect all nonces used by XTRequest transactions (both pooled and not-yet-pooled)
+		usedNonces := make(map[uint64]bool)
+		for _, state := range coordinationStates {
+			usedNonces[state.Tx.Nonce()] = true
+		}
+
+		// Start from poolNonce and find unused nonces for putInbox transactions
+		nextNonce := nonce
+		putInboxNonces := make([]uint64, 0, len(allFulfilledDeps))
+		for len(putInboxNonces) < len(allFulfilledDeps) {
+			if !usedNonces[nextNonce] {
+				putInboxNonces = append(putInboxNonces, nextNonce)
+			}
+			nextNonce++
+		}
 
 		log.Info("[SSV] Assigning putInbox nonces",
-			"startNonce", nextNonce,
+			"putInboxNonces", putInboxNonces,
 			"poolNonce", nonce,
-			"xtTxCount", xtTxCount,
+			"xtTxNonces", func() []uint64 {
+				nonces := make([]uint64, 0, len(coordinationStates))
+				for _, s := range coordinationStates {
+					nonces = append(nonces, s.Tx.Nonce())
+				}
+				return nonces
+			}(),
 			"putInboxCount", len(allFulfilledDeps))
 
-		for _, dep := range allFulfilledDeps {
-			putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, nextNonce)
+		for i, dep := range allFulfilledDeps {
+			putInboxNonce := putInboxNonces[i]
+			putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, putInboxNonce)
 			if err != nil {
 				return false, fmt.Errorf("failed to create putInbox transaction: %w", err)
 			}
@@ -1836,7 +1851,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 				return false, fmt.Errorf("failed to submit putInbox transaction: %w", err)
 			}
 
-			nextNonce++
+			log.Info("[SSV] Created putInbox tx", "nonce", putInboxNonce, "txHash", putInboxTx.Hash().Hex())
 		}
 
 		// Wait for putInbox transactions to be processed
