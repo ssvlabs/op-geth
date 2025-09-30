@@ -269,15 +269,26 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 
 	// SSV: Calculate nonce for the user's handleOps transaction
 	from = api.b.sequencerAddress
+
+	// CRITICAL: We need to check the actual state nonce, not just poolNonce
+	// poolNonce might include pending putInbox transactions that haven't been mined yet
+	stateDB, _, err := api.b.StateAndHeaderByNumber(ctx, rpc.LatestBlockNumber)
+	if err != nil {
+		return nil, fmt.Errorf("get state: %w", err)
+	}
+	stateNonce := stateDB.GetNonce(from)
+
 	poolNonce, err := api.b.GetPoolNonce(ctx, from)
 	if err != nil {
 		return nil, fmt.Errorf("get pool nonce: %w", err)
 	}
 
-	// Use current pool nonce without reservation
-	// putInbox transactions created during SBCP will be assigned nonces dynamically
-	// to avoid conflicts with this transaction
-	actualNonce := poolNonce
+	// Use the higher of stateNonce and poolNonce to avoid conflicts
+	// This ensures we don't collide with any pending transactions
+	actualNonce := stateNonce
+	if poolNonce > stateNonce {
+		actualNonce = poolNonce
+	}
 
 	// Compose and sign a type-2 tx from the sequencer EOA
 	txData := &types.DynamicFeeTx{

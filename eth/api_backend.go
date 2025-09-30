@@ -817,9 +817,25 @@ func (b *EthAPIBackend) SimulateTransaction(
 
 			stageGasPool := new(core.GasPool).AddGas(header.GasLimit)
 			stateDB.SetTxContext(staged.Hash(), stateDB.TxIndex()+1)
-			if wants := staged.Nonce(); stateDB.GetNonce(stageMsg.From) != wants {
-				stateDB.SetNonce(stageMsg.From, wants, tracing.NonceChangeUnspecified)
+
+			// Check if we need to skip nonces to reach the putInbox transaction's nonce
+			currentNonce := stateDB.GetNonce(stageMsg.From)
+			wantNonce := staged.Nonce()
+
+			log.Info("[SSV] Pre-applying putInbox transaction",
+				"txHash", staged.Hash().Hex(),
+				"currentNonce", currentNonce,
+				"wantNonce", wantNonce)
+
+			// Only apply if nonces match - don't manually set nonces
+			if currentNonce != wantNonce {
+				log.Warn("[SSV] Skipping putInbox pre-apply due to nonce mismatch",
+					"txHash", staged.Hash().Hex(),
+					"currentNonce", currentNonce,
+					"wantNonce", wantNonce)
+				continue
 			}
+
 			if _, err := core.ApplyMessage(evm, stageMsg, stageGasPool); err != nil {
 				log.Warn("[SSV] Failed to pre-apply putInbox transaction", "txHash", staged.Hash(), "err", err)
 				continue
