@@ -1834,32 +1834,37 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	if len(allFulfilledDeps) > 0 {
 		log.Info("[SSV] Creating putInbox transactions for fulfilled dependencies", "count", len(allFulfilledDeps))
 
-		nonce, err := b.GetPoolNonce(ctx, sequencerAddr)
-		if err != nil {
-			return false, fmt.Errorf("failed to get nonce: %w", err)
+		// Find the minimum nonce from original transactions
+		minOriginalNonce := uint64(0)
+		hasOriginalTx := false
+		for _, state := range coordinationStates {
+			if !hasOriginalTx || state.Tx.Nonce() < minOriginalNonce {
+				minOriginalNonce = state.Tx.Nonce()
+				hasOriginalTx = true
+			}
 		}
 
-		// Assign sequential nonces to putInbox starting from poolNonce,
-		// and the original transactions will naturally follow with their pre-signed nonces.
-		// During block building, we order: [putInbox...] then [original...], and the
-		// nonces will align correctly.
+		if !hasOriginalTx {
+			return false, fmt.Errorf("no original transactions found for putInbox creation")
+		}
 
+		// Assign putInbox nonces BEFORE the original transaction nonces
+		// putInbox will use: minOriginalNonce - putInboxCount, ..., minOriginalNonce - 1
+		putInboxCount := uint64(len(allFulfilledDeps))
+		if minOriginalNonce < putInboxCount {
+			return false, fmt.Errorf("original transaction nonce %d is too low for %d putInbox transactions", minOriginalNonce, putInboxCount)
+		}
+
+		startNonce := minOriginalNonce - putInboxCount
 		putInboxNonces := make([]uint64, len(allFulfilledDeps))
 		for i := range allFulfilledDeps {
-			putInboxNonces[i] = nonce + uint64(i)
+			putInboxNonces[i] = startNonce + uint64(i)
 		}
 
-		log.Info("[SSV] Assigning putInbox nonces",
+		log.Info("[SSV] Assigning putInbox nonces BEFORE original transactions",
 			"putInboxNonces", putInboxNonces,
-			"poolNonce", nonce,
-			"xtTxNonces", func() []uint64 {
-				nonces := make([]uint64, 0, len(coordinationStates))
-				for _, s := range coordinationStates {
-					nonces = append(nonces, s.Tx.Nonce())
-				}
-				return nonces
-			}(),
-			"putInboxCount", len(allFulfilledDeps))
+			"originalTxMinNonce", minOriginalNonce,
+			"putInboxCount", putInboxCount)
 
 		for i, dep := range allFulfilledDeps {
 			putInboxNonce := putInboxNonces[i]

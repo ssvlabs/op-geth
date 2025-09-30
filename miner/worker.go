@@ -31,7 +31,6 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/stateless"
-	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/types/interoptypes"
@@ -768,48 +767,6 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 			}
 			for _, tx := range backend.GetPendingOriginalTxs() {
 				skip[tx.Hash()] = struct{}{}
-			}
-		}
-
-		// Before committing sequencer transactions, check if we need to advance state nonces
-		// to handle cases where nonces were reserved but no putInbox was created
-		if len(orderedSequencerTxs) > 0 {
-			// Group transactions by sender
-			txsBySender := make(map[common.Address][]*types.Transaction)
-			for _, tx := range orderedSequencerTxs {
-				sender, err := types.Sender(types.LatestSignerForChainID(tx.ChainId()), tx)
-				if err != nil {
-					continue
-				}
-				txsBySender[sender] = append(txsBySender[sender], tx)
-			}
-
-			// For each sender, check if there's a nonce gap and advance state nonce if needed
-			for sender, txs := range txsBySender {
-				if len(txs) == 0 {
-					continue
-				}
-
-				// Find the minimum transaction nonce for this sender
-				minTxNonce := txs[0].Nonce()
-				for _, tx := range txs {
-					if tx.Nonce() < minTxNonce {
-						minTxNonce = tx.Nonce()
-					}
-				}
-
-				// Get current state nonce
-				stateNonce := env.state.GetNonce(sender)
-
-				// If there's a gap, advance the state nonce to match the minimum transaction nonce
-				if minTxNonce > stateNonce {
-					log.Info("[SSV] Advancing state nonce to close gap",
-						"sender", sender.Hex(),
-						"stateNonce", stateNonce,
-						"minTxNonce", minTxNonce,
-						"gap", minTxNonce-stateNonce)
-					env.state.SetNonce(sender, minTxNonce, tracing.NonceChangeUnspecified)
-				}
 			}
 		}
 

@@ -291,14 +291,10 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 		actualNonce = poolNonce
 	}
 
-	reservedNonces := uint64(len(userOps)) // One putInbox per userOp worst case
-	actualNonce += reservedNonces
-
-	log.Info("[SSV] Assigned nonce for handleOps with reservation",
+	log.Info("[SSV] Assigned nonce for handleOps",
 		"stateNonce", stateNonce,
 		"poolNonce", poolNonce,
 		"userOpsCount", len(userOps),
-		"reservedForPutInbox", reservedNonces,
 		"assignedNonce", actualNonce)
 
 	// Compose and sign a type-2 tx from the sequencer EOA
