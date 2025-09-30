@@ -268,6 +268,7 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 	}
 
 	// SSV: Calculate the correct nonce accounting for pending putInbox transactions
+	// AND reserve space for potential future putInbox txs that will be created during SBCP simulation
 	from = api.b.sequencerAddress
 	poolNonce, err := api.b.GetPoolNonce(ctx, from)
 	if err != nil {
@@ -277,9 +278,15 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 	// Get the count of pending putInbox transactions
 	pendingPutInboxCount := len(api.b.GetPendingPutInboxTxs())
 
-	// The actual nonce should be poolNonce + pendingPutInboxCount
-	// This accounts for putInbox transactions that have been staged but not yet mined
-	actualNonce := poolNonce + uint64(pendingPutInboxCount)
+	// Reserve nonce space: Estimate max number of helper txs based on number of userOps
+	// Each userOp could potentially require cross-chain coordination (putInbox tx)
+	// Conservative estimate: 1 helper tx per userOp
+	reservedHelperCount := len(userOps)
+
+	// The actual nonce should account for:
+	// 1. Already pending putInbox txs
+	// 2. Reserved space for putInbox txs that will be created during SBCP
+	actualNonce := poolNonce + uint64(pendingPutInboxCount) + uint64(reservedHelperCount)
 
 	// Compose and sign a type-2 tx from the sequencer EOA
 	txData := &types.DynamicFeeTx{
