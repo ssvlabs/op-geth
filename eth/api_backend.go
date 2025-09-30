@@ -1834,36 +1834,21 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	if len(allFulfilledDeps) > 0 {
 		log.Info("[SSV] Creating putInbox transactions for fulfilled dependencies", "count", len(allFulfilledDeps))
 
-		// Find the minimum nonce from original transactions
-		minOriginalNonce := uint64(0)
-		hasOriginalTx := false
-		for _, state := range coordinationStates {
-			if !hasOriginalTx || state.Tx.Nonce() < minOriginalNonce {
-				minOriginalNonce = state.Tx.Nonce()
-				hasOriginalTx = true
-			}
+		nonce, err := b.GetPoolNonce(ctx, sequencerAddr)
+		if err != nil {
+			return false, fmt.Errorf("failed to get nonce: %w", err)
 		}
 
-		if !hasOriginalTx {
-			return false, fmt.Errorf("no original transactions found for putInbox creation")
-		}
-
-		// Assign putInbox nonces BEFORE the original transaction nonces
-		// putInbox will use: minOriginalNonce - putInboxCount, ..., minOriginalNonce - 1
+		// Assign sequential nonces to putInbox starting from current poolNonce
 		putInboxCount := uint64(len(allFulfilledDeps))
-		if minOriginalNonce < putInboxCount {
-			return false, fmt.Errorf("original transaction nonce %d is too low for %d putInbox transactions", minOriginalNonce, putInboxCount)
-		}
-
-		startNonce := minOriginalNonce - putInboxCount
 		putInboxNonces := make([]uint64, len(allFulfilledDeps))
 		for i := range allFulfilledDeps {
-			putInboxNonces[i] = startNonce + uint64(i)
+			putInboxNonces[i] = nonce + uint64(i)
 		}
 
-		log.Info("[SSV] Assigning putInbox nonces BEFORE original transactions",
+		log.Info("[SSV] Assigning putInbox nonces from current pool nonce",
 			"putInboxNonces", putInboxNonces,
-			"originalTxMinNonce", minOriginalNonce,
+			"poolNonce", nonce,
 			"putInboxCount", putInboxCount)
 
 		for i, dep := range allFulfilledDeps {
@@ -1883,6 +1868,78 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		// Wait for putInbox transactions to be processed
 		if err := b.waitForPutInboxTransactionsToBeProcessed(); err != nil {
 			return false, fmt.Errorf("failed to wait for putInbox transactions: %w", err)
+		}
+
+		// Now that putInbox transactions are created, the pool nonce has advanced
+		// We need to update original transactions that have colliding nonces
+		newPoolNonce, err := b.GetPoolNonce(ctx, sequencerAddr)
+		if err != nil {
+			return false, fmt.Errorf("failed to get new pool nonce: %w", err)
+		}
+
+		log.Info("[SSV] Pool nonce after putInbox creation",
+			"oldNonce", nonce,
+			"newPoolNonce", newPoolNonce,
+			"putInboxCount", putInboxCount)
+
+		// Update any original transactions that have nonces conflicting with putInbox
+		for i, state := range coordinationStates {
+			txNonce := state.Tx.Nonce()
+			// If this transaction's nonce conflicts with putInbox nonces, it needs to be updated
+			if txNonce < newPoolNonce {
+				log.Info("[SSV] Original transaction nonce conflicts with putInbox, needs update",
+					"txHash", state.Tx.Hash().Hex(),
+					"oldNonce", txNonce,
+					"newPoolNonce", newPoolNonce)
+
+				// Extract the transaction data to re-sign with new nonce
+				// Note: This only works for handleOps transactions that WE signed, not raw user transactions
+				from, err := types.Sender(types.LatestSignerForChainID(state.Tx.ChainId()), state.Tx)
+				if err != nil {
+					log.Error("[SSV] Failed to get sender for nonce update", "err", err)
+					continue
+				}
+
+				// Only update if this is a sequencer transaction (that we signed)
+				if from == sequencerAddr {
+					// Create new transaction with updated nonce
+					var newTxData types.TxData
+					switch tx := state.Tx.Type(); tx {
+					case types.DynamicFeeTxType:
+						oldData := state.Tx
+						newTxData = &types.DynamicFeeTx{
+							ChainID:   oldData.ChainId(),
+							Nonce:     newPoolNonce,
+							GasTipCap: oldData.GasTipCap(),
+							GasFeeCap: oldData.GasFeeCap(),
+							Gas:       oldData.Gas(),
+							To:        oldData.To(),
+							Value:     oldData.Value(),
+							Data:      oldData.Data(),
+						}
+					default:
+						log.Warn("[SSV] Unsupported transaction type for nonce update", "type", tx)
+						continue
+					}
+
+					newTx := types.NewTx(newTxData)
+					signedTx, err := types.SignTx(newTx, types.NewLondonSigner(b.ChainConfig().ChainID), b.sequencerKey)
+					if err != nil {
+						log.Error("[SSV] Failed to re-sign transaction", "err", err)
+						continue
+					}
+
+					log.Info("[SSV] Re-signed original transaction with new nonce",
+						"oldTxHash", state.Tx.Hash().Hex(),
+						"newTxHash", signedTx.Hash().Hex(),
+						"oldNonce", txNonce,
+						"newNonce", newPoolNonce)
+
+					// Update the coordination state with new transaction
+					coordinationStates[i].Tx = signedTx
+					newPoolNonce++ // Increment for next transaction if needed
+				}
+			}
 		}
 
 		// Re-simulate after putInbox to detect ACK messages that need to be sent
