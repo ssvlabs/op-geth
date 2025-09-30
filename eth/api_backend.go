@@ -1803,13 +1803,30 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	if len(allFulfilledDeps) > 0 {
 		log.Info("[SSV] Creating putInbox transactions for fulfilled dependencies", "count", len(allFulfilledDeps))
 
+		// Count how many transactions are in the XTRequest
+		// These txs were pre-signed with consecutive nonces starting from poolNonce
+		xtTxCount := 0
+		for _, txReq := range localTxs {
+			xtTxCount += len(txReq.Transaction)
+		}
+
 		nonce, err := b.GetPoolNonce(ctx, sequencerAddr)
 		if err != nil {
 			return false, fmt.Errorf("failed to get nonce: %w", err)
 		}
 
-		// Create putInbox transactions
-		nextNonce := nonce
+		// IMPORTANT: putInbox txs use nonces AFTER the XTRequest transactions
+		// The block builder (buildSequencerOnlyList) will reorder them correctly:
+		// putInbox txs will be placed BEFORE original txs in the block, regardless of nonces
+		// This avoids nonce conflicts with pre-signed XTRequest transactions
+		nextNonce := nonce + uint64(xtTxCount)
+
+		log.Info("[SSV] Assigning putInbox nonces",
+			"startNonce", nextNonce,
+			"poolNonce", nonce,
+			"xtTxCount", xtTxCount,
+			"putInboxCount", len(allFulfilledDeps))
+
 		for _, dep := range allFulfilledDeps {
 			putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, nextNonce)
 			if err != nil {
