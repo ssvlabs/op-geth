@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/crypto"
 	rollupv1 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
@@ -786,6 +787,21 @@ func (b *EthAPIBackend) SimulateTransaction(
 	msg, err := core.TransactionToMessage(tx, signer, header.BaseFee)
 	if err != nil {
 		return nil, err
+	}
+
+	// If this transaction has a higher nonce than current state nonce,
+	// it means nonce space was reserved for putInbox transactions that will be created
+	// later. We need to advance the state nonce to match the transaction's nonce so
+	// simulation doesn't fail.
+	currentNonce := stateDB.GetNonce(msg.From)
+	if tx.Nonce() > currentNonce {
+		// Set nonce to match the transaction, effectively "consuming" the reserved nonces
+		stateDB.SetNonce(msg.From, tx.Nonce(), tracing.NonceChangeUnspecified)
+		log.Info("[SSV] Advanced state nonce for simulation",
+			"from", msg.From.Hex(),
+			"oldNonce", currentNonce,
+			"newNonce", tx.Nonce(),
+			"txHash", tx.Hash().Hex())
 	}
 
 	mailboxAddresses := b.GetMailboxAddresses()
