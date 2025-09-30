@@ -1803,25 +1803,27 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	if len(allFulfilledDeps) > 0 {
 		log.Info("[SSV] Creating putInbox transactions for fulfilled dependencies", "count", len(allFulfilledDeps))
 
-		// Count how many XTRequest transactions were actually pooled (will be included in block)
-		// Only these consume nonces, so putInbox txs must use nonces after them
-		pooledOriginalTxCount := len(b.GetPendingOriginalTxs())
+		// Count total number of XTRequest transactions for this chain (regardless of pooling status)
+		// Each of these transactions has a pre-signed nonce from the frontend
+		// We must assign putInbox nonces AFTER all XTRequest transactions to avoid collisions
+		xtTxCount := len(coordinationStates)
 
 		nonce, err := b.GetPoolNonce(ctx, sequencerAddr)
 		if err != nil {
 			return false, fmt.Errorf("failed to get nonce: %w", err)
 		}
 
-		// IMPORTANT: putInbox txs use nonces AFTER the pooled original transactions
+		// IMPORTANT: putInbox txs use nonces AFTER ALL XTRequest transactions
+		// Even if some XTRequest txs aren't pooled yet (due to dependencies), they still have
+		// pre-signed nonces from the frontend that we must not collide with
 		// The block builder (buildSequencerOnlyList) will reorder them correctly:
 		// putInbox txs will be placed BEFORE original txs in the block, regardless of nonces
-		// This avoids nonce conflicts with pre-signed XTRequest transactions
-		nextNonce := nonce + uint64(pooledOriginalTxCount)
+		nextNonce := nonce + uint64(xtTxCount)
 
 		log.Info("[SSV] Assigning putInbox nonces",
 			"startNonce", nextNonce,
 			"poolNonce", nonce,
-			"pooledOriginalTxCount", pooledOriginalTxCount,
+			"xtTxCount", xtTxCount,
 			"putInboxCount", len(allFulfilledDeps))
 
 		for _, dep := range allFulfilledDeps {
