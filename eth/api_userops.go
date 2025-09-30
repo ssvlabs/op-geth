@@ -13,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
@@ -289,6 +290,16 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 	if poolNonce > stateNonce {
 		actualNonce = poolNonce
 	}
+
+	reservedNonces := uint64(len(userOps)) // One putInbox per userOp worst case
+	actualNonce += reservedNonces
+
+	log.Info("[SSV] Assigned nonce for handleOps with reservation",
+		"stateNonce", stateNonce,
+		"poolNonce", poolNonce,
+		"userOpsCount", len(userOps),
+		"reservedForPutInbox", reservedNonces,
+		"assignedNonce", actualNonce)
 
 	// Compose and sign a type-2 tx from the sequencer EOA
 	txData := &types.DynamicFeeTx{

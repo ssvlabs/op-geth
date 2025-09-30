@@ -1823,24 +1823,14 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 			return false, fmt.Errorf("failed to get nonce: %w", err)
 		}
 
-		// CRITICAL: We need to assign nonces that DON'T collide with pre-signed XTRequest transactions
-		// The key insight: pre-signed XTRequest transactions use consecutive nonces starting from poolNonce
-		// We must track which nonces are used by XTRequest txs and assign putInbox different nonces
+		// Assign sequential nonces to putInbox starting from poolNonce,
+		// and the original transactions will naturally follow with their pre-signed nonces.
+		// During block building, we order: [putInbox...] then [original...], and the
+		// nonces will align correctly.
 
-		// Collect all nonces used by XTRequest transactions (both pooled and not-yet-pooled)
-		usedNonces := make(map[uint64]bool)
-		for _, state := range coordinationStates {
-			usedNonces[state.Tx.Nonce()] = true
-		}
-
-		// Start from poolNonce and find unused nonces for putInbox transactions
-		nextNonce := nonce
-		putInboxNonces := make([]uint64, 0, len(allFulfilledDeps))
-		for len(putInboxNonces) < len(allFulfilledDeps) {
-			if !usedNonces[nextNonce] {
-				putInboxNonces = append(putInboxNonces, nextNonce)
-			}
-			nextNonce++
+		putInboxNonces := make([]uint64, len(allFulfilledDeps))
+		for i := range allFulfilledDeps {
+			putInboxNonces[i] = nonce + uint64(i)
 		}
 
 		log.Info("[SSV] Assigning putInbox nonces",
