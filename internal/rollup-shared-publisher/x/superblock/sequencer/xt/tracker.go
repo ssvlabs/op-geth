@@ -3,6 +3,7 @@ package xt
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
@@ -17,16 +18,18 @@ type hashMapping struct {
 
 // XTResultTracker coordinates one-shot waiters for XT processing results.
 type XTResultTracker struct {
-	mu           sync.Mutex
-	waiters      map[string]chan XTResult
-	hashMappings map[string][]hashMapping // key is xtID hex
+	mu            sync.Mutex
+	waiters       map[string]chan XTResult
+	hashMappings  map[string][]hashMapping // key is xtID hex
+	pendingPublish map[string]chan struct{} // notify when ready to publish
 }
 
 // NewXTResultTracker constructs an empty tracker.
 func NewXTResultTracker() *XTResultTracker {
 	return &XTResultTracker{
-		waiters:      make(map[string]chan XTResult),
-		hashMappings: make(map[string][]hashMapping),
+		waiters:        make(map[string]chan XTResult),
+		hashMappings:   make(map[string][]hashMapping),
+		pendingPublish: make(map[string]chan struct{}),
 	}
 }
 
@@ -76,14 +79,57 @@ func (t *XTResultTracker) UpdateHashMapping(xtID *pb.XtID, chainID string, origi
 		originalHash: originalHash,
 		finalHash:    finalHash,
 	})
+
+	// Notify anyone waiting for hash mappings
+	if ch, exists := t.pendingPublish[key]; exists {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }
 
-// Publish delivers the successful hashes to any subscriber waiting on xtID.
-// It applies any hash mappings received from remote chains before delivering results.
-func (t *XTResultTracker) Publish(xtID *pb.XtID, hashes []ChainTxHash) {
+// PublishWithWait delivers the successful hashes to any subscriber waiting on xtID.
+// It waits for hash mappings from remote chains before publishing (with timeout).
+func (t *XTResultTracker) PublishWithWait(xtID *pb.XtID, hashes []ChainTxHash, waitForMappings bool) {
 	key, err := trackerKey(xtID)
 	if err != nil {
 		return
+	}
+
+	if waitForMappings {
+		// Create notification channel for hash mappings
+		notifyCh := make(chan struct{}, 10)
+		t.mu.Lock()
+		t.pendingPublish[key] = notifyCh
+		t.mu.Unlock()
+
+		// Wait for hash mappings with timeout
+		timeout := time.After(2 * time.Second)
+		lastMappingTime := time.Now()
+
+	waitLoop:
+		for {
+			select {
+			case <-notifyCh:
+				// New hash mapping arrived, reset timer
+				lastMappingTime = time.Now()
+			case <-time.After(200 * time.Millisecond):
+				// No new mappings for 200ms, assume we're done
+				if time.Since(lastMappingTime) > 200*time.Millisecond {
+					break waitLoop
+				}
+			case <-timeout:
+				// Overall timeout
+				break waitLoop
+			}
+		}
+
+		// Clean up
+		t.mu.Lock()
+		delete(t.pendingPublish, key)
+		t.mu.Unlock()
+		close(notifyCh)
 	}
 
 	// Apply hash mappings before publishing
@@ -111,6 +157,11 @@ func (t *XTResultTracker) Publish(xtID *pb.XtID, hashes []ChainTxHash) {
 
 	waiter <- XTResult{Hashes: cloned}
 	close(waiter)
+}
+
+// Publish delivers the successful hashes to any subscriber waiting on xtID (immediate, no wait).
+func (t *XTResultTracker) Publish(xtID *pb.XtID, hashes []ChainTxHash) {
+	t.PublishWithWait(xtID, hashes, false)
 }
 
 // PublishError notifies the subscriber that processing failed.

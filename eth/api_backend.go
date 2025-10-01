@@ -2245,7 +2245,17 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		"putInboxTxs", len(putInboxHashes))
 
 	if b.xtTracker != nil {
-		b.xtTracker.Publish(xtID, results)
+		// If we have no putInbox transactions, we need to wait for CrossChainTxResult
+		// messages from other chains that may have re-signed their transactions
+		waitForMappings := len(putInboxHashes) == 0 && len(results) > 1
+
+		if waitForMappings {
+			// Publish in a goroutine to avoid blocking
+			go b.xtTracker.PublishWithWait(xtID, results, true)
+		} else {
+			// We have putInbox transactions, publish immediately
+			b.xtTracker.Publish(xtID, results)
+		}
 	}
 	trackerNotified = true
 
