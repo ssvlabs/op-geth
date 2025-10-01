@@ -4,19 +4,29 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/ethereum/go-ethereum/common"
 	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 )
 
+// hashMapping stores original->final hash mappings for a specific chain within an XT.
+type hashMapping struct {
+	chainID      string
+	originalHash common.Hash
+	finalHash    common.Hash
+}
+
 // XTResultTracker coordinates one-shot waiters for XT processing results.
 type XTResultTracker struct {
-	mu      sync.Mutex
-	waiters map[string]chan XTResult
+	mu           sync.Mutex
+	waiters      map[string]chan XTResult
+	hashMappings map[string][]hashMapping // key is xtID hex
 }
 
 // NewXTResultTracker constructs an empty tracker.
 func NewXTResultTracker() *XTResultTracker {
 	return &XTResultTracker{
-		waiters: make(map[string]chan XTResult),
+		waiters:      make(map[string]chan XTResult),
+		hashMappings: make(map[string][]hashMapping),
 	}
 }
 
@@ -50,11 +60,48 @@ func (t *XTResultTracker) Subscribe(xtID *pb.XtID) (<-chan XTResult, func(), err
 	return ch, cancel, nil
 }
 
+// UpdateHashMapping records a hash mapping from a remote chain that re-signed a transaction.
+// This mapping will be applied when Publish is called.
+func (t *XTResultTracker) UpdateHashMapping(xtID *pb.XtID, chainID string, originalHash, finalHash common.Hash) {
+	key, err := trackerKey(xtID)
+	if err != nil {
+		return
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.hashMappings[key] = append(t.hashMappings[key], hashMapping{
+		chainID:      chainID,
+		originalHash: originalHash,
+		finalHash:    finalHash,
+	})
+}
+
 // Publish delivers the successful hashes to any subscriber waiting on xtID.
+// It applies any hash mappings received from remote chains before delivering results.
 func (t *XTResultTracker) Publish(xtID *pb.XtID, hashes []ChainTxHash) {
 	key, err := trackerKey(xtID)
 	if err != nil {
 		return
+	}
+
+	// Apply hash mappings before publishing
+	t.mu.Lock()
+	mappings := t.hashMappings[key]
+	delete(t.hashMappings, key) // Clean up mappings after use
+	t.mu.Unlock()
+
+	cloned := append([]ChainTxHash(nil), hashes...)
+
+	// Replace any hashes that were re-signed by remote chains
+	// We want to return the original hashes that the client knows about
+	for i := range cloned {
+		for _, mapping := range mappings {
+			if cloned[i].ChainID == mapping.chainID && cloned[i].Hash == mapping.finalHash {
+				cloned[i].Hash = mapping.originalHash
+			}
+		}
 	}
 
 	waiter := t.pop(key)
@@ -62,7 +109,6 @@ func (t *XTResultTracker) Publish(xtID *pb.XtID, hashes []ChainTxHash) {
 		return
 	}
 
-	cloned := append([]ChainTxHash(nil), hashes...)
 	waiter <- XTResult{Hashes: cloned}
 	close(waiter)
 }

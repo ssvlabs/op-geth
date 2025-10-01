@@ -699,10 +699,6 @@ func (b *EthAPIBackend) handleSequencerMessage(
 	chainID string,
 	msg *rollupv1.Message,
 ) ([]common.Hash, error) {
-	if b.coordinator == nil {
-		return nil, fmt.Errorf("coordinator not configured for sequencer message from chainID %s", chainID)
-	}
-
 	log.Debug(
 		"[SSV] Handling message from sequencer",
 		"chainID",
@@ -713,10 +709,45 @@ func (b *EthAPIBackend) handleSequencerMessage(
 		fmt.Sprintf("%T", msg.Payload),
 	)
 
+	// Handle CrossChainTxResult messages locally (update tracker)
+	if txResult, ok := msg.Payload.(*rollupv1.Message_CrossChainTxResult); ok {
+		return b.handleCrossChainTxResult(ctx, txResult.CrossChainTxResult)
+	}
+
+	// All other messages go to the coordinator
+	if b.coordinator == nil {
+		return nil, fmt.Errorf("coordinator not configured for sequencer message from chainID %s", chainID)
+	}
+
 	if err := b.coordinator.HandleMessage(ctx, msg.SenderId, msg); err != nil {
 		log.Error("[SSV] Failed to handle message from sequencer", "chainID", chainID, "err", err)
 		return nil, fmt.Errorf("coordinator failed to handle %T from sequencer %s: %w", msg.Payload, chainID, err)
 	}
+
+	return nil, nil
+}
+
+// handleCrossChainTxResult processes CrossChainTxResult messages to update the local tracker
+// with hash mappings from remote chains that re-signed transactions.
+// SSV
+func (b *EthAPIBackend) handleCrossChainTxResult(ctx context.Context, result *rollupv1.CrossChainTxResult) ([]common.Hash, error) {
+	if b.xtTracker == nil {
+		return nil, fmt.Errorf("XT tracker not configured")
+	}
+
+	remoteChainID := new(big.Int).SetBytes(result.ChainId)
+	originalHash := common.BytesToHash(result.OriginalHash)
+	finalHash := common.BytesToHash(result.FinalHash)
+
+	log.Info("[SSV] Received CrossChainTxResult from remote chain",
+		"xtID", result.XtId.Hex(),
+		"remoteChainID", remoteChainID.String(),
+		"originalHash", originalHash.Hex(),
+		"finalHash", finalHash.Hex())
+
+	// Update our local tracker with the hash mapping
+	// The tracker should map originalHash -> finalHash for this remote chain
+	b.xtTracker.UpdateHashMapping(result.XtId, remoteChainID.String(), originalHash, finalHash)
 
 	return nil, nil
 }
@@ -1957,15 +1988,63 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 						continue
 					}
 
+					oldTxHash := state.Tx.Hash()
+					newTxHash := signedTx.Hash()
+
 					log.Info("[SSV] Re-signed original transaction with new nonce",
-						"oldTxHash", state.Tx.Hash().Hex(),
-						"newTxHash", signedTx.Hash().Hex(),
+						"oldTxHash", oldTxHash.Hex(),
+						"newTxHash", newTxHash.Hex(),
 						"oldNonce", txNonce,
 						"newNonce", newPoolNonce)
 
 					// Update the coordination state with new transaction
 					coordinationStates[i].Tx = signedTx
 					newPoolNonce++ // Increment for next transaction if needed
+
+					// Send CrossChainTxResult to all participating chains (except ourselves)
+					// so they can update their trackers with the correct hash mapping
+					for _, txReq := range xtReq.Transactions {
+						remoteChainID := new(big.Int).SetBytes(txReq.ChainId)
+						if remoteChainID.Cmp(chainID) == 0 {
+							continue // Don't send to ourselves
+						}
+
+						remoteChainIDStr := remoteChainID.String()
+						client, exists := b.sequencerClients[remoteChainIDStr]
+						if !exists || client == nil {
+							log.Warn("[SSV] No client for remote chain, cannot send CrossChainTxResult",
+								"remoteChainID", remoteChainIDStr,
+								"xtID", xtID.Hex())
+							continue
+						}
+
+						txResultMsg := &rollupv1.CrossChainTxResult{
+							XtId:         xtID,
+							ChainId:      chainID.Bytes(),
+							OriginalHash: oldTxHash.Bytes(),
+							FinalHash:    newTxHash.Bytes(),
+						}
+
+						msg := &rollupv1.Message{
+							SenderId: chainID.String(),
+							Payload: &rollupv1.Message_CrossChainTxResult{
+								CrossChainTxResult: txResultMsg,
+							},
+						}
+
+						if err := client.Send(ctx, msg); err != nil {
+							log.Error("[SSV] Failed to send CrossChainTxResult to remote chain",
+								"remoteChainID", remoteChainIDStr,
+								"xtID", xtID.Hex(),
+								"err", err)
+						} else {
+							log.Info("[SSV] Sent CrossChainTxResult to remote chain",
+								"remoteChainID", remoteChainIDStr,
+								"xtID", xtID.Hex(),
+								"oldHash", oldTxHash.Hex(),
+								"newHash", newTxHash.Hex())
+						}
+					}
 				}
 			}
 		}
