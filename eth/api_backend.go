@@ -2064,37 +2064,76 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	)
 
 	// Deliver finalized transaction hashes to any local RPC subscriber.
-	if len(coordinationStates) > 0 || len(putInboxHashes) > 0 {
-		seen := make(map[common.Hash]struct{})
-		results := make([]xt.ChainTxHash, 0, len(coordinationStates)+len(putInboxHashes))
-		chainIDStr := b.ChainConfig().ChainID.String()
-		for _, state := range coordinationStates {
-			if state.Tx == nil {
+	// For local chain transactions, use the potentially re-signed versions from coordinationStates.
+	// For remote chain transactions, use the original hashes from xtReq.
+	seen := make(map[common.Hash]struct{})
+	results := make([]xt.ChainTxHash, 0)
+
+	// Add local chain transactions (possibly re-signed with new nonces)
+	for _, state := range coordinationStates {
+		if state.Tx == nil {
+			continue
+		}
+		hash := state.Tx.Hash()
+		if _, ok := seen[hash]; ok {
+			continue
+		}
+		seen[hash] = struct{}{}
+		results = append(results, xt.ChainTxHash{
+			ChainID: chainID.String(),
+			Hash:    hash,
+		})
+	}
+
+	// Add remote chain transactions (not processed locally, use original hashes)
+	for _, txReq := range xtReq.Transactions {
+		txChainIDBytes := txReq.ChainId
+		txChainID := new(big.Int).SetBytes(txChainIDBytes)
+
+		// Skip local chain transactions - already added from coordinationStates
+		if txChainID.Cmp(chainID) == 0 {
+			continue
+		}
+
+		txChainIDStr := txChainID.String()
+		for _, txBytes := range txReq.Transaction {
+			tx := &types.Transaction{}
+			if err := tx.UnmarshalBinary(txBytes); err != nil {
+				log.Warn("[SSV] Failed to unmarshal remote transaction for result", "err", err)
 				continue
 			}
-			hash := state.Tx.Hash()
+
+			hash := tx.Hash()
 			if _, ok := seen[hash]; ok {
 				continue
 			}
 			seen[hash] = struct{}{}
 			results = append(results, xt.ChainTxHash{
-				ChainID: chainIDStr,
+				ChainID: txChainIDStr,
 				Hash:    hash,
 			})
 		}
-		for _, item := range putInboxHashes {
-			if _, ok := seen[item.Hash]; ok {
-				continue
-			}
-			seen[item.Hash] = struct{}{}
-			results = append(results, item)
-		}
-
-		if b.xtTracker != nil {
-			b.xtTracker.Publish(xtID, results)
-		}
-		trackerNotified = true
 	}
+
+	// Add putInbox transactions (these are local chain only)
+	for _, item := range putInboxHashes {
+		if _, ok := seen[item.Hash]; ok {
+			continue
+		}
+		seen[item.Hash] = struct{}{}
+		results = append(results, item)
+	}
+
+	log.Info("[SSV] Publishing XT results to tracker",
+		"xtID", xtID.Hex(),
+		"totalTxs", len(results),
+		"localTxs", len(coordinationStates),
+		"putInboxTxs", len(putInboxHashes))
+
+	if b.xtTracker != nil {
+		b.xtTracker.Publish(xtID, results)
+	}
+	trackerNotified = true
 
 	if !allSuccessful {
 		err = fmt.Errorf("sbc simulation unsuccessful for xt %s", xtID.Hex())
