@@ -18,9 +18,9 @@ type hashMapping struct {
 
 // XTResultTracker coordinates one-shot waiters for XT processing results.
 type XTResultTracker struct {
-	mu            sync.Mutex
-	waiters       map[string]chan XTResult
-	hashMappings  map[string][]hashMapping // key is xtID hex
+	mu             sync.Mutex
+	waiters        map[string]chan XTResult
+	hashMappings   map[string][]hashMapping // key is xtID hex
 	pendingPublish map[string]chan struct{} // notify when ready to publish
 }
 
@@ -105,21 +105,28 @@ func (t *XTResultTracker) PublishWithWait(xtID *pb.XtID, hashes []ChainTxHash, w
 		t.mu.Unlock()
 
 		// Wait for hash mappings with timeout
-		timeout := time.After(2 * time.Second)
-		lastMappingTime := time.Now()
+		overallTimeout := time.NewTimer(3 * time.Second)
+		defer overallTimeout.Stop()
+
+		silenceTimer := time.NewTimer(500 * time.Millisecond)
+		defer silenceTimer.Stop()
 
 	waitLoop:
 		for {
 			select {
 			case <-notifyCh:
-				// New hash mapping arrived, reset timer
-				lastMappingTime = time.Now()
-			case <-time.After(200 * time.Millisecond):
-				// No new mappings for 200ms, assume we're done
-				if time.Since(lastMappingTime) > 200*time.Millisecond {
-					break waitLoop
+				// New hash mapping arrived, reset silence timer
+				if !silenceTimer.Stop() {
+					select {
+					case <-silenceTimer.C:
+					default:
+					}
 				}
-			case <-timeout:
+				silenceTimer.Reset(500 * time.Millisecond)
+			case <-silenceTimer.C:
+				// No new mappings for 500ms, assume we're done
+				break waitLoop
+			case <-overallTimeout.C:
 				// Overall timeout
 				break waitLoop
 			}
