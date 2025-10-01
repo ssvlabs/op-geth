@@ -36,6 +36,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/sequencer/xt"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
 )
@@ -78,7 +79,8 @@ func initBackend(withLocal bool) *EthAPIBackend {
 		eth.localTxTracker = locals.New("", time.Minute, gspec.Config, txpool)
 	}
 	return &EthAPIBackend{
-		eth: eth,
+		eth:       eth,
+		xtTracker: xt.NewXTResultTracker(),
 	}
 }
 

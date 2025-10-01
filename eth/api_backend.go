@@ -26,6 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/crypto"
 	rollupv1 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
+	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/sequencer/xt"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
 
 	"math/big"
@@ -84,6 +85,9 @@ type EthAPIBackend struct {
 	pendingPutInboxTxs  []*types.Transaction
 	pendingSequencerTxs []*types.Transaction
 	sequencerTxMutex    sync.RWMutex
+
+	// SSV: Track XT results for forwarded RPC requests
+	xtTracker *xt.XTResultTracker
 
 	// SSV: Track last RequestSeal inclusion list for SBCP
 	rsMutex                 sync.RWMutex
@@ -1022,6 +1026,11 @@ func (b *EthAPIBackend) clearAllSequencerTransactions() {
 		"original", originalCount)
 }
 
+// SubscribeXTResult registers a waiter for the result of a forwarded XT request.
+func (b *EthAPIBackend) SubscribeXTResult(xtID *rollupv1.XtID) (<-chan xt.XTResult, func(), error) {
+	return b.xtTracker.Subscribe(xtID)
+}
+
 // PrepareSequencerTransactionsForBlock prepares sequencer transactions for inclusion in a new block
 // SSV
 func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context) error {
@@ -1727,11 +1736,25 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	ctx context.Context,
 	xtReq *rollupv1.XTRequest,
 	xtID *rollupv1.XtID,
-) (bool, error) {
+) (allSuccessful bool, err error) {
 	log.Info("[SSV] Simulating XT request for SBCP",
 		"xtID", xtID.Hex(),
 		"chainID", b.ChainConfig().ChainID,
 		"txCount", len(xtReq.Transactions))
+
+	var trackerNotified bool
+	defer func() {
+		if b.xtTracker == nil {
+			return
+		}
+		if err != nil {
+			b.xtTracker.PublishError(xtID, err)
+			return
+		}
+		if !trackerNotified {
+			b.xtTracker.Publish(xtID, nil)
+		}
+	}()
 
 	chainID := b.ChainConfig().ChainID
 
@@ -1800,6 +1823,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 
 	allSentMsgs := make([]CrossRollupMessage, 0)
 	allFulfilledDeps := make([]CrossRollupDependency, 0)
+	putInboxHashes := make([]xt.ChainTxHash, 0)
 
 	for _, state := range coordinationStates {
 		if !state.RequiresCoordination() {
@@ -1863,6 +1887,10 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 			}
 
 			log.Info("[SSV] Created putInbox tx", "nonce", putInboxNonce, "txHash", putInboxTx.Hash().Hex())
+			putInboxHashes = append(putInboxHashes, xt.ChainTxHash{
+				ChainID: putInboxTx.ChainId().String(),
+				Hash:    putInboxTx.Hash(),
+			})
 		}
 
 		// Wait for putInbox transactions to be processed
@@ -2024,7 +2052,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	}
 
 	// Check if all transactions are successful
-	allSuccessful := successfulAll(coordinationStates)
+	allSuccessful = successfulAll(coordinationStates)
 	log.Info(
 		"[SSV] SBCP simulation completed",
 		"xtID",
@@ -2035,5 +2063,43 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		len(b.GetPendingOriginalTxs()),
 	)
 
-	return allSuccessful, nil
+	// Deliver finalized transaction hashes to any local RPC subscriber.
+	if len(coordinationStates) > 0 || len(putInboxHashes) > 0 {
+		seen := make(map[common.Hash]struct{})
+		results := make([]xt.ChainTxHash, 0, len(coordinationStates)+len(putInboxHashes))
+		chainIDStr := b.ChainConfig().ChainID.String()
+		for _, state := range coordinationStates {
+			if state.Tx == nil {
+				continue
+			}
+			hash := state.Tx.Hash()
+			if _, ok := seen[hash]; ok {
+				continue
+			}
+			seen[hash] = struct{}{}
+			results = append(results, xt.ChainTxHash{
+				ChainID: chainIDStr,
+				Hash:    hash,
+			})
+		}
+		for _, item := range putInboxHashes {
+			if _, ok := seen[item.Hash]; ok {
+				continue
+			}
+			seen[item.Hash] = struct{}{}
+			results = append(results, item)
+		}
+
+		if b.xtTracker != nil {
+			b.xtTracker.Publish(xtID, results)
+		}
+		trackerNotified = true
+	}
+
+	if !allSuccessful {
+		err = fmt.Errorf("sbc simulation unsuccessful for xt %s", xtID.Hex())
+		return
+	}
+
+	return
 }

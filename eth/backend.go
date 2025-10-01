@@ -56,6 +56,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
+	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/sequencer/xt"
 	"github.com/ethereum/go-ethereum/internal/sequencerapi"
 	"github.com/ethereum/go-ethereum/internal/shutdowncheck"
 	"github.com/ethereum/go-ethereum/internal/version"
@@ -367,6 +368,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		allowUnprotectedTxs: stack.Config().AllowUnprotectedTxs,
 		disableTxPool:       config.RollupDisableTxPoolAdmission,
 		eth:                 eth,
+		xtTracker:           xt.NewXTResultTracker(),
 	}
 	if eth.APIBackend.allowUnprotectedTxs {
 		log.Info("Unprotected transactions allowed")
