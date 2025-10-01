@@ -2070,9 +2070,9 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	results := make([]xt.ChainTxHash, 0)
 
 	// Add local chain transactions (possibly re-signed with new nonces)
-	// First, extract original hashes for comparison
-	originalHashes := make(map[int]common.Hash)
-	for txIdx, txReq := range xtReq.Transactions {
+	// First, extract original hashes for comparison (in order they appear in coordinationStates)
+	originalHashes := make([]common.Hash, 0)
+	for _, txReq := range xtReq.Transactions {
 		txChainID := new(big.Int).SetBytes(txReq.ChainId)
 		if txChainID.Cmp(chainID) != 0 {
 			continue
@@ -2080,7 +2080,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		for _, txBytes := range txReq.Transaction {
 			tx := &types.Transaction{}
 			if err := tx.UnmarshalBinary(txBytes); err == nil {
-				originalHashes[txIdx] = tx.Hash()
+				originalHashes = append(originalHashes, tx.Hash())
 			}
 		}
 	}
@@ -2095,7 +2095,12 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		}
 		seen[hash] = struct{}{}
 
-		origHash, hasOrig := originalHashes[i]
+		var origHash common.Hash
+		hasOrig := i < len(originalHashes)
+		if hasOrig {
+			origHash = originalHashes[i]
+		}
+
 		log.Info("[SSV] Adding local tx to results",
 			"index", i,
 			"returnedTxHash", hash.Hex(),
