@@ -1797,7 +1797,12 @@ func (api *TransactionAPI) SendXTransaction(ctx context.Context, input hexutil.B
 			if res.Err != nil {
 				return nil, res.Err
 			}
-			return append([]xt.ChainTxHash(nil), res.Hashes...), nil
+			hashes := append([]xt.ChainTxHash(nil), res.Hashes...)
+			log.Info("[SSV] SendXTransaction returning results", "xtID", xtID.Hex(), "totalChains", len(hashes))
+			for i, h := range hashes {
+				log.Info("[SSV] SendXTransaction result", "index", i, "chainID", h.ChainID, "txHash", h.Hash.Hex())
+			}
+			return hashes, nil
 		}
 	default:
 		log.Error("[SSV] Unknown message type", "type", fmt.Sprintf("%T", payload))
