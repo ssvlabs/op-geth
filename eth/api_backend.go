@@ -2009,11 +2009,11 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 							continue // Don't send to ourselves
 						}
 
-						remoteChainIDStr := remoteChainID.String()
-						client, exists := b.sequencerClients[remoteChainIDStr]
+						remoteChainIDKey := spconsensus.ChainKeyUint64(remoteChainID.Uint64())
+						client, exists := b.sequencerClients[remoteChainIDKey]
 						if !exists || client == nil {
 							log.Warn("[SSV] No client for remote chain, cannot send CrossChainTxResult",
-								"remoteChainID", remoteChainIDStr,
+								"remoteChainID", remoteChainIDKey,
 								"xtID", xtID.Hex())
 							continue
 						}
@@ -2034,12 +2034,12 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 
 						if err := client.Send(ctx, msg); err != nil {
 							log.Error("[SSV] Failed to send CrossChainTxResult to remote chain",
-								"remoteChainID", remoteChainIDStr,
+								"remoteChainID", remoteChainIDKey,
 								"xtID", xtID.Hex(),
 								"err", err)
 						} else {
 							log.Info("[SSV] Sent CrossChainTxResult to remote chain",
-								"remoteChainID", remoteChainIDStr,
+								"remoteChainID", remoteChainIDKey,
 								"xtID", xtID.Hex(),
 								"oldHash", oldTxHash.Hex(),
 								"newHash", newTxHash.Hex())
