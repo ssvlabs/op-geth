@@ -118,10 +118,18 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 	ep := common.HexToAddress("0x0000000071727De22E5E9d8BAf0edAc6f37da032")
 
 	if len(userOps) == 0 {
-		return nil, &rpc.JsonError{Code: -32602, Message: "invalidUserOperation", Data: map[string]any{"reason": "empty userOps"}}
+		return nil, &rpc.JsonError{
+			Code:    -32602,
+			Message: "invalidUserOperation",
+			Data:    map[string]any{"reason": "empty userOps"},
+		}
 	}
 	if len(userOps) > 10 {
-		return nil, &rpc.JsonError{Code: -32007, Message: "rateLimited", Data: map[string]any{"reason": "batch too large"}}
+		return nil, &rpc.JsonError{
+			Code:    -32007,
+			Message: "rateLimited",
+			Data:    map[string]any{"reason": "batch too large"},
+		}
 	}
 
 	// Pull network fee context (for checks only; we no longer mutate user fee fields)
@@ -157,11 +165,19 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 		var paymasterData []byte
 		if len(op.PaymasterAndData) > 0 {
 			if len(op.PaymasterAndData) < common.AddressLength {
-				return nil, &rpc.JsonError{Code: -32003, Message: "invalidUserOperation", Data: map[string]any{"opIndex": i, "reason": "paymasterAndData too short"}}
+				return nil, &rpc.JsonError{
+					Code:    -32003,
+					Message: "invalidUserOperation",
+					Data:    map[string]any{"opIndex": i, "reason": "paymasterAndData too short"},
+				}
 			}
 			paymasterAddr = common.BytesToAddress(op.PaymasterAndData[:common.AddressLength])
 			if paymasterAddr == (common.Address{}) {
-				return nil, &rpc.JsonError{Code: -32003, Message: "invalidUserOperation", Data: map[string]any{"opIndex": i, "reason": "paymaster address cannot be zero"}}
+				return nil, &rpc.JsonError{
+					Code:    -32003,
+					Message: "invalidUserOperation",
+					Data:    map[string]any{"opIndex": i, "reason": "paymaster address cannot be zero"},
+				}
 			}
 			paymasterData = op.PaymasterAndData
 		}
@@ -170,13 +186,21 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 		cgl := toBig(op.CallGasLimit)
 		pvg := toBig(op.PreVerificationGas)
 		if vgl.Sign() < 0 || cgl.Sign() < 0 || pvg.Sign() < 0 {
-			return nil, &rpc.JsonError{Code: -32602, Message: "invalidUserOperation", Data: map[string]any{"opIndex": i, "reason": "negative gas not allowed"}}
+			return nil, &rpc.JsonError{
+				Code:    -32602,
+				Message: "invalidUserOperation",
+				Data:    map[string]any{"opIndex": i, "reason": "negative gas not allowed"},
+			}
 		}
 
 		// Pack gas pairs into bytes32 as per v0.7: (verificationGasLimit, callGasLimit)
 		agl, ok := packPairToBytes32(vgl, cgl)
 		if !ok {
-			return nil, &rpc.JsonError{Code: -32005, Message: "gasCapExceeded", Data: map[string]any{"opIndex": i, "reason": "gas exceeds uint128 bounds"}}
+			return nil, &rpc.JsonError{
+				Code:    -32005,
+				Message: "gasCapExceeded",
+				Data:    map[string]any{"opIndex": i, "reason": "gas exceeds uint128 bounds"},
+			}
 		}
 
 		// Use user-provided fees; do not mutate to preserve signature validity
@@ -184,7 +208,11 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 		uFeeCap := toBig(op.MaxFeePerGas)
 		gfees, ok := packPairToBytes32(uTip, uFeeCap)
 		if !ok {
-			return nil, &rpc.JsonError{Code: -32005, Message: "gasCapExceeded", Data: map[string]any{"opIndex": i, "reason": "fee exceeds uint128 bounds"}}
+			return nil, &rpc.JsonError{
+				Code:    -32005,
+				Message: "gasCapExceeded",
+				Data:    map[string]any{"opIndex": i, "reason": "fee exceeds uint128 bounds"},
+			}
 		}
 
 		p := packedUserOp{
@@ -218,7 +246,16 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 			return nil, fmt.Errorf("balanceOf call failed: %w", err)
 		}
 		if bal.Cmp(prefundBound) < 0 {
-			return nil, &rpc.JsonError{Code: -32004, Message: "insufficientDeposit", Data: map[string]any{"opIndex": i, "required": prefundBound.String(), "deposit": bal.String(), "sponsor": balanceTarget.Hex()}}
+			return nil, &rpc.JsonError{
+				Code:    -32004,
+				Message: "insufficientDeposit",
+				Data: map[string]any{
+					"opIndex":  i,
+					"required": prefundBound.String(),
+					"deposit":  bal.String(),
+					"sponsor":  balanceTarget.Hex(),
+				},
+			}
 		}
 
 		// getUserOpHash(op)
@@ -258,23 +295,49 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 		// Fees are irrelevant for estimation
 		Value: (*hexutil.Big)(big.NewInt(0)),
 	}
-	estGas, err := ethapi.DoEstimateGas(ctx, api.b, args, rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber), nil, nil, api.b.RPCGasCap())
+	estGas, err := ethapi.DoEstimateGas(
+		ctx,
+		api.b,
+		args,
+		rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber),
+		nil,
+		nil,
+		api.b.RPCGasCap(),
+	)
 	if err != nil {
 		// If estimation reverted, surface a simulateValidation-ish error
-		return nil, &rpc.JsonError{Code: -32006, Message: "simulateValidationFailed", Data: map[string]any{"reason": err.Error()}}
+		return nil, &rpc.JsonError{
+			Code:    -32006,
+			Message: "simulateValidationFailed",
+			Data:    map[string]any{"reason": err.Error()},
+		}
 	}
 	gas := uint64(estGas)
 	gas = gas + gas/6 // + ~16.6% safety
 
 	// Decide outer tx fee caps so we don't overpay beyond reimbursement limits.
 	if minUserTip == nil || minUserFeeCap == nil {
-		return nil, &rpc.JsonError{Code: -32602, Message: "invalidUserOperation", Data: map[string]any{"reason": "no userOps"}}
+		return nil, &rpc.JsonError{
+			Code:    -32602,
+			Message: "invalidUserOperation",
+			Data:    map[string]any{"reason": "no userOps"},
+		}
 	}
 	// Quick sanity: ensure current inclusion is feasible
 	// Require minUserFeeCap >= baseFee + minUserTip
 	effNow := new(big.Int).Add(baseFee, minUserTip)
 	if minUserFeeCap.Cmp(effNow) < 0 {
-		return nil, &rpc.JsonError{Code: -32003, Message: "invalidUserOperation", Data: map[string]any{"reason": "user fee caps below current baseFee", "baseFee": baseFee.String(), "minUserTip": minUserTip.String(), "minUserFeeCap": minUserFeeCap.String(), "tipSuggestion": tipSuggestion.String()}}
+		return nil, &rpc.JsonError{
+			Code:    -32003,
+			Message: "invalidUserOperation",
+			Data: map[string]any{
+				"reason":        "user fee caps below current baseFee",
+				"baseFee":       baseFee.String(),
+				"minUserTip":    minUserTip.String(),
+				"minUserFeeCap": minUserFeeCap.String(),
+				"tipSuggestion": tipSuggestion.String(),
+			},
+		}
 	}
 
 	// Compose and sign a type-2 tx from the sequencer EOA
@@ -327,10 +390,19 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 }
 
 // Backward-compatible aliases: keep older names mapping to the main method.
-func (api *composeUserOpsAPI) ComposeBuildSignedUserOpsTx(ctx context.Context, userOps []userOperationV07, opts composeOpts) (*SignedTxResp, error) {
+func (api *composeUserOpsAPI) ComposeBuildSignedUserOpsTx(
+	ctx context.Context,
+	userOps []userOperationV07,
+	opts composeOpts,
+) (*SignedTxResp, error) {
 	return api.BuildSignedUserOpsTx(ctx, userOps, opts)
 }
-func (api *composeUserOpsAPI) Compose_buildSignedUserOpsTx(ctx context.Context, userOps []userOperationV07, opts composeOpts) (*SignedTxResp, error) {
+
+func (api *composeUserOpsAPI) Compose_buildSignedUserOpsTx(
+	ctx context.Context,
+	userOps []userOperationV07,
+	opts composeOpts,
+) (*SignedTxResp, error) {
 	return api.BuildSignedUserOpsTx(ctx, userOps, opts)
 }
 
@@ -357,7 +429,12 @@ func toBig(x *hexutil.Big) *big.Int {
 }
 
 // callUint256 calls a view method and returns the single uint256 output.
-func (api *composeUserOpsAPI) callUint256(ctx context.Context, to common.Address, data []byte, at rpc.BlockNumberOrHash) (*big.Int, error) {
+func (api *composeUserOpsAPI) callUint256(
+	ctx context.Context,
+	to common.Address,
+	data []byte,
+	at rpc.BlockNumberOrHash,
+) (*big.Int, error) {
 	from := api.b.sequencerAddress
 	args := ethapi.TransactionArgs{From: &from, To: &to, Data: (*hexutil.Bytes)(&data)}
 	res, err := ethapi.DoCall(ctx, api.b, args, at, nil, nil, api.b.RPCEVMTimeout(), api.b.RPCGasCap())
@@ -372,7 +449,12 @@ func (api *composeUserOpsAPI) callUint256(ctx context.Context, to common.Address
 }
 
 // callBytes32 calls a view method and returns the single bytes32 output.
-func (api *composeUserOpsAPI) callBytes32(ctx context.Context, to common.Address, data []byte, at rpc.BlockNumberOrHash) ([32]byte, error) {
+func (api *composeUserOpsAPI) callBytes32(
+	ctx context.Context,
+	to common.Address,
+	data []byte,
+	at rpc.BlockNumberOrHash,
+) ([32]byte, error) {
 	from := api.b.sequencerAddress
 	args := ethapi.TransactionArgs{From: &from, To: &to, Data: (*hexutil.Bytes)(&data)}
 	res, err := ethapi.DoCall(ctx, api.b, args, at, nil, nil, api.b.RPCEVMTimeout(), api.b.RPCGasCap())
