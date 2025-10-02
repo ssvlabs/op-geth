@@ -23,10 +23,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ethereum/go-ethereum/core/tracing"
-	"github.com/ethereum/go-ethereum/crypto"
 	rollupv1 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
-	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/sequencer/xt"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
 
 	"math/big"
@@ -35,6 +32,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/core/ssv"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/eth/tracers/native"
 
 	"github.com/ethereum/go-ethereum"
@@ -78,6 +76,8 @@ type EthAPIBackend struct {
 	sequencerClients map[string]transport.Client
 	sequencerKey     *ecdsa.PrivateKey
 	sequencerAddress common.Address
+	coordinatorKey   *ecdsa.PrivateKey
+	coordinatorAddr  common.Address
 	mailboxAddresses []common.Address
 	mailboxByChainID map[uint64]common.Address
 
@@ -85,9 +85,6 @@ type EthAPIBackend struct {
 	pendingPutInboxTxs  []*types.Transaction
 	pendingSequencerTxs []*types.Transaction
 	sequencerTxMutex    sync.RWMutex
-
-	// SSV: Track XT results for forwarded RPC requests
-	xtTracker *xt.XTResultTracker
 
 	// SSV: Track last RequestSeal inclusion list for SBCP
 	rsMutex                 sync.RWMutex
@@ -630,47 +627,6 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *rollupv1.Messa
 	return nil, nil
 }
 
-func (b *EthAPIBackend) isCoordinator(ctx context.Context, mailboxProcessor *MailboxProcessor) error {
-	chainID := b.ChainConfig().ChainID.Uint64()
-	mailboxAddr := b.GetMailboxAddressFromChainID(chainID)
-
-	// Fetch the full block for the current head before creating a state view
-	head := b.eth.blockchain.CurrentBlock()
-	if head == nil {
-		return fmt.Errorf("current head not available")
-	}
-	block := b.eth.blockchain.GetBlock(head.Hash(), head.Number.Uint64())
-	if block == nil {
-		return fmt.Errorf("failed to retrieve current block %s", head.Hash())
-	}
-
-	stateDB, release, err := b.StateAtBlock(ctx, block, 0, nil, false, false)
-	if err != nil {
-		return err
-	}
-	defer release()
-
-	mailboxCode := stateDB.GetCode(mailboxAddr)
-	if len(mailboxCode) == 0 {
-		return fmt.Errorf("mailbox code not found at address %s for %d chain id", mailboxAddr.String(), chainID)
-	}
-
-	coordinatorAddr, err := mailboxProcessor.getCoordinatorAddress(ctx, mailboxAddr)
-	if err != nil {
-		return err
-	}
-
-	if coordinatorAddr != b.sequencerAddress {
-		return fmt.Errorf(
-			"sequencer is not coordinator, coordinatorAddr: %s, sequencerAddr: %s",
-			coordinatorAddr.Hex(),
-			b.sequencerAddress.Hex(),
-		)
-	}
-
-	return nil
-}
-
 func successfulAll(coordinationStates []*SimulationState) bool {
 	for _, s := range coordinationStates {
 		// checking if any transaction reverted or requires processing CIRCMessage
@@ -699,6 +655,10 @@ func (b *EthAPIBackend) handleSequencerMessage(
 	chainID string,
 	msg *rollupv1.Message,
 ) ([]common.Hash, error) {
+	if b.coordinator == nil {
+		return nil, fmt.Errorf("coordinator not configured for sequencer message from chainID %s", chainID)
+	}
+
 	log.Debug(
 		"[SSV] Handling message from sequencer",
 		"chainID",
@@ -709,48 +669,10 @@ func (b *EthAPIBackend) handleSequencerMessage(
 		fmt.Sprintf("%T", msg.Payload),
 	)
 
-	// Handle CrossChainTxResult messages locally (update tracker)
-	if txResult, ok := msg.Payload.(*rollupv1.Message_CrossChainTxResult); ok {
-		return b.handleCrossChainTxResult(ctx, txResult.CrossChainTxResult)
-	}
-
-	// All other messages go to the coordinator
-	if b.coordinator == nil {
-		return nil, fmt.Errorf("coordinator not configured for sequencer message from chainID %s", chainID)
-	}
-
 	if err := b.coordinator.HandleMessage(ctx, msg.SenderId, msg); err != nil {
 		log.Error("[SSV] Failed to handle message from sequencer", "chainID", chainID, "err", err)
 		return nil, fmt.Errorf("coordinator failed to handle %T from sequencer %s: %w", msg.Payload, chainID, err)
 	}
-
-	return nil, nil
-}
-
-// handleCrossChainTxResult processes CrossChainTxResult messages to update the local tracker
-// with hash mappings from remote chains that re-signed transactions.
-// SSV
-func (b *EthAPIBackend) handleCrossChainTxResult(
-	ctx context.Context,
-	result *rollupv1.CrossChainTxResult,
-) ([]common.Hash, error) {
-	if b.xtTracker == nil {
-		return nil, fmt.Errorf("XT tracker not configured")
-	}
-
-	remoteChainID := new(big.Int).SetBytes(result.ChainId)
-	originalHash := common.BytesToHash(result.OriginalHash)
-	finalHash := common.BytesToHash(result.FinalHash)
-
-	log.Info("[SSV] Received CrossChainTxResult from remote chain",
-		"xtID", result.XtId.Hex(),
-		"remoteChainID", remoteChainID.String(),
-		"originalHash", originalHash.Hex(),
-		"finalHash", finalHash.Hex())
-
-	// Update our local tracker with the hash mapping
-	// The tracker should map originalHash -> finalHash for this remote chain
-	b.xtTracker.UpdateHashMapping(result.XtId, remoteChainID.String(), originalHash, finalHash)
 
 	return nil, nil
 }
@@ -827,21 +749,6 @@ func (b *EthAPIBackend) SimulateTransaction(
 		return nil, err
 	}
 
-	// If this transaction has a higher nonce than current state nonce,
-	// it means nonce space was reserved for putInbox transactions that will be created
-	// later. We need to advance the state nonce to match the transaction's nonce so
-	// simulation doesn't fail.
-	currentNonce := stateDB.GetNonce(msg.From)
-	if tx.Nonce() > currentNonce {
-		// Set nonce to match the transaction, effectively "consuming" the reserved nonces
-		stateDB.SetNonce(msg.From, tx.Nonce(), tracing.NonceChangeUnspecified)
-		log.Info("[SSV] Advanced state nonce for simulation",
-			"from", msg.From.Hex(),
-			"oldNonce", currentNonce,
-			"newNonce", tx.Nonce(),
-			"txHash", tx.Hash().Hex())
-	}
-
 	mailboxAddresses := b.GetMailboxAddresses()
 	tracer := native.NewSSVTracer(mailboxAddresses)
 
@@ -870,25 +777,9 @@ func (b *EthAPIBackend) SimulateTransaction(
 
 			stageGasPool := new(core.GasPool).AddGas(header.GasLimit)
 			stateDB.SetTxContext(staged.Hash(), stateDB.TxIndex()+1)
-
-			// Check if we need to skip nonces to reach the putInbox transaction's nonce
-			currentNonce := stateDB.GetNonce(stageMsg.From)
-			wantNonce := staged.Nonce()
-
-			log.Info("[SSV] Pre-applying putInbox transaction",
-				"txHash", staged.Hash().Hex(),
-				"currentNonce", currentNonce,
-				"wantNonce", wantNonce)
-
-			// Only apply if nonces match - don't manually set nonces
-			if currentNonce != wantNonce {
-				log.Warn("[SSV] Skipping putInbox pre-apply due to nonce mismatch",
-					"txHash", staged.Hash().Hex(),
-					"currentNonce", currentNonce,
-					"wantNonce", wantNonce)
-				continue
+			if wants := staged.Nonce(); stateDB.GetNonce(stageMsg.From) != wants {
+				stateDB.SetNonce(stageMsg.From, wants, tracing.NonceChangeUnspecified)
 			}
-
 			if _, err := core.ApplyMessage(evm, stageMsg, stageGasPool); err != nil {
 				log.Warn("[SSV] Failed to pre-apply putInbox transaction", "txHash", staged.Hash(), "err", err)
 				continue
@@ -1058,11 +949,6 @@ func (b *EthAPIBackend) clearAllSequencerTransactions() {
 	log.Info("[SSV] Cleared sequencer transactions",
 		"putInbox", putInboxCount,
 		"original", originalCount)
-}
-
-// SubscribeXTResult registers a waiter for the result of a forwarded XT request.
-func (b *EthAPIBackend) SubscribeXTResult(xtID *rollupv1.XtID) (<-chan xt.XTResult, func(), error) {
-	return b.xtTracker.Subscribe(xtID)
 }
 
 // PrepareSequencerTransactionsForBlock prepares sequencer transactions for inclusion in a new block
@@ -1426,17 +1312,11 @@ func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(
 		for i, txBytes := range txReq.Transaction {
 			tx := new(types.Transaction)
 			if err := tx.UnmarshalBinary(txBytes); err != nil {
-				log.Error(
-					"[SSV] Failed to unmarshal transaction for re-simulation - REASON: transaction_unmarshal_failed",
-					"error",
-					err,
-					"index",
-					i,
-					"xtID",
-					xtID.Hex(),
-					"failure_reason",
-					"transaction_unmarshal_failed",
-				)
+				log.Error("[SSV] Failed to unmarshal transaction for re-simulation - REASON: transaction_unmarshal_failed",
+					"error", err,
+					"index", i,
+					"xtID", xtID.Hex(),
+					"failure_reason", "transaction_unmarshal_failed")
 				allSuccessful = false
 				continue
 			}
@@ -1776,25 +1656,11 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	ctx context.Context,
 	xtReq *rollupv1.XTRequest,
 	xtID *rollupv1.XtID,
-) (allSuccessful bool, err error) {
+) (bool, error) {
 	log.Info("[SSV] Simulating XT request for SBCP",
 		"xtID", xtID.Hex(),
 		"chainID", b.ChainConfig().ChainID,
 		"txCount", len(xtReq.Transactions))
-
-	var trackerNotified bool
-	defer func() {
-		if b.xtTracker == nil {
-			return
-		}
-		if err != nil {
-			b.xtTracker.PublishError(xtID, err)
-			return
-		}
-		if !trackerNotified {
-			b.xtTracker.Publish(xtID, nil, nil)
-		}
-	}()
 
 	chainID := b.ChainConfig().ChainID
 
@@ -1812,14 +1678,13 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		return true, nil
 	}
 
-	sequencerAddr := crypto.PubkeyToAddress(b.sequencerKey.PublicKey)
 	mailboxProcessor := NewMailboxProcessor(
 		b.ChainConfig().ChainID.Uint64(),
 		b.GetMailboxAddresses(),
 		b.sequencerClients,
 		b.coordinator,
-		b.sequencerKey,
-		sequencerAddr,
+		b.coordinatorKey,
+		b.coordinatorAddr,
 		b,
 	)
 
@@ -1863,7 +1728,6 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 
 	allSentMsgs := make([]CrossRollupMessage, 0)
 	allFulfilledDeps := make([]CrossRollupDependency, 0)
-	putInboxHashes := make([]xt.ChainTxHash, 0)
 
 	for _, state := range coordinationStates {
 		if !state.RequiresCoordination() {
@@ -1898,26 +1762,16 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	if len(allFulfilledDeps) > 0 {
 		log.Info("[SSV] Creating putInbox transactions for fulfilled dependencies", "count", len(allFulfilledDeps))
 
-		nonce, err := b.GetPoolNonce(ctx, sequencerAddr)
+		nonce, err := b.GetPoolNonce(ctx, b.coordinatorAddr)
 		if err != nil {
 			return false, fmt.Errorf("failed to get nonce: %w", err)
 		}
+		log.Info("[SSV] Using coordinator address for putInbox nonce", "coordinatorAddr", b.coordinatorAddr.Hex(), "nonce", nonce)
 
-		// Assign sequential nonces to putInbox starting from current poolNonce
-		putInboxCount := uint64(len(allFulfilledDeps))
-		putInboxNonces := make([]uint64, len(allFulfilledDeps))
-		for i := range allFulfilledDeps {
-			putInboxNonces[i] = nonce + uint64(i)
-		}
-
-		log.Info("[SSV] Assigning putInbox nonces from current pool nonce",
-			"putInboxNonces", putInboxNonces,
-			"poolNonce", nonce,
-			"putInboxCount", putInboxCount)
-
-		for i, dep := range allFulfilledDeps {
-			putInboxNonce := putInboxNonces[i]
-			putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, putInboxNonce)
+		// Create putInbox transactions
+		nextNonce := nonce
+		for _, dep := range allFulfilledDeps {
+			putInboxTx, err := mailboxProcessor.createPutInboxTx(dep, nextNonce)
 			if err != nil {
 				return false, fmt.Errorf("failed to create putInbox transaction: %w", err)
 			}
@@ -1926,136 +1780,12 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 				return false, fmt.Errorf("failed to submit putInbox transaction: %w", err)
 			}
 
-			log.Info("[SSV] Created putInbox tx", "nonce", putInboxNonce, "txHash", putInboxTx.Hash().Hex())
-			putInboxHashes = append(putInboxHashes, xt.ChainTxHash{
-				ChainID: putInboxTx.ChainId().String(),
-				Hash:    putInboxTx.Hash(),
-			})
+			nextNonce++
 		}
 
 		// Wait for putInbox transactions to be processed
 		if err := b.waitForPutInboxTransactionsToBeProcessed(); err != nil {
 			return false, fmt.Errorf("failed to wait for putInbox transactions: %w", err)
-		}
-
-		// Now that putInbox transactions are created, the pool nonce has advanced
-		// We need to update original transactions that have colliding nonces
-		newPoolNonce, err := b.GetPoolNonce(ctx, sequencerAddr)
-		if err != nil {
-			return false, fmt.Errorf("failed to get new pool nonce: %w", err)
-		}
-
-		log.Info("[SSV] Pool nonce after putInbox creation",
-			"oldNonce", nonce,
-			"newPoolNonce", newPoolNonce,
-			"putInboxCount", putInboxCount)
-
-		// Update any original transactions that have nonces conflicting with putInbox
-		for i, state := range coordinationStates {
-			txNonce := state.Tx.Nonce()
-			// If this transaction's nonce conflicts with putInbox nonces, it needs to be updated
-			if txNonce < newPoolNonce {
-				log.Info("[SSV] Original transaction nonce conflicts with putInbox, needs update",
-					"txHash", state.Tx.Hash().Hex(),
-					"oldNonce", txNonce,
-					"newPoolNonce", newPoolNonce)
-
-				// Extract the transaction data to re-sign with new nonce
-				// Note: This only works for handleOps transactions that WE signed, not raw user transactions
-				from, err := types.Sender(types.LatestSignerForChainID(state.Tx.ChainId()), state.Tx)
-				if err != nil {
-					log.Error("[SSV] Failed to get sender for nonce update", "err", err)
-					continue
-				}
-
-				// Only update if this is a sequencer transaction (that we signed)
-				if from == sequencerAddr {
-					// Create new transaction with updated nonce
-					var newTxData types.TxData
-					switch tx := state.Tx.Type(); tx {
-					case types.DynamicFeeTxType:
-						oldData := state.Tx
-						newTxData = &types.DynamicFeeTx{
-							ChainID:   oldData.ChainId(),
-							Nonce:     newPoolNonce,
-							GasTipCap: oldData.GasTipCap(),
-							GasFeeCap: oldData.GasFeeCap(),
-							Gas:       oldData.Gas(),
-							To:        oldData.To(),
-							Value:     oldData.Value(),
-							Data:      oldData.Data(),
-						}
-					default:
-						log.Warn("[SSV] Unsupported transaction type for nonce update", "type", tx)
-						continue
-					}
-
-					newTx := types.NewTx(newTxData)
-					signedTx, err := types.SignTx(newTx, types.NewLondonSigner(b.ChainConfig().ChainID), b.sequencerKey)
-					if err != nil {
-						log.Error("[SSV] Failed to re-sign transaction", "err", err)
-						continue
-					}
-
-					oldTxHash := state.Tx.Hash()
-					newTxHash := signedTx.Hash()
-
-					log.Info("[SSV] Re-signed original transaction with new nonce",
-						"oldTxHash", oldTxHash.Hex(),
-						"newTxHash", newTxHash.Hex(),
-						"oldNonce", txNonce,
-						"newNonce", newPoolNonce)
-
-					// Update the coordination state with new transaction
-					coordinationStates[i].Tx = signedTx
-					newPoolNonce++ // Increment for next transaction if needed
-
-					// Send CrossChainTxResult to all participating chains (except ourselves)
-					// so they can update their trackers with the correct hash mapping
-					for _, txReq := range xtReq.Transactions {
-						remoteChainID := new(big.Int).SetBytes(txReq.ChainId)
-						if remoteChainID.Cmp(chainID) == 0 {
-							continue // Don't send to ourselves
-						}
-
-						remoteChainIDKey := spconsensus.ChainKeyUint64(remoteChainID.Uint64())
-						client, exists := b.sequencerClients[remoteChainIDKey]
-						if !exists || client == nil {
-							log.Warn("[SSV] No client for remote chain, cannot send CrossChainTxResult",
-								"remoteChainID", remoteChainIDKey,
-								"xtID", xtID.Hex())
-							continue
-						}
-
-						txResultMsg := &rollupv1.CrossChainTxResult{
-							XtId:         xtID,
-							ChainId:      chainID.Bytes(),
-							OriginalHash: oldTxHash.Bytes(),
-							FinalHash:    newTxHash.Bytes(),
-						}
-
-						msg := &rollupv1.Message{
-							SenderId: chainID.String(),
-							Payload: &rollupv1.Message_CrossChainTxResult{
-								CrossChainTxResult: txResultMsg,
-							},
-						}
-
-						if err := client.Send(ctx, msg); err != nil {
-							log.Error("[SSV] Failed to send CrossChainTxResult to remote chain",
-								"remoteChainID", remoteChainIDKey,
-								"xtID", xtID.Hex(),
-								"err", err)
-						} else {
-							log.Info("[SSV] Sent CrossChainTxResult to remote chain",
-								"remoteChainID", remoteChainIDKey,
-								"xtID", xtID.Hex(),
-								"oldHash", oldTxHash.Hex(),
-								"newHash", newTxHash.Hex())
-						}
-					}
-				}
-			}
 		}
 
 		// Re-simulate after putInbox to detect ACK messages that need to be sent
@@ -2140,7 +1870,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	}
 
 	// Check if all transactions are successful
-	allSuccessful = successfulAll(coordinationStates)
+	allSuccessful := successfulAll(coordinationStates)
 	log.Info(
 		"[SSV] SBCP simulation completed",
 		"xtID",
@@ -2151,177 +1881,5 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		len(b.GetPendingOriginalTxs()),
 	)
 
-	// Deliver finalized transaction hashes to any local RPC subscriber.
-	// For local chain transactions, use the potentially re-signed versions from coordinationStates.
-	// For remote chain transactions, use the original hashes from xtReq.
-	seen := make(map[common.Hash]struct{})
-	results := make([]xt.ChainTxHash, 0)
-
-	// Add local chain transactions (possibly re-signed with new nonces)
-	// First, extract original hashes for comparison (in order they appear in coordinationStates)
-	originalHashes := make([]common.Hash, 0)
-	for _, txReq := range xtReq.Transactions {
-		txChainID := new(big.Int).SetBytes(txReq.ChainId)
-		if txChainID.Cmp(chainID) != 0 {
-			continue
-		}
-		for _, txBytes := range txReq.Transaction {
-			tx := &types.Transaction{}
-			if err := tx.UnmarshalBinary(txBytes); err == nil {
-				originalHashes = append(originalHashes, tx.Hash())
-			}
-		}
-	}
-
-	for i, state := range coordinationStates {
-		if state.Tx == nil {
-			continue
-		}
-		hash := state.Tx.Hash()
-		if _, ok := seen[hash]; ok {
-			continue
-		}
-		seen[hash] = struct{}{}
-
-		var origHash common.Hash
-		hasOrig := i < len(originalHashes)
-		if hasOrig {
-			origHash = originalHashes[i]
-		}
-
-		log.Info("[SSV] Adding local tx to results",
-			"index", i,
-			"returnedTxHash", hash.Hex(),
-			"originalTxHash", func() string {
-				if hasOrig {
-					return origHash.Hex()
-				}
-				return "unknown"
-			}(),
-			"wasResigned", hasOrig && hash != origHash,
-			"nonce", state.Tx.Nonce(),
-			"chainID", chainID.String())
-
-		results = append(results, xt.ChainTxHash{
-			ChainID: chainID.String(),
-			Hash:    hash,
-		})
-	}
-
-	// Add remote chain transactions (not processed locally, use original hashes)
-	for _, txReq := range xtReq.Transactions {
-		txChainIDBytes := txReq.ChainId
-		txChainID := new(big.Int).SetBytes(txChainIDBytes)
-
-		// Skip local chain transactions - already added from coordinationStates
-		if txChainID.Cmp(chainID) == 0 {
-			continue
-		}
-
-		txChainIDStr := txChainID.String()
-		for _, txBytes := range txReq.Transaction {
-			tx := &types.Transaction{}
-			if err := tx.UnmarshalBinary(txBytes); err != nil {
-				log.Warn("[SSV] Failed to unmarshal remote transaction for result", "err", err)
-				continue
-			}
-
-			hash := tx.Hash()
-			if _, ok := seen[hash]; ok {
-				continue
-			}
-			seen[hash] = struct{}{}
-			results = append(results, xt.ChainTxHash{
-				ChainID: txChainIDStr,
-				Hash:    hash,
-			})
-		}
-	}
-
-	// Add putInbox transactions (these are local chain only)
-	for _, item := range putInboxHashes {
-		if _, ok := seen[item.Hash]; ok {
-			continue
-		}
-		seen[item.Hash] = struct{}{}
-		results = append(results, item)
-	}
-
-	log.Info("[SSV] Publishing XT results to tracker",
-		"xtID", xtID.Hex(),
-		"totalTxs", len(results),
-		"localTxs", len(coordinationStates),
-		"putInboxTxs", len(putInboxHashes))
-
-	if b.xtTracker != nil {
-		// If we have no putInbox transactions, it means we're waiting to receive CIRC messages
-		// from other chains. Those other chains will re-sign their transactions with new nonces
-		// and send us CrossChainTxResult messages. We need to wait for those messages before
-		// publishing results via SendXTransaction.
-		//
-		// The CrossChainTxResult messages will arrive during the BuildingLocked state,
-		// before RequestSeal transitions us to Submission state. By waiting for the state
-		// to transition to Submission (via RequestSeal), we ensure all hash mappings are received.
-		waitForMappings := len(putInboxHashes) == 0 && len(results) > 1
-
-		if waitForMappings {
-			log.Info("[SSV] Chain has no putInbox - will wait for hash mappings and state transition",
-				"xtID", xtID.Hex(),
-				"currentState", b.coordinator.GetState().String())
-
-			// Launch goroutine to wait for state transition and then publish
-			go b.waitForSubmissionAndPublish(xtID, results)
-		} else {
-			// We have putInbox transactions (we're the sender), publish immediately
-			log.Info("[SSV] Chain has putInbox - publishing results immediately",
-				"xtID", xtID.Hex())
-			b.xtTracker.Publish(xtID, results, nil)
-		}
-	}
-	trackerNotified = true
-
-	if !allSuccessful {
-		err = fmt.Errorf("sbc simulation unsuccessful for xt %s", xtID.Hex())
-		return
-	}
-
-	return
-}
-
-// waitForSubmissionAndPublish waits for CrossChainTxResult messages to arrive from remote chains,
-// then publishes the results. If messages don't arrive within a silence period, it waits for the
-// state transition to Submission as a fallback to ensure we don't wait forever.
-func (b *EthAPIBackend) waitForSubmissionAndPublish(xtID *rollupv1.XtID, results []xt.ChainTxHash) {
-	log.Info("[SSV] Starting wait for CrossChainTxResult messages",
-		"xtID", xtID.Hex(),
-		"currentState", b.coordinator.GetState().String())
-
-	// Create a channel that signals when state transitions to Submission
-	stateTransitionCh := make(chan struct{}, 1)
-
-	// Monitor state transitions
-	go func() {
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				currentState := b.coordinator.GetState()
-				if currentState == sequencer.StateSubmission {
-					log.Info("[SSV] State transitioned to Submission, notifying tracker",
-						"xtID", xtID.Hex())
-					select {
-					case stateTransitionCh <- struct{}{}:
-					default:
-					}
-					return
-				}
-			}
-		}
-	}()
-
-	// This will wait for hash mappings and publish when they arrive
-	// Uses silence timer (500ms) and state transition as fallback
-	b.xtTracker.Publish(xtID, results, stateTransitionCh)
+	return allSuccessful, nil
 }

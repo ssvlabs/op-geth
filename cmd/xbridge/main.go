@@ -176,25 +176,13 @@ func main() {
 	}
 	defer l1Client.Close()
 
-	type ChainTxHash struct {
-		ChainID string      `json:"chainId"`
-		Hash    common.Hash `json:"hash"`
-	}
-
-	var resultHashes []ChainTxHash
+	var resultHashes []common.Hash
 	err = l1Client.CallContext(context.Background(), &resultHashes, sendTxRPCMethod, hexutil.Encode(encodedPayload))
 	if err != nil {
 		log.Fatalf("RPC call failed: %v", err)
 	}
 
-	fmt.Printf("\n=== Cross-Chain Transaction Results ===\n")
-	fmt.Printf("Total chains: %d\n\n", len(resultHashes))
-	for i, result := range resultHashes {
-		fmt.Printf("Chain %d:\n", i+1)
-		fmt.Printf("  Chain ID: %s\n", result.ChainID)
-		fmt.Printf("  TX Hash:  %s\n", result.Hash.Hex())
-		fmt.Println()
-	}
+	fmt.Printf("Submitted %d transactions: %v\n", len(resultHashes), resultHashes)
 }
 
 func loadConfigFromYAML(filename string) Config {

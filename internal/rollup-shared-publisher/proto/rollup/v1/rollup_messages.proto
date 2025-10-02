@@ -66,15 +66,6 @@ message CIRCMessage {
   repeated bytes data = 7; // ABI encoded data
 }
 
-// Cross-chain transaction result from a sequencer
-// Sent between sequencers to communicate final transaction details
-message CrossChainTxResult {
-  XtID xt_id = 1; // Transaction ID this result belongs to
-  bytes chain_id = 2; // Chain that processed the transaction
-  bytes original_hash = 3; // Original transaction hash submitted (32 bytes)
-  bytes final_hash = 4; // Final transaction hash executed (32 bytes, may differ if re-signed)
-}
-
 // =============================================================================
 // SUPERBLOCK CONSTRUCTION PROTOCOL (SBCP) MESSAGES
 // =============================================================================
@@ -148,8 +139,5 @@ message Message {
     // Connection-level authentication
     HandshakeRequest handshake_request = 12;
     HandshakeResponse handshake_response = 13;
-
-    // Transaction result communication
-    CrossChainTxResult cross_chain_tx_result = 14;
   }
 }

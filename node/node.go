@@ -88,6 +88,7 @@ type Node struct {
 	spClient             transport.Client
 	sequencerAddrs       map[string]string // Map of sequencer chain IDs to their addresses
 	sequencerKey         *ecdsa.PrivateKey
+	coordinatorKey       *ecdsa.PrivateKey
 	sequencerCoordinator *sequencer.SequencerCoordinator
 	ssvLogger            zerolog.Logger
 	sequencerRuntime     *bootstrap.Runtime
@@ -203,6 +204,12 @@ func New(conf *Config) (*Node, error) {
 			//Str("address", authManager.Address()).
 			Msg("Sequencer initialized with key")
 	}
+
+	node.coordinatorKey = parsePrivateKey(conf.CoordinatorKey)
+	coordinatorAddr := crypto.PubkeyToAddress(node.coordinatorKey.PublicKey)
+	ssvLogger.Info().
+		Str("address", coordinatorAddr.Hex()).
+		Msg("Coordinator initialized with key")
 
 	//if authManager != nil {
 	//	myChainID := fmt.Sprintf("%d", chainID)
@@ -949,6 +956,13 @@ func (n *Node) SequencerKey() *ecdsa.PrivateKey {
 	defer n.lock.Unlock()
 
 	return n.sequencerKey
+}
+
+func (n *Node) CoordinatorKey() *ecdsa.PrivateKey {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+
+	return n.coordinatorKey
 }
 
 // DataDir retrieves the current datadir used by the protocol stack.
