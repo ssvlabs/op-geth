@@ -186,6 +186,7 @@ var (
 		utils.SharedPublisherServerAddr,
 		utils.SequencerAddrs,
 		utils.SequencerKeyHex,
+		utils.CoordinatorKeyHex,
 		utils.MailboxAddrAFlag,
 		utils.MailboxAddrBFlag,
 	}, utils.NetworkFlags, utils.DatabaseFlags)

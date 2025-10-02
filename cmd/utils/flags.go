@@ -1129,8 +1129,14 @@ Please note that --` + MetricsHTTPFlag.Name + ` must be set to start the server.
 	}
 	SequencerKeyHex = &cli.StringFlag{
 		Name:     "sequencer.key",
-		Usage:    `Sequencers private key to sign putInbox and mailbox clear transactions`,
+		Usage:    `Sequencers private key to sign user transactions`,
 		Value:    ethconfig.Defaults.SequencerKey,
+		Category: flags.SharedPublisherCategory,
+	}
+	CoordinatorKeyHex = &cli.StringFlag{
+		Name:     "coordinator.key",
+		Usage:    `Coordinator private key to sign putInbox transactions`,
+		Value:    ethconfig.Defaults.CoordinatorKey,
 		Category: flags.SharedPublisherCategory,
 	}
 	MailboxAddrAFlag = &cli.StringFlag{
@@ -1587,6 +1593,12 @@ func SetNodeConfig(ctx *cli.Context, cfg *node.Config) {
 		cfg.SequencerKey = ctx.String(SequencerKeyHex.Name)
 	} else {
 		cfg.SequencerKey = ethconfig.Defaults.SequencerKey // empty
+	}
+
+	if ctx.IsSet(CoordinatorKeyHex.Name) {
+		cfg.CoordinatorKey = ctx.String(CoordinatorKeyHex.Name)
+	} else {
+		cfg.CoordinatorKey = ethconfig.Defaults.CoordinatorKey // empty
 	}
 
 	if ctx.IsSet(JWTSecretFlag.Name) {
