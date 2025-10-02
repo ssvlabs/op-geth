@@ -730,7 +730,10 @@ func (b *EthAPIBackend) handleSequencerMessage(
 // handleCrossChainTxResult processes CrossChainTxResult messages to update the local tracker
 // with hash mappings from remote chains that re-signed transactions.
 // SSV
-func (b *EthAPIBackend) handleCrossChainTxResult(ctx context.Context, result *rollupv1.CrossChainTxResult) ([]common.Hash, error) {
+func (b *EthAPIBackend) handleCrossChainTxResult(
+	ctx context.Context,
+	result *rollupv1.CrossChainTxResult,
+) ([]common.Hash, error) {
 	if b.xtTracker == nil {
 		return nil, fmt.Errorf("XT tracker not configured")
 	}
@@ -1423,11 +1426,17 @@ func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(
 		for i, txBytes := range txReq.Transaction {
 			tx := new(types.Transaction)
 			if err := tx.UnmarshalBinary(txBytes); err != nil {
-				log.Error("[SSV] Failed to unmarshal transaction for re-simulation - REASON: transaction_unmarshal_failed",
-					"error", err,
-					"index", i,
-					"xtID", xtID.Hex(),
-					"failure_reason", "transaction_unmarshal_failed")
+				log.Error(
+					"[SSV] Failed to unmarshal transaction for re-simulation - REASON: transaction_unmarshal_failed",
+					"error",
+					err,
+					"index",
+					i,
+					"xtID",
+					xtID.Hex(),
+					"failure_reason",
+					"transaction_unmarshal_failed",
+				)
 				allSuccessful = false
 				continue
 			}
@@ -1783,7 +1792,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 			return
 		}
 		if !trackerNotified {
-			b.xtTracker.Publish(xtID, nil)
+			b.xtTracker.Publish(xtID, nil, nil)
 		}
 	}()
 
@@ -2245,16 +2254,28 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		"putInboxTxs", len(putInboxHashes))
 
 	if b.xtTracker != nil {
-		// If we have no putInbox transactions, we need to wait for CrossChainTxResult
-		// messages from other chains that may have re-signed their transactions
+		// If we have no putInbox transactions, it means we're waiting to receive CIRC messages
+		// from other chains. Those other chains will re-sign their transactions with new nonces
+		// and send us CrossChainTxResult messages. We need to wait for those messages before
+		// publishing results via SendXTransaction.
+		//
+		// The CrossChainTxResult messages will arrive during the BuildingLocked state,
+		// before RequestSeal transitions us to Submission state. By waiting for the state
+		// to transition to Submission (via RequestSeal), we ensure all hash mappings are received.
 		waitForMappings := len(putInboxHashes) == 0 && len(results) > 1
 
 		if waitForMappings {
-			// Publish in a goroutine to avoid blocking
-			go b.xtTracker.PublishWithWait(xtID, results, true)
+			log.Info("[SSV] Chain has no putInbox - will wait for hash mappings and state transition",
+				"xtID", xtID.Hex(),
+				"currentState", b.coordinator.GetState().String())
+
+			// Launch goroutine to wait for state transition and then publish
+			go b.waitForSubmissionAndPublish(xtID, results)
 		} else {
-			// We have putInbox transactions, publish immediately
-			b.xtTracker.Publish(xtID, results)
+			// We have putInbox transactions (we're the sender), publish immediately
+			log.Info("[SSV] Chain has putInbox - publishing results immediately",
+				"xtID", xtID.Hex())
+			b.xtTracker.Publish(xtID, results, nil)
 		}
 	}
 	trackerNotified = true
@@ -2265,4 +2286,42 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	}
 
 	return
+}
+
+// waitForSubmissionAndPublish waits for CrossChainTxResult messages to arrive from remote chains,
+// then publishes the results. If messages don't arrive within a silence period, it waits for the
+// state transition to Submission as a fallback to ensure we don't wait forever.
+func (b *EthAPIBackend) waitForSubmissionAndPublish(xtID *rollupv1.XtID, results []xt.ChainTxHash) {
+	log.Info("[SSV] Starting wait for CrossChainTxResult messages",
+		"xtID", xtID.Hex(),
+		"currentState", b.coordinator.GetState().String())
+
+	// Create a channel that signals when state transitions to Submission
+	stateTransitionCh := make(chan struct{}, 1)
+
+	// Monitor state transitions
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				currentState := b.coordinator.GetState()
+				if currentState == sequencer.StateSubmission {
+					log.Info("[SSV] State transitioned to Submission, notifying tracker",
+						"xtID", xtID.Hex())
+					select {
+					case stateTransitionCh <- struct{}{}:
+					default:
+					}
+					return
+				}
+			}
+		}
+	}()
+
+	// This will wait for hash mappings and publish when they arrive
+	// Uses silence timer (500ms) and state transition as fallback
+	b.xtTracker.Publish(xtID, results, stateTransitionCh)
 }

@@ -89,24 +89,22 @@ func (t *XTResultTracker) UpdateHashMapping(xtID *pb.XtID, chainID string, origi
 	}
 }
 
-// PublishWithWait delivers the successful hashes to any subscriber waiting on xtID.
-// It waits for hash mappings from remote chains before publishing (with timeout).
-func (t *XTResultTracker) PublishWithWait(xtID *pb.XtID, hashes []ChainTxHash, waitForMappings bool) {
+// Publish delivers the successful hashes to any subscriber waiting on xtID.
+// It waits for hash mappings from remote chains before publishing.
+// The stateTransitionCh should signal when the coordinator transitions to Submission state.
+// Pass nil for stateTransitionCh for immediate publishing without waiting.
+func (t *XTResultTracker) Publish(xtID *pb.XtID, hashes []ChainTxHash, stateTransitionCh <-chan struct{}) {
 	key, err := trackerKey(xtID)
 	if err != nil {
 		return
 	}
 
-	if waitForMappings {
+	if stateTransitionCh != nil {
 		// Create notification channel for hash mappings
 		notifyCh := make(chan struct{}, 10)
 		t.mu.Lock()
 		t.pendingPublish[key] = notifyCh
 		t.mu.Unlock()
-
-		// Wait for hash mappings with timeout
-		overallTimeout := time.NewTimer(3 * time.Second)
-		defer overallTimeout.Stop()
 
 		silenceTimer := time.NewTimer(500 * time.Millisecond)
 		defer silenceTimer.Stop()
@@ -126,8 +124,8 @@ func (t *XTResultTracker) PublishWithWait(xtID *pb.XtID, hashes []ChainTxHash, w
 			case <-silenceTimer.C:
 				// No new mappings for 500ms, assume we're done
 				break waitLoop
-			case <-overallTimeout.C:
-				// Overall timeout
+			case <-stateTransitionCh:
+				// State transitioned to Submission, all mappings should be received
 				break waitLoop
 			}
 		}
@@ -164,11 +162,6 @@ func (t *XTResultTracker) PublishWithWait(xtID *pb.XtID, hashes []ChainTxHash, w
 
 	waiter <- XTResult{Hashes: cloned}
 	close(waiter)
-}
-
-// Publish delivers the successful hashes to any subscriber waiting on xtID (immediate, no wait).
-func (t *XTResultTracker) Publish(xtID *pb.XtID, hashes []ChainTxHash) {
-	t.PublishWithWait(xtID, hashes, false)
 }
 
 // PublishError notifies the subscriber that processing failed.
