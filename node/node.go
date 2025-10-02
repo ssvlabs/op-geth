@@ -205,7 +205,13 @@ func New(conf *Config) (*Node, error) {
 			Msg("Sequencer initialized with key")
 	}
 
+	if conf.CoordinatorKey == "" {
+		return nil, errors.New("coordinator key is required (use --coordinator.key flag)")
+	}
 	node.coordinatorKey = parsePrivateKey(conf.CoordinatorKey)
+	if node.coordinatorKey == nil {
+		return nil, errors.New("failed to parse coordinator key")
+	}
 	coordinatorAddr := crypto.PubkeyToAddress(node.coordinatorKey.PublicKey)
 	ssvLogger.Info().
 		Str("address", coordinatorAddr.Hex()).
