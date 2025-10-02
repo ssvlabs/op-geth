@@ -59,7 +59,6 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/internal/blocktest"
-	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/sequencer/xt"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/holiman/uint256"
@@ -611,12 +610,6 @@ func (b *testBackend) HandleSPMessage(ctx context.Context, msg *rollupv1.Message
 func (b *testBackend) SimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error) {
 	//TODO implement me
 	panic("implement me")
-}
-
-func (b *testBackend) SubscribeXTResult(xtID *rollupv1.XtID) (<-chan xt.XTResult, func(), error) {
-	ch := make(chan xt.XTResult)
-	close(ch)
-	return ch, func() {}, nil
 }
 
 func (b *testBackend) GetMailboxAddresses() []common.Address {

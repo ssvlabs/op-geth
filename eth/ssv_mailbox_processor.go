@@ -99,19 +99,19 @@ type MailboxProcessor struct {
 	sequencerClients     map[string]transport.Client
 	sequencerCoordinator sequencer.Coordinator
 	backend              interface{}
-	sequencerKey         *ecdsa.PrivateKey
-	sequencerAddr        common.Address
+	coordinatorKey       *ecdsa.PrivateKey
+	coordinatorAddr      common.Address
 }
 
-func NewMailboxProcessor(chainID uint64, mailboxAddrs []common.Address, sequencerClients map[string]transport.Client, coordinator sequencer.Coordinator, sequencerKey *ecdsa.PrivateKey, sequencerAddr common.Address, backend *EthAPIBackend) *MailboxProcessor {
+func NewMailboxProcessor(chainID uint64, mailboxAddrs []common.Address, sequencerClients map[string]transport.Client, coordinator sequencer.Coordinator, coordinatorKey *ecdsa.PrivateKey, coordinatorAddr common.Address, backend *EthAPIBackend) *MailboxProcessor {
 	return &MailboxProcessor{
 		chainID:              chainID,
 		mailboxAddresses:     mailboxAddrs,
 		sequencerClients:     sequencerClients,
 		sequencerCoordinator: coordinator,
 		backend:              backend,
-		sequencerKey:         sequencerKey,
-		sequencerAddr:        sequencerAddr,
+		coordinatorKey:       coordinatorKey,
+		coordinatorAddr:      coordinatorAddr,
 	}
 }
 
@@ -685,10 +685,15 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 	mp.traceTransaction(callData, mailboxAddr)
 
 	tx := types.NewTx(txData)
-	signedTx, err := types.SignTx(tx, types.NewLondonSigner(new(big.Int).SetUint64(mp.chainID)), mp.sequencerKey)
+	signedTx, err := types.SignTx(tx, types.NewLondonSigner(new(big.Int).SetUint64(mp.chainID)), mp.coordinatorKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign tx %v", err)
 	}
+
+	log.Info("[SSV] Signed putInbox transaction with coordinator key",
+		"txHash", signedTx.Hash().Hex(),
+		"coordinatorAddr", mp.coordinatorAddr.Hex(),
+		"nonce", nonce)
 
 	return signedTx, nil
 }
@@ -697,7 +702,7 @@ func (mp *MailboxProcessor) traceTransaction(callData []byte, mailboxAddr common
 	api := tracers.NewAPI(mp.backend.(tracers.Backend))
 	res, err := api.TraceCall(context.Background(), ethapi.TransactionArgs{
 		Data:  (*hexutil.Bytes)(&callData),
-		From:  &mp.sequencerAddr,
+		From:  &mp.coordinatorAddr,
 		To:    &mailboxAddr,
 		Value: (*hexutil.Big)(big.NewInt(0))},
 		rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber),

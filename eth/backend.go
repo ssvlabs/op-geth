@@ -56,7 +56,6 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
-	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/sequencer/xt"
 	"github.com/ethereum/go-ethereum/internal/sequencerapi"
 	"github.com/ethereum/go-ethereum/internal/shutdowncheck"
 	"github.com/ethereum/go-ethereum/internal/version"
@@ -368,7 +367,6 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		allowUnprotectedTxs: stack.Config().AllowUnprotectedTxs,
 		disableTxPool:       config.RollupDisableTxPoolAdmission,
 		eth:                 eth,
-		xtTracker:           xt.NewXTResultTracker(),
 	}
 	if eth.APIBackend.allowUnprotectedTxs {
 		log.Info("Unprotected transactions allowed")
@@ -421,6 +419,8 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	eth.APIBackend.sequencerClients = stack.SequencerClients()
 	eth.APIBackend.sequencerKey = stack.SequencerKey()
 	eth.APIBackend.sequencerAddress = crypto.PubkeyToAddress(stack.SequencerKey().PublicKey)
+	eth.APIBackend.coordinatorKey = stack.CoordinatorKey()
+	eth.APIBackend.coordinatorAddr = crypto.PubkeyToAddress(stack.CoordinatorKey().PublicKey)
 
 	if eth.APIBackend.coordinator != nil && eth.APIBackend.spClient != nil {
 		eth.APIBackend.SetSequencerCoordinator(eth.APIBackend.coordinator, eth.APIBackend.spClient)

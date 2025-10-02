@@ -22,7 +22,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/core/ssv"
 	rollupv1 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
-	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/sequencer/xt"
 
 	"math/big"
 	"time"
@@ -98,9 +97,9 @@ type Backend interface {
 	// Shared publisher API
 	HandleSPMessage(ctx context.Context, msg *rollupv1.Message) ([]common.Hash, error)
 	SimulateTransaction(ctx context.Context, tx *types.Transaction, blockNrOrHash rpc.BlockNumberOrHash) (*ssv.SSVTraceResult, error)
-	SubscribeXTResult(xtID *rollupv1.XtID) (<-chan xt.XTResult, func(), error)
 	// GetMailboxAddresses returns the list of mailbox contract addresses to watch
 	GetMailboxAddresses() []common.Address
+	//ForwardXTxs(ctx context.Context, xTxs []*xt.TransactionRequest) error
 
 	// This is copied from filters.Backend
 	// eth/filters needs to be initialized from this backend type, so methods needed by

@@ -45,7 +45,6 @@ import (
 	"github.com/ethereum/go-ethereum/eth/gasestimator"
 	"github.com/ethereum/go-ethereum/eth/tracers/logger"
 	"github.com/ethereum/go-ethereum/internal/ethapi/override"
-	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/sequencer/xt"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/params"
@@ -1765,7 +1764,7 @@ func (api *TransactionAPI) SendTransaction(ctx context.Context, args Transaction
 
 // SendXTransaction processes a transaction request encapsulated in a hex-encoded protocol message.
 // SSV
-func (api *TransactionAPI) SendXTransaction(ctx context.Context, input hexutil.Bytes) ([]xt.ChainTxHash, error) {
+func (api *TransactionAPI) SendXTransaction(ctx context.Context, input hexutil.Bytes) ([]common.Hash, error) {
 	var msg rollupv1.Message
 	if err := proto.Unmarshal(input, &msg); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal xtReq input: %v", err)
@@ -1773,37 +1772,8 @@ func (api *TransactionAPI) SendXTransaction(ctx context.Context, input hexutil.B
 
 	switch payload := msg.Payload.(type) {
 	case *rollupv1.Message_XtRequest:
-		extReq := payload.XtRequest
-		xtID, err := extReq.XtID()
-		if err != nil {
-			return nil, fmt.Errorf("failed to derive xtID: %w", err)
-		}
-
-		resultCh, cancel, err := api.b.SubscribeXTResult(xtID)
-		if err != nil {
-			return nil, fmt.Errorf("xt result subscription failed: %w", err)
-		}
-		defer cancel()
-
 		ctx = context.WithValue(ctx, "forward", true)
-		if _, err := api.b.HandleSPMessage(ctx, &msg); err != nil {
-			return nil, err
-		}
-
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case res := <-resultCh:
-			if res.Err != nil {
-				return nil, res.Err
-			}
-			hashes := append([]xt.ChainTxHash(nil), res.Hashes...)
-			log.Info("[SSV] SendXTransaction returning results", "xtID", xtID.Hex(), "totalChains", len(hashes))
-			for i, h := range hashes {
-				log.Info("[SSV] SendXTransaction result", "index", i, "chainID", h.ChainID, "txHash", h.Hash.Hex())
-			}
-			return hashes, nil
-		}
+		return api.b.HandleSPMessage(ctx, &msg)
 	default:
 		log.Error("[SSV] Unknown message type", "type", fmt.Sprintf("%T", payload))
 		return nil, fmt.Errorf("unknown message type: %T", payload)

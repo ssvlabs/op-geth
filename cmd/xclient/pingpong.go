@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	pingPongAddr = "0x1a8211F40C3E437Ec49911e705263C2b12b5C5Fd"
+	pingPongAddr = "0x230B73363cfbF081ED3fcd0108e2d5C26fc0d8EC"
 	pingPongABI  = `[{"type":"constructor","inputs":[{"name":"_mailbox","type":"address","internalType":"address"}],"stateMutability":"nonpayable"},{"type":"function","name":"mailbox","inputs":[],"outputs":[{"name":"","type":"address","internalType":"contract IMailbox"}],"stateMutability":"view"},{"type":"function","name":"ping","inputs":[{"name":"otherChain","type":"uint256","internalType":"uint256"},{"name":"pongSender","type":"address","internalType":"address"},{"name":"pingReceiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"pongMessage","type":"bytes","internalType":"bytes"}],"stateMutability":"nonpayable"},{"type":"function","name":"pong","inputs":[{"name":"otherChain","type":"uint256","internalType":"uint256"},{"name":"pingSender","type":"address","internalType":"address"},{"name":"pongReceiver","type":"address","internalType":"address"},{"name":"sessionId","type":"uint256","internalType":"uint256"},{"name":"data","type":"bytes","internalType":"bytes"}],"outputs":[{"name":"pingMessage","type":"bytes","internalType":"bytes"}],"stateMutability":"nonpayable"},{"type":"error","name":"PingMessageEmpty","inputs":[]},{"type":"error","name":"PongMessageEmpty","inputs":[]}]`
 )
 
