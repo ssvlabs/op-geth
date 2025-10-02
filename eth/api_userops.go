@@ -124,13 +124,6 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 		return nil, &rpc.JsonError{Code: -32007, Message: "rateLimited", Data: map[string]any{"reason": "batch too large"}}
 	}
 
-	// For now, reject any paymaster usage to keep policy minimal & safe
-	for i, op := range userOps {
-		if len(op.PaymasterAndData) != 0 {
-			return nil, &rpc.JsonError{Code: -32003, Message: "invalidUserOperation", Data: map[string]any{"opIndex": i, "reason": "paymasterAndData not supported"}}
-		}
-	}
-
 	// Pull network fee context (for checks only; we no longer mutate user fee fields)
 	tipSuggestion, err := api.b.SuggestGasTipCap(ctx)
 	if err != nil {
@@ -160,6 +153,18 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 	minUserFeeCap := (*big.Int)(nil)
 
 	for i, op := range userOps {
+		var paymasterAddr common.Address
+		var paymasterData []byte
+		if len(op.PaymasterAndData) > 0 {
+			if len(op.PaymasterAndData) < common.AddressLength {
+				return nil, &rpc.JsonError{Code: -32003, Message: "invalidUserOperation", Data: map[string]any{"opIndex": i, "reason": "paymasterAndData too short"}}
+			}
+			paymasterAddr = common.BytesToAddress(op.PaymasterAndData[:common.AddressLength])
+			if paymasterAddr == (common.Address{}) {
+				return nil, &rpc.JsonError{Code: -32003, Message: "invalidUserOperation", Data: map[string]any{"opIndex": i, "reason": "paymaster address cannot be zero"}}
+			}
+			paymasterData = op.PaymasterAndData
+		}
 		// Merge fee fields with server policy
 		vgl := toBig(op.VerificationGasLimit)
 		cgl := toBig(op.CallGasLimit)
@@ -190,7 +195,7 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 			AccountGasLimits:   agl,
 			PreVerificationGas: pvg,
 			GasFees:            gfees,
-			PaymasterAndData:   nil, // enforced to empty above
+			PaymasterAndData:   paymasterData,
 			Signature:          op.Signature,
 		}
 
@@ -199,8 +204,12 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 		gasSum := new(big.Int).Add(cgl, new(big.Int).Add(vgl, pvg))
 		prefundBound := new(big.Int).Mul(gasSum, uFeeCap)
 
-		// balanceOf(sender)
-		data, err := parsedABI.Pack("balanceOf", op.Sender)
+		// balanceOf(sender) or paymaster if sponsored
+		balanceTarget := op.Sender
+		if paymasterAddr != (common.Address{}) {
+			balanceTarget = paymasterAddr
+		}
+		data, err := parsedABI.Pack("balanceOf", balanceTarget)
 		if err != nil {
 			return nil, fmt.Errorf("abi pack balanceOf: %w", err)
 		}
@@ -209,7 +218,7 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 			return nil, fmt.Errorf("balanceOf call failed: %w", err)
 		}
 		if bal.Cmp(prefundBound) < 0 {
-			return nil, &rpc.JsonError{Code: -32004, Message: "insufficientDeposit", Data: map[string]any{"opIndex": i, "required": prefundBound.String(), "deposit": bal.String()}}
+			return nil, &rpc.JsonError{Code: -32004, Message: "insufficientDeposit", Data: map[string]any{"opIndex": i, "required": prefundBound.String(), "deposit": bal.String(), "sponsor": balanceTarget.Hex()}}
 		}
 
 		// getUserOpHash(op)
