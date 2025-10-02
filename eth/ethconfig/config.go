@@ -205,6 +205,7 @@ type Config struct {
 	SPServerAddr       string
 	SequencerAddrs     string
 	SequencerKey       string
+	CoordinatorKey     string
 	RollupAMailboxAddr string
 	RollupBMailboxAddr string
 }
