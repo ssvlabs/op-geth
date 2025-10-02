@@ -419,6 +419,8 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	eth.APIBackend.sequencerClients = stack.SequencerClients()
 	eth.APIBackend.sequencerKey = stack.SequencerKey()
 	eth.APIBackend.sequencerAddress = crypto.PubkeyToAddress(stack.SequencerKey().PublicKey)
+	eth.APIBackend.coordinatorKey = stack.CoordinatorKey()
+	eth.APIBackend.coordinatorAddr = crypto.PubkeyToAddress(stack.CoordinatorKey().PublicKey)
 
 	if eth.APIBackend.coordinator != nil && eth.APIBackend.spClient != nil {
 		eth.APIBackend.SetSequencerCoordinator(eth.APIBackend.coordinator, eth.APIBackend.spClient)

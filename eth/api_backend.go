@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ethereum/go-ethereum/crypto"
 	rollupv1 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
 
@@ -77,6 +76,8 @@ type EthAPIBackend struct {
 	sequencerClients map[string]transport.Client
 	sequencerKey     *ecdsa.PrivateKey
 	sequencerAddress common.Address
+	coordinatorKey   *ecdsa.PrivateKey
+	coordinatorAddr  common.Address
 	mailboxAddresses []common.Address
 	mailboxByChainID map[uint64]common.Address
 
@@ -624,47 +625,6 @@ func (b *EthAPIBackend) HandleSPMessage(ctx context.Context, msg *rollupv1.Messa
 		return nil, fmt.Errorf("coordinator failed to handle %T: %w", msg.Payload, err)
 	}
 	return nil, nil
-}
-
-func (b *EthAPIBackend) isCoordinator(ctx context.Context, mailboxProcessor *MailboxProcessor) error {
-	chainID := b.ChainConfig().ChainID.Uint64()
-	mailboxAddr := b.GetMailboxAddressFromChainID(chainID)
-
-	// Fetch the full block for the current head before creating a state view
-	head := b.eth.blockchain.CurrentBlock()
-	if head == nil {
-		return fmt.Errorf("current head not available")
-	}
-	block := b.eth.blockchain.GetBlock(head.Hash(), head.Number.Uint64())
-	if block == nil {
-		return fmt.Errorf("failed to retrieve current block %s", head.Hash())
-	}
-
-	stateDB, release, err := b.StateAtBlock(ctx, block, 0, nil, false, false)
-	if err != nil {
-		return err
-	}
-	defer release()
-
-	mailboxCode := stateDB.GetCode(mailboxAddr)
-	if len(mailboxCode) == 0 {
-		return fmt.Errorf("mailbox code not found at address %s for %d chain id", mailboxAddr.String(), chainID)
-	}
-
-	coordinatorAddr, err := mailboxProcessor.getCoordinatorAddress(ctx, mailboxAddr)
-	if err != nil {
-		return err
-	}
-
-	if coordinatorAddr != b.sequencerAddress {
-		return fmt.Errorf(
-			"sequencer is not coordinator, coordinatorAddr: %s, sequencerAddr: %s",
-			coordinatorAddr.Hex(),
-			b.sequencerAddress.Hex(),
-		)
-	}
-
-	return nil
 }
 
 func successfulAll(coordinationStates []*SimulationState) bool {
@@ -1718,14 +1678,13 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		return true, nil
 	}
 
-	sequencerAddr := crypto.PubkeyToAddress(b.sequencerKey.PublicKey)
 	mailboxProcessor := NewMailboxProcessor(
 		b.ChainConfig().ChainID.Uint64(),
 		b.GetMailboxAddresses(),
 		b.sequencerClients,
 		b.coordinator,
-		b.sequencerKey,
-		sequencerAddr,
+		b.coordinatorKey,
+		b.coordinatorAddr,
 		b,
 	)
 
@@ -1803,10 +1762,11 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	if len(allFulfilledDeps) > 0 {
 		log.Info("[SSV] Creating putInbox transactions for fulfilled dependencies", "count", len(allFulfilledDeps))
 
-		nonce, err := b.GetPoolNonce(ctx, sequencerAddr)
+		nonce, err := b.GetPoolNonce(ctx, b.coordinatorAddr)
 		if err != nil {
 			return false, fmt.Errorf("failed to get nonce: %w", err)
 		}
+		log.Info("[SSV] Using coordinator address for putInbox nonce", "coordinatorAddr", b.coordinatorAddr.Hex(), "nonce", nonce)
 
 		// Create putInbox transactions
 		nextNonce := nonce
