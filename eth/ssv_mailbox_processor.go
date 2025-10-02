@@ -103,7 +103,15 @@ type MailboxProcessor struct {
 	coordinatorAddr      common.Address
 }
 
-func NewMailboxProcessor(chainID uint64, mailboxAddrs []common.Address, sequencerClients map[string]transport.Client, coordinator sequencer.Coordinator, coordinatorKey *ecdsa.PrivateKey, coordinatorAddr common.Address, backend *EthAPIBackend) *MailboxProcessor {
+func NewMailboxProcessor(
+	chainID uint64,
+	mailboxAddrs []common.Address,
+	sequencerClients map[string]transport.Client,
+	coordinator sequencer.Coordinator,
+	coordinatorKey *ecdsa.PrivateKey,
+	coordinatorAddr common.Address,
+	backend *EthAPIBackend,
+) *MailboxProcessor {
 	return &MailboxProcessor{
 		chainID:              chainID,
 		mailboxAddresses:     mailboxAddrs,
@@ -115,7 +123,12 @@ func NewMailboxProcessor(chainID uint64, mailboxAddrs []common.Address, sequence
 	}
 }
 
-func (mp *MailboxProcessor) AnalyzeTransaction(traceResult *ssv.SSVTraceResult, sentOutboundMsgs []CrossRollupMessage, fullFilledDeps []CrossRollupDependency, tx *types.Transaction) (*SimulationState, error) {
+func (mp *MailboxProcessor) AnalyzeTransaction(
+	traceResult *ssv.SSVTraceResult,
+	sentOutboundMsgs []CrossRollupMessage,
+	fullFilledDeps []CrossRollupDependency,
+	tx *types.Transaction,
+) (*SimulationState, error) {
 	txHashHex := tx.Hash().Hex()
 	simState, err := mp.analyzeTransaction(traceResult, sentOutboundMsgs, fullFilledDeps, txHashHex)
 	if err != nil {
@@ -148,7 +161,12 @@ func parseCallType(call *MailboxCall) string {
 	return "unknown"
 }
 
-func (mp *MailboxProcessor) analyzeTransaction(traceResult *ssv.SSVTraceResult, sentOutboundMsgs []CrossRollupMessage, fullfilledDeps []CrossRollupDependency, txHashHex string) (*SimulationState, error) {
+func (mp *MailboxProcessor) analyzeTransaction(
+	traceResult *ssv.SSVTraceResult,
+	sentOutboundMsgs []CrossRollupMessage,
+	fullfilledDeps []CrossRollupDependency,
+	txHashHex string,
+) (*SimulationState, error) {
 	simState := &SimulationState{
 		Success:          traceResult.ExecutionResult.Err == nil,
 		Dependencies:     make([]CrossRollupDependency, 0),
@@ -441,11 +459,25 @@ func (mp *MailboxProcessor) parseWriteCall(data []byte) (*MailboxCall, error) {
 	return call, nil
 }
 
-func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, simState *SimulationState, xtID *rollupv1.XtID) ([]CrossRollupMessage, []CrossRollupDependency, error) {
+func (mp *MailboxProcessor) handleCrossRollupCoordination(
+	ctx context.Context,
+	simState *SimulationState,
+	xtID *rollupv1.XtID,
+) ([]CrossRollupMessage, []CrossRollupDependency, error) {
 	sentMsgs := make([]CrossRollupMessage, 0)
 	// Send outbound CIRC messages
 	for _, outMsg := range simState.OutboundMessages {
-		log.Info("[SSV] Send CIRC message", "xtID", xtID.Hex(), "srcChain", outMsg.SourceChainID, "destChain", outMsg.DestChainID, "sessionId", outMsg.SessionID)
+		log.Info(
+			"[SSV] Send CIRC message",
+			"xtID",
+			xtID.Hex(),
+			"srcChain",
+			outMsg.SourceChainID,
+			"destChain",
+			outMsg.DestChainID,
+			"sessionId",
+			outMsg.SessionID,
+		)
 		if err := mp.sendCIRCMessage(ctx, &outMsg, xtID); err != nil {
 			return nil, nil, fmt.Errorf("failed to send CIRC message: %w", err)
 		}
@@ -456,7 +488,15 @@ func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, s
 	circDeps := make([]CrossRollupDependency, 0)
 
 	for _, dep := range simState.Dependencies {
-		log.Info("[SSV] Await for CIRC message", "srcChain", dep.SourceChainID, "destChain", dep.DestChainID, "sessionId", dep.SessionID)
+		log.Info(
+			"[SSV] Await for CIRC message",
+			"srcChain",
+			dep.SourceChainID,
+			"destChain",
+			dep.DestChainID,
+			"sessionId",
+			dep.SessionID,
+		)
 
 		sourceBytes := new(big.Int).SetUint64(dep.SourceChainID).Bytes()
 		sourceKey := spconsensus.ChainKeyBytes(sourceBytes)
@@ -480,7 +520,15 @@ func (mp *MailboxProcessor) handleCrossRollupCoordination(ctx context.Context, s
 		circDeps = append(circDeps, dep)
 	}
 
-	log.Info("[SSV] Cross-rollup coordination completed", "xtID", xtID.Hex(), "sent", len(sentMsgs), "received", len(circDeps))
+	log.Info(
+		"[SSV] Cross-rollup coordination completed",
+		"xtID",
+		xtID.Hex(),
+		"sent",
+		len(sentMsgs),
+		"received",
+		len(circDeps),
+	)
 	return sentMsgs, circDeps, nil
 }
 
@@ -529,7 +577,11 @@ func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollu
 	return nil
 }
 
-func (mp *MailboxProcessor) waitForCIRCMessage(ctx context.Context, xtID *rollupv1.XtID, sourceChainID string) (*rollupv1.CIRCMessage, error) {
+func (mp *MailboxProcessor) waitForCIRCMessage(
+	ctx context.Context,
+	xtID *rollupv1.XtID,
+	sourceChainID string,
+) (*rollupv1.CIRCMessage, error) {
 	// Wait for CIRC message with a bounded timeout to respect SBCP slot cutover.
 	// Hardcoded for 20s slot with 0.90 seal cutover: use ~12s window.
 	timeoutMs := 12000
@@ -608,7 +660,16 @@ func (mp *MailboxProcessor) getCoordinatorAddress(ctx context.Context, addr comm
 		Data: &data,
 	}
 	latest := rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
-	res, err := ethapi.DoCall(ctx, mp.backend.(*EthAPIBackend), args, latest, nil, nil, mp.backend.(*EthAPIBackend).RPCEVMTimeout(), mp.backend.(*EthAPIBackend).RPCGasCap())
+	res, err := ethapi.DoCall(
+		ctx,
+		mp.backend.(*EthAPIBackend),
+		args,
+		latest,
+		nil,
+		nil,
+		mp.backend.(*EthAPIBackend).RPCEVMTimeout(),
+		mp.backend.(*EthAPIBackend).RPCGasCap(),
+	)
 	if err != nil {
 		return common.Address{}, err
 	}
@@ -737,7 +798,12 @@ func (mp *MailboxProcessor) isMailboxAddress(addr common.Address) bool {
 }
 
 // reSimulateForACKMessages re-simulates the transaction after putInbox creation
-func (mp *MailboxProcessor) reSimulateForACKMessages(ctx context.Context, tx *types.Transaction, xtID *rollupv1.XtID, alreadySentMsgs []CrossRollupMessage) ([]CrossRollupMessage, error) {
+func (mp *MailboxProcessor) reSimulateForACKMessages(
+	ctx context.Context,
+	tx *types.Transaction,
+	xtID *rollupv1.XtID,
+	alreadySentMsgs []CrossRollupMessage,
+) ([]CrossRollupMessage, error) {
 	backend, ok := mp.backend.(*EthAPIBackend)
 	if !ok {
 		return nil, fmt.Errorf("backend not available for re-simulation")

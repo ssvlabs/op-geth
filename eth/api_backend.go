@@ -1312,11 +1312,17 @@ func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(
 		for i, txBytes := range txReq.Transaction {
 			tx := new(types.Transaction)
 			if err := tx.UnmarshalBinary(txBytes); err != nil {
-				log.Error("[SSV] Failed to unmarshal transaction for re-simulation - REASON: transaction_unmarshal_failed",
-					"error", err,
-					"index", i,
-					"xtID", xtID.Hex(),
-					"failure_reason", "transaction_unmarshal_failed")
+				log.Error(
+					"[SSV] Failed to unmarshal transaction for re-simulation - REASON: transaction_unmarshal_failed",
+					"error",
+					err,
+					"index",
+					i,
+					"xtID",
+					xtID.Hex(),
+					"failure_reason",
+					"transaction_unmarshal_failed",
+				)
 				allSuccessful = false
 				continue
 			}
@@ -1766,7 +1772,13 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		if err != nil {
 			return false, fmt.Errorf("failed to get nonce: %w", err)
 		}
-		log.Info("[SSV] Using coordinator address for putInbox nonce", "coordinatorAddr", b.coordinatorAddr.Hex(), "nonce", nonce)
+		log.Info(
+			"[SSV] Using coordinator address for putInbox nonce",
+			"coordinatorAddr",
+			b.coordinatorAddr.Hex(),
+			"nonce",
+			nonce,
+		)
 
 		// Create putInbox transactions
 		nextNonce := nonce
