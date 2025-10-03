@@ -227,6 +227,14 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 			Signature:          op.Signature,
 		}
 
+		log.Info("[SSV] Packed UserOperation",
+			"opIndex", i,
+			"sender", op.Sender.Hex(),
+			"nonce", toBig(op.Nonce).String(),
+			"callDataLen", len(op.CallData),
+			"callData", hexutil.Encode(op.CallData),
+			"initCodeLen", len(op.InitCode))
+
 		// Compute a conservative prefund bound; ensure deposit covers it
 		// bound = (callGas + verificationGas + preVerificationGas) * uFeeCap
 		gasSum := new(big.Int).Add(cgl, new(big.Int).Add(vgl, pvg))
@@ -368,7 +376,10 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 		"sequencerAddr", api.b.sequencerAddress.Hex(),
 		"nonce", nonce,
 		"userOpsCount", len(userOps),
-		"gas", gas)
+		"gas", gas,
+		"to", ep.Hex(),
+		"callDataLen", len(callData),
+		"callData", hexutil.Encode(callData))
 
 	raw, err := signedTx.MarshalBinary()
 	if err != nil {
