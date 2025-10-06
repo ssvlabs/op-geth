@@ -43,7 +43,6 @@ type composeOpts struct {
 	ChainID uint64 `json:"chainId"`
 }
 
-// Response JSON type
 type SignedTxResp struct {
 	Raw                  string   `json:"raw"`
 	Hash                 string   `json:"hash"`
