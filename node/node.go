@@ -560,6 +560,7 @@ func (n *Node) openEndpoints() error {
 // stopServices terminates running services, RPC and p2p networking.
 // It is the inverse of Start.
 func (n *Node) stopServices(running []Lifecycle) error {
+	ctx := context.Background()
 	n.stopRPC()
 
 	// Stop running lifecycles in reverse order.
@@ -571,17 +572,17 @@ func (n *Node) stopServices(running []Lifecycle) error {
 	}
 
 	if n.sequencerRuntime != nil {
-		_ = n.sequencerRuntime.Stop(context.Background())
+		_ = n.sequencerRuntime.Stop(ctx)
 	}
 
 	// Stop p2p networking.
 	n.server.Stop()
 
 	if n.spClient != nil {
-		_ = n.spClient.Disconnect(context.Background())
+		_ = n.spClient.Disconnect(ctx)
 	}
 	if n.coordinator != nil {
-		n.coordinator.Shutdown()
+		n.coordinator.Stop(ctx)
 	}
 
 	if len(failure.Services) > 0 {
