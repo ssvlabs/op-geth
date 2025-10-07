@@ -1242,12 +1242,36 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(
 // handleSubmissionBlock handles the final block containing all cross-chain transactions
 // SSV
 func (b *EthAPIBackend) handleSubmissionBlock(ctx context.Context, block *types.Block, slot uint64) error {
+	missing := b.missingSequencerTxs(block)
+
 	b.pendingBlockMutex.Lock()
 	defer b.pendingBlockMutex.Unlock()
 
-	if b.pendingBlock != nil && b.pendingBlockSlot == slot {
-		log.Debug("[SSV] Submission block already stored", "slot", slot)
+	if len(missing) > 0 {
+		log.Info("[SSV] Submission block missing sequencer transactions",
+			"slot", slot,
+			"missing", len(missing),
+		)
 		return nil
+	}
+
+	if b.pendingBlock != nil {
+		if b.pendingBlockSlot != slot {
+			log.Warn("[SSV] Replacing stored submission block from different slot",
+				"storedSlot", b.pendingBlockSlot,
+				"newSlot", slot,
+			)
+		} else if b.pendingBlock.Hash() == block.Hash() {
+			log.Debug("[SSV] Submission block already stored", "slot", slot)
+			return nil
+		} else {
+			log.Info("[SSV] Updating stored submission block candidate",
+				"slot", slot,
+				"previousHash", b.pendingBlock.Hash(),
+				"newHash", block.Hash(),
+				"previousTxs", len(b.pendingBlock.Transactions()),
+				"newTxs", len(block.Transactions()))
+		}
 	}
 
 	if b.coordinator != nil && b.coordinator.GetActiveSCPInstanceCount() > 0 {
@@ -1277,6 +1301,53 @@ func (b *EthAPIBackend) handleSubmissionBlock(ctx context.Context, block *types.
 	}
 
 	return nil
+}
+
+// missingSequencerTxs returns the hashes of sequencer-managed transactions that are
+// currently staged but absent from the supplied block. It holds the sequencerTxMutex
+// only while iterating the staged lists, avoiding extra allocations.
+func (b *EthAPIBackend) missingSequencerTxs(block *types.Block) []common.Hash {
+	if block == nil {
+		return nil
+	}
+
+	transactions := block.Transactions()
+	if len(transactions) == 0 {
+		b.sequencerTxMutex.RLock()
+		hasStaged := len(b.pendingPutInboxTxs) > 0 || len(b.pendingSequencerTxs) > 0
+		b.sequencerTxMutex.RUnlock()
+		if !hasStaged {
+			return nil
+		}
+	}
+
+	present := make(map[common.Hash]struct{}, len(transactions))
+	for _, tx := range transactions {
+		present[tx.Hash()] = struct{}{}
+	}
+
+	b.sequencerTxMutex.RLock()
+	stagedPut := append([]*types.Transaction(nil), b.pendingPutInboxTxs...)
+	stagedOriginal := append([]*types.Transaction(nil), b.pendingSequencerTxs...)
+	b.sequencerTxMutex.RUnlock()
+
+	if len(stagedPut)+len(stagedOriginal) == 0 {
+		return nil
+	}
+
+	missing := make([]common.Hash, 0, len(stagedPut)+len(stagedOriginal))
+	for _, staged := range stagedPut {
+		if _, ok := present[staged.Hash()]; !ok {
+			missing = append(missing, staged.Hash())
+		}
+	}
+	for _, staged := range stagedOriginal {
+		if _, ok := present[staged.Hash()]; !ok {
+			missing = append(missing, staged.Hash())
+		}
+	}
+
+	return missing
 }
 
 func (b *EthAPIBackend) GetPendingOriginalTxs() []*types.Transaction {
