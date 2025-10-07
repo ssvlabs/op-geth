@@ -93,7 +93,7 @@ type EthAPIBackend struct {
 
 	// SSV: Store built blocks to send after RequestSeal
 	pendingBlockMutex sync.RWMutex
-	pendingBlock      *types.Block
+	pendingBlocks     []*types.Block // All blocks built during current slot
 	pendingBlockSlot  uint64
 }
 
@@ -343,7 +343,11 @@ func (b *EthAPIBackend) GetReceipts(ctx context.Context, hash common.Hash) (type
 	return b.eth.blockchain.GetReceiptsByHash(hash), nil
 }
 
-func (b *EthAPIBackend) GetCanonicalReceipt(tx *types.Transaction, blockHash common.Hash, blockNumber, blockIndex uint64) (*types.Receipt, error) {
+func (b *EthAPIBackend) GetCanonicalReceipt(
+	tx *types.Transaction,
+	blockHash common.Hash,
+	blockNumber, blockIndex uint64,
+) (*types.Receipt, error) {
 	return b.eth.blockchain.GetCanonicalReceipt(tx, blockHash, blockNumber, blockIndex)
 }
 
@@ -467,7 +471,9 @@ func (b *EthAPIBackend) GetPoolTransaction(hash common.Hash) *types.Transaction 
 // not being finished. The caller must explicitly check the indexer progress.
 //
 // Notably, only the transaction in the canonical chain is visible.
-func (b *EthAPIBackend) GetCanonicalTransaction(txHash common.Hash) (bool, *types.Transaction, common.Hash, uint64, uint64) {
+func (b *EthAPIBackend) GetCanonicalTransaction(
+	txHash common.Hash,
+) (bool, *types.Transaction, common.Hash, uint64, uint64) {
 	lookup, tx := b.eth.blockchain.GetCanonicalTransaction(txHash)
 	if lookup == nil || tx == nil {
 		return false, nil, common.Hash{}, 0, 0
@@ -1202,6 +1208,7 @@ func (b *EthAPIBackend) OnBlockBuildingStart(context.Context) error {
 }
 
 // OnBlockBuildingComplete is called when block building completes
+// Per SBCP spec: Always STORE all blocks, never send here. Sending happens in NotifyRequestSeal.
 // SSV
 func (b *EthAPIBackend) OnBlockBuildingComplete(
 	ctx context.Context,
@@ -1212,69 +1219,25 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(
 		return nil
 	}
 
-	if b.coordinator == nil {
-		log.Info("[SSV] Block completed - non-SBCP mode", "blockNumber", block.NumberU64())
-		return b.handleSubmissionBlock(ctx, block, 0)
-	}
-
-	currentState := b.coordinator.GetState()
-	slot := b.coordinator.GetCurrentSlot()
-
-	log.Info("[SSV] Block building completed",
-		"state", currentState.String(),
-		"slot", slot,
-		"blockNumber", block.NumberU64(),
-		"txs", len(block.Transactions()))
-
-	switch currentState {
-	case sequencer.StateBuildingFree, sequencer.StateBuildingLocked:
-		log.Info("[SSV] Coordination block completed - not storing")
-		return nil
-	case sequencer.StateSubmission:
-		log.Info("[SSV] Submission block completed - storing and sending")
-		return b.handleSubmissionBlock(ctx, block, slot)
-	default:
-		log.Info("[SSV] Default block completed")
-		return nil
-	}
-}
-
-// handleSubmissionBlock handles the final block containing all cross-chain transactions
-// SSV
-func (b *EthAPIBackend) handleSubmissionBlock(ctx context.Context, block *types.Block, slot uint64) error {
 	b.pendingBlockMutex.Lock()
 	defer b.pendingBlockMutex.Unlock()
 
-	if b.pendingBlock != nil && b.pendingBlockSlot == slot {
-		log.Debug("[SSV] Submission block already stored", "slot", slot)
-		return nil
+	// Get slot (0 for non-SBCP mode)
+	slot := uint64(0)
+	if b.coordinator != nil {
+		slot = b.coordinator.GetCurrentSlot()
 	}
 
-	if b.coordinator != nil && b.coordinator.GetActiveSCPInstanceCount() > 0 {
-		log.Info("[SSV] Delaying submission block - active SCP instances",
-			"activeSCP", b.coordinator.GetActiveSCPInstanceCount())
-		return nil
-	}
-
-	log.Info("[SSV] Storing submission block",
-		"slot", slot,
-		"blockNumber", block.NumberU64(),
-		"txs", len(block.Transactions()))
-
-	b.pendingBlock = block
+	// Store ALL blocks built during this slot
+	b.pendingBlocks = append(b.pendingBlocks, block)
 	b.pendingBlockSlot = slot
 
-	if b.coordinator != nil && b.coordinator.GetState() == sequencer.StateSubmission {
-		log.Info("[SSV] Sending submission block to SP", "slot", slot)
-		go func() {
-			if err := b.sendStoredL2Block(context.Background()); err != nil {
-				log.Error("[SSV] Failed to send submission block", "err", err, "slot", slot)
-			} else {
-				log.Info("[SSV] Submission block sent successfully", "slot", slot)
-				b.clearAllSequencerTransactions()
-			}
-		}()
-	}
+	log.Debug("[SSV] Stored block",
+		"slot", slot,
+		"blockNumber", block.NumberU64(),
+		"hash", block.Hash().Hex(),
+		"txs", len(block.Transactions()),
+		"totalStored", len(b.pendingBlocks))
 
 	return nil
 }
@@ -1546,7 +1509,19 @@ func (b *EthAPIBackend) SetSequencerCoordinator(coord sequencer.Coordinator, sp 
 // SSV
 func (b *EthAPIBackend) NotifySlotStart(startSlot *rollupv1.StartSlot) error {
 	log.Info("[SSV] Notify miner: StartSlot", "slot", startSlot.Slot, "next_sb", startSlot.NextSuperblockNumber)
-	// Integrate with miner if needed (e.g., trigger prefetch/prep). Placeholder for now.
+
+	// Clear any pending blocks from previous slot when new slot starts
+	b.pendingBlockMutex.Lock()
+	if len(b.pendingBlocks) > 0 {
+		log.Warn("[SSV] Clearing unsent blocks from previous slot",
+			"prevSlot", b.pendingBlockSlot,
+			"newSlot", startSlot.Slot,
+			"blockCount", len(b.pendingBlocks))
+	}
+	b.pendingBlocks = nil
+	b.pendingBlockSlot = startSlot.Slot
+	b.pendingBlockMutex.Unlock()
+
 	return nil
 }
 
@@ -1566,17 +1541,19 @@ func (b *EthAPIBackend) NotifyRequestSeal(requestSeal *rollupv1.RequestSeal) err
 	b.lastRequestSealSlot = requestSeal.Slot
 	b.rsMutex.Unlock()
 
-	// Send stored block if available (this fixes the "not accepting L2 blocks in state free" error)
+	// Send ALL stored blocks if available
 	b.pendingBlockMutex.RLock()
-	hasStoredBlock := b.pendingBlock != nil
+	hasStoredBlocks := len(b.pendingBlocks) > 0
+	blockCount := len(b.pendingBlocks)
 	b.pendingBlockMutex.RUnlock()
 
-	if hasStoredBlock {
+	if hasStoredBlocks {
+		log.Info("[SSV] Sending stored blocks after RequestSeal", "slot", requestSeal.Slot, "blockCount", blockCount)
 		if err := b.sendStoredL2Block(context.Background()); err != nil {
-			log.Error("[SSV] Failed to send stored L2Block after RequestSeal", "err", err, "slot", requestSeal.Slot)
+			log.Error("[SSV] Failed to send stored L2Blocks after RequestSeal", "err", err, "slot", requestSeal.Slot)
 		}
 	} else {
-		log.Info("[SSV] RequestSeal received with no stored block yet (will build now)", "slot", requestSeal.Slot)
+		log.Info("[SSV] RequestSeal received with no stored blocks yet (will build now)", "slot", requestSeal.Slot)
 	}
 
 	return nil
@@ -1592,13 +1569,16 @@ func (b *EthAPIBackend) NotifyStateChange(from, to sequencer.State, slot uint64)
 // sendStoredL2Block sends the stored block as L2Block message
 // SSV
 func (b *EthAPIBackend) sendStoredL2Block(ctx context.Context) error {
-	b.pendingBlockMutex.RLock()
-	block := b.pendingBlock
+	b.pendingBlockMutex.Lock()
+	blocks := make([]*types.Block, len(b.pendingBlocks))
+	copy(blocks, b.pendingBlocks)
 	slot := b.pendingBlockSlot
-	b.pendingBlockMutex.RUnlock()
+	// Clear after copying
+	b.pendingBlocks = nil
+	b.pendingBlockMutex.Unlock()
 
-	if block == nil {
-		return fmt.Errorf("no stored block to send")
+	if len(blocks) == 0 {
+		return fmt.Errorf("no stored blocks to send")
 	}
 
 	// Get RequestSeal inclusion list
@@ -1611,60 +1591,61 @@ func (b *EthAPIBackend) sendStoredL2Block(ctx context.Context) error {
 	}
 	b.rsMutex.RUnlock()
 
-	// RLP encode the block
-	var buf bytes.Buffer
-	if err := block.EncodeRLP(&buf); err != nil {
-		log.Error("[SSV] Failed to RLP encode block", "err", err, "blockHash", block.Hash().Hex())
-		return err
-	}
-
-	l2 := &rollupv1.L2Block{
-		Slot:            slot,
-		ChainId:         b.ChainConfig().ChainID.Bytes(),
-		BlockNumber:     block.NumberU64(),
-		BlockHash:       block.Hash().Bytes(),
-		ParentBlockHash: block.ParentHash().Bytes(),
-		IncludedXts:     included,
-		Block:           buf.Bytes(),
-	}
-
-	msg := &rollupv1.Message{
-		SenderId: b.ChainConfig().ChainID.String(),
-		Payload:  &rollupv1.Message_L2Block{L2Block: l2},
-	}
-
-	if err := b.spClient.Send(ctx, msg); err != nil {
-		log.Error("[SSV] Failed to send L2Block to shared publisher", "err", err, "slot", slot)
-		return err
-	}
-
-	log.Info("[SSV] Submitted L2Block to shared publisher",
+	log.Info("[SSV] Sending all stored blocks to shared publisher",
 		"slot", slot,
-		"blockNumber", l2.BlockNumber,
-		"blockHash", block.Hash().Hex(),
-		"included_xts", len(included))
+		"blockCount", len(blocks))
 
-	// Mark included xTs as sent in consensus layer (SBCP path)
-	if b.coordinator != nil && b.coordinator.Consensus() != nil {
-		if err := b.coordinator.Consensus().OnL2BlockCommitted(ctx, l2); err != nil {
-			log.Warn("[SSV] Consensus OnL2BlockCommitted warning", "err", err, "slot", slot)
+	// Send ALL blocks built during this slot
+	for _, block := range blocks {
+		// RLP encode the block
+		var buf bytes.Buffer
+		if err := block.EncodeRLP(&buf); err != nil {
+			log.Error("[SSV] Failed to RLP encode block", "err", err, "blockHash", block.Hash().Hex())
+			return err
+		}
+
+		l2 := &rollupv1.L2Block{
+			Slot:            slot,
+			ChainId:         b.ChainConfig().ChainID.Bytes(),
+			BlockNumber:     block.NumberU64(),
+			BlockHash:       block.Hash().Bytes(),
+			ParentBlockHash: block.ParentHash().Bytes(),
+			IncludedXts:     included,
+			Block:           buf.Bytes(),
+		}
+
+		msg := &rollupv1.Message{
+			SenderId: b.ChainConfig().ChainID.String(),
+			Payload:  &rollupv1.Message_L2Block{L2Block: l2},
+		}
+
+		if err := b.spClient.Send(ctx, msg); err != nil {
+			log.Error("[SSV] Failed to send L2Block to shared publisher", "err", err, "slot", slot)
+			return err
+		}
+
+		log.Info("[SSV] Submitted L2Block to shared publisher",
+			"slot", slot,
+			"blockNumber", l2.BlockNumber,
+			"blockHash", block.Hash().Hex(),
+			"included_xts", len(included))
+
+		// Mark included xTs as sent in consensus layer (SBCP path)
+		if b.coordinator != nil && b.coordinator.Consensus() != nil {
+			if err := b.coordinator.Consensus().OnL2BlockCommitted(ctx, l2); err != nil {
+				log.Warn("[SSV] Consensus OnL2BlockCommitted warning", "err", err, "slot", slot)
+			}
+		}
+
+		// Notify sequencer coordinator to complete the block lifecycle
+		if b.coordinator != nil {
+			if err := b.coordinator.OnBlockBuildingComplete(ctx, l2, true); err != nil {
+				log.Warn("[SSV] Coordinator OnBlockBuildingComplete warning", "err", err, "slot", slot)
+			}
 		}
 	}
 
-	// Notify sequencer coordinator to complete the block lifecycle and
-	// transition state back to Waiting.
-	if b.coordinator != nil {
-		if err := b.coordinator.OnBlockBuildingComplete(ctx, l2, true); err != nil {
-			log.Warn("[SSV] Coordinator OnBlockBuildingComplete warning", "err", err, "slot", slot)
-		}
-	}
-
-	// Clear stored block and reset RequestSeal state
-	b.pendingBlockMutex.Lock()
-	b.pendingBlock = nil
-	b.pendingBlockSlot = 0
-	b.pendingBlockMutex.Unlock()
-
+	// After sending all blocks, reset RequestSeal state
 	b.rsMutex.Lock()
 	b.lastRequestSealIncluded = nil
 	b.lastRequestSealSlot = 0
