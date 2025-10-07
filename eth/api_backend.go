@@ -95,6 +95,12 @@ type EthAPIBackend struct {
 	pendingBlockMutex sync.RWMutex
 	pendingBlocks     []*types.Block
 	pendingBlockSlot  uint64
+
+	// SSV: Keep copy of committed transactions for SP submission
+	// Transactions are cleared from pendingPutInboxTxs/pendingSequencerTxs after block building
+	// but we need them to determine which blocks have XTs when sending to SP
+	committedTxsMutex sync.RWMutex
+	committedTxHashes map[common.Hash]bool // Hashes of txs that were committed in blocks during this slot
 }
 
 // ChainConfig returns the active chain configuration.
@@ -1205,25 +1211,72 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(
 		return nil
 	}
 
-	b.pendingBlockMutex.Lock()
-	defer b.pendingBlockMutex.Unlock()
-
 	// Get slot
 	slot := uint64(0)
+	currentState := "unknown"
 	if b.coordinator != nil {
 		slot = b.coordinator.GetCurrentSlot()
+		currentState = b.coordinator.GetState().String()
 	}
 
-	// Store ALL blocks built during this slot
+	// Get current cross-chain tx hashes BEFORE clearing
+	b.sequencerTxMutex.RLock()
+	crossChainTxHashes := make(map[common.Hash]bool)
+	for _, tx := range b.pendingPutInboxTxs {
+		crossChainTxHashes[tx.Hash()] = true
+	}
+	for _, tx := range b.pendingSequencerTxs {
+		crossChainTxHashes[tx.Hash()] = true
+	}
+	hasPendingXTs := len(crossChainTxHashes) > 0
+	b.sequencerTxMutex.RUnlock()
+
+	// Check which cross-chain txs are in this block
+	hasXTs := false
+	for _, tx := range block.Transactions() {
+		if crossChainTxHashes[tx.Hash()] {
+			hasXTs = true
+			// Track this tx hash for later when sending to SP
+			b.committedTxsMutex.Lock()
+			b.committedTxHashes[tx.Hash()] = true
+			b.committedTxsMutex.Unlock()
+		}
+	}
+
+	// Store block WITHOUT deduplication to see the actual issue
+	b.pendingBlockMutex.Lock()
+	blockHash := block.Hash()
 	b.pendingBlocks = append(b.pendingBlocks, block)
 	b.pendingBlockSlot = slot
+	totalStored := len(b.pendingBlocks)
+	b.pendingBlockMutex.Unlock()
 
-	log.Debug("[SSV] Stored block",
+	log.Info("[SSV] OnBlockBuildingComplete called",
 		"slot", slot,
+		"state", currentState,
 		"blockNumber", block.NumberU64(),
-		"hash", block.Hash().Hex(),
+		"hash", blockHash.Hex(),
 		"txs", len(block.Transactions()),
-		"totalStored", len(b.pendingBlocks))
+		"hasXTs", hasXTs,
+		"hasPendingXTs", hasPendingXTs,
+		"totalStored", totalStored)
+
+	// Clear pending cross-chain txs immediately so miner doesn't try to include them again
+	// But we've already tracked which ones were committed above
+	if hasXTs {
+		b.sequencerTxMutex.Lock()
+		putInboxCount := len(b.pendingPutInboxTxs)
+		originalCount := len(b.pendingSequencerTxs)
+		b.pendingPutInboxTxs = nil
+		b.pendingSequencerTxs = nil
+		b.sequencerTxMutex.Unlock()
+
+		log.Debug("[SSV] Cleared cross-chain txs after block building",
+			"slot", slot,
+			"blockNumber", block.NumberU64(),
+			"putInbox", putInboxCount,
+			"original", originalCount)
+	}
 
 	return nil
 }
@@ -1556,21 +1609,18 @@ func (b *EthAPIBackend) sendStoredL2Block(ctx context.Context) error {
 	}
 	b.rsMutex.RUnlock()
 
-	// Get hashes of cross-chain txs (putInbox + original)
-	b.sequencerTxMutex.RLock()
+	// Get committed cross-chain tx hashes (tracked during block building)
+	b.committedTxsMutex.RLock()
 	crossChainTxHashes := make(map[common.Hash]bool)
-	for _, tx := range b.pendingPutInboxTxs {
-		crossChainTxHashes[tx.Hash()] = true
+	for hash := range b.committedTxHashes {
+		crossChainTxHashes[hash] = true
 	}
-	for _, tx := range b.pendingSequencerTxs {
-		crossChainTxHashes[tx.Hash()] = true
-	}
-	b.sequencerTxMutex.RUnlock()
+	b.committedTxsMutex.RUnlock()
 
 	log.Info("[SSV] Sending all stored blocks to shared publisher",
 		"slot", slot,
 		"blockCount", len(blocks),
-		"crossChainTxs", len(crossChainTxHashes))
+		"committedXTs", len(crossChainTxHashes))
 
 	var lastL2Block *rollupv1.L2Block
 
@@ -1650,8 +1700,12 @@ func (b *EthAPIBackend) sendStoredL2Block(ctx context.Context) error {
 	b.lastRequestSealSlot = 0
 	b.rsMutex.Unlock()
 
-	b.ClearSequencerTransactionsAfterBlock()
-	log.Info("[SSV] Cleared sequencer transactions after successful L2Block submission")
+	// Clear committed tx hashes for next slot
+	b.committedTxsMutex.Lock()
+	b.committedTxHashes = make(map[common.Hash]bool)
+	b.committedTxsMutex.Unlock()
+
+	log.Info("[SSV] All blocks sent successfully")
 
 	return nil
 }
