@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/core/types"
@@ -18,16 +19,29 @@ type coordinator struct {
 	config       Config
 	stateManager *StateManager
 	callbackMgr  *CallbackManager
-	metrics      *Metrics
+	metrics      MetricsRecorder
 	log          zerolog.Logger
 
 	// Track committed xTs already sent with a block to avoid duplicates
 	sentMu  sync.Mutex
 	sentMap map[string]bool
+
+	// Lifecycle management
+	started      atomic.Bool
+	stopped      atomic.Bool
+	stopCh       chan struct{}
+	wg           sync.WaitGroup
+	shutdownOnce sync.Once
 }
 
 // New creates a new coordinator instance
 func New(log zerolog.Logger, config Config) Coordinator {
+	return NewWithMetrics(log, config, NewMetrics())
+}
+
+// NewWithMetrics creates a new coordinator instance with custom metrics recorder
+// TODO: check best practices for metrics recorder
+func NewWithMetrics(log zerolog.Logger, config Config, metrics MetricsRecorder) Coordinator {
 	logger := log.With().
 		Str("component", "consensus-coordinator").
 		Str("role", config.Role.String()).
@@ -38,7 +52,7 @@ func New(log zerolog.Logger, config Config) Coordinator {
 		config:       config,
 		stateManager: NewStateManager(),
 		callbackMgr:  NewCallbackManager(30*time.Second, logger),
-		metrics:      NewMetrics(),
+		metrics:      metrics,
 		log:          logger,
 		sentMap:      make(map[string]bool),
 	}
@@ -110,7 +124,7 @@ func (c *coordinator) OnL2BlockCommitted(ctx context.Context, block *pb.L2Block)
 }
 
 // StartTransaction initiates a new 2PC transaction
-func (c *coordinator) StartTransaction(from string, xtReq *pb.XTRequest) error {
+func (c *coordinator) StartTransaction(ctx context.Context, from string, xtReq *pb.XTRequest) error {
 	xtID, err := xtReq.XtID()
 	if err != nil {
 		return fmt.Errorf("failed to generate xtID: %w", err)
@@ -142,7 +156,7 @@ func (c *coordinator) StartTransaction(from string, xtReq *pb.XTRequest) error {
 		Msg("Started 2PC transaction")
 
 	// Invoke start callback
-	c.callbackMgr.InvokeStart(from, xtReq)
+	c.callbackMgr.InvokeStart(ctx, from, xtReq)
 
 	return nil
 }
@@ -300,9 +314,6 @@ func (c *coordinator) RecordCIRCMessage(circMessage *pb.CIRCMessage) error {
 		Str("chain_id", sourceChainIDInt.String()).
 		Msg("Recorded CIRC message")
 
-	// Trigger CIRC callback to notify sequencer of new message
-	c.callbackMgr.InvokeCIRC(xtID, circMessage)
-
 	return nil
 }
 
@@ -354,11 +365,6 @@ func (c *coordinator) SetDecisionCallback(fn DecisionFn) {
 // SetBlockCallback sets the block callback
 func (c *coordinator) SetBlockCallback(fn BlockFn) {
 	c.callbackMgr.SetBlockCallback(fn)
-}
-
-// SetCIRCCallback sets the CIRC callback
-func (c *coordinator) SetCIRCCallback(fn CIRCFn) {
-	c.callbackMgr.SetCIRCCallback(fn)
 }
 
 // handleCommit handles a commit decision
@@ -425,10 +431,61 @@ func (c *coordinator) handleTimeout(xtID *pb.XtID) {
 	}
 }
 
-// Shutdown gracefully shuts down the coordinator
-func (c *coordinator) Shutdown() error {
-	c.stateManager.Shutdown()
-	c.log.Info().Msg("Coordinator shutdown complete")
+// Start initializes and starts the coordinator
+func (c *coordinator) Start(ctx context.Context) error {
+	if c.started.Load() {
+		return fmt.Errorf("coordinator already started")
+	}
 
+	c.started.Store(true)
+	c.stopCh = make(chan struct{})
+
+	c.log.Info().
+		Str("node_id", c.config.NodeID).
+		Str("role", c.config.Role.String()).
+		Msg("Consensus coordinator starting")
+
+	c.log.Info().Msg("Consensus coordinator started successfully")
 	return nil
+}
+
+// Stop gracefully stops the coordinator
+func (c *coordinator) Stop(ctx context.Context) error {
+	if c.stopped.Load() {
+		return nil
+	}
+
+	c.log.Info().Msg("Consensus coordinator stopping...")
+	c.stopped.Store(true)
+
+	if c.stopCh != nil {
+		close(c.stopCh)
+	}
+
+	done := make(chan struct{})
+
+	go func() {
+		c.wg.Wait()
+		c.shutdownOnce.Do(func() {
+			c.stateManager.Shutdown()
+		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		c.log.Info().Msg("Consensus coordinator stopped gracefully")
+		return nil
+	case <-ctx.Done():
+		c.log.Warn().Msg("Consensus coordinator stop timed out, forcing shutdown")
+		c.shutdownOnce.Do(func() {
+			c.stateManager.Shutdown()
+		})
+		return ctx.Err()
+	}
+}
+
+// Stopped returns true if the coordinator has been stopped
+func (c *coordinator) Stopped() bool {
+	return c.stopped.Load()
 }

@@ -3,8 +3,8 @@ package transport
 import (
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/metrics"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Metrics holds transport-level metrics

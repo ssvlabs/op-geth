@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/rs/zerolog"
 	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
+	"github.com/rs/zerolog"
 )
 
 // handler implements the SBCP protocol Handler interface

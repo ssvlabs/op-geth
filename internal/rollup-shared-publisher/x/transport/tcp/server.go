@@ -8,9 +8,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/auth"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
-	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/auth"
 
 	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"

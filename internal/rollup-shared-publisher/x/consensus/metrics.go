@@ -3,13 +3,23 @@ package consensus
 import (
 	"time"
 
+	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/metrics"
 	"github.com/prometheus/client_golang/prometheus"
-	metrics2 "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/metrics"
 )
+
+// MetricsRecorder defines the interface for recording consensus metrics
+type MetricsRecorder interface {
+	RecordTransactionStarted(participantCount int)
+	RecordTransactionCompleted(state string, duration time.Duration)
+	RecordVote(chainID string, vote bool, latency time.Duration)
+	RecordTimeout()
+	RecordDecisionBroadcast(decision bool)
+	RecordVoteBroadcast(vote bool)
+}
 
 // Metrics holds all consensus-level metrics
 type Metrics struct {
-	registry *metrics2.ComponentRegistry
+	registry *metrics.ComponentRegistry
 
 	TransactionsTotal          *prometheus.CounterVec
 	ActiveTransactions         prometheus.Gauge
@@ -27,9 +37,12 @@ type Metrics struct {
 	CIRCMessagesTotal *prometheus.CounterVec
 }
 
+// Ensure Metrics implements MetricsRecorder
+var _ MetricsRecorder = (*Metrics)(nil)
+
 // NewMetrics creates consensus metrics
 func NewMetrics() *Metrics {
-	reg := metrics2.NewComponentRegistry("publisher", "consensus")
+	reg := metrics.NewComponentRegistry("publisher", "consensus")
 
 	return &Metrics{
 		registry: reg,
@@ -47,7 +60,7 @@ func NewMetrics() *Metrics {
 		Duration: reg.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "duration_seconds",
 			Help:    "Duration of consensus transactions",
-			Buckets: metrics2.ConsensusBuckets,
+			Buckets: metrics.ConsensusBuckets,
 		}, []string{"state"}),
 
 		VotesReceived: reg.NewCounterVec(prometheus.CounterOpts{
@@ -58,7 +71,7 @@ func NewMetrics() *Metrics {
 		VoteLatency: reg.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "vote_latency_seconds",
 			Help:    "Latency from transaction start to vote received",
-			Buckets: metrics2.ConsensusBuckets,
+			Buckets: metrics.ConsensusBuckets,
 		}, []string{"chain_id"}),
 
 		Timeouts: reg.NewCounter(prometheus.CounterOpts{
@@ -69,7 +82,7 @@ func NewMetrics() *Metrics {
 		ParticipantsPerTransaction: reg.NewHistogram(prometheus.HistogramOpts{
 			Name:    "participants_per_transaction",
 			Help:    "Number of participants per transaction",
-			Buckets: metrics2.CountBuckets,
+			Buckets: metrics.CountBuckets,
 		}),
 
 		DecisionsBroadcast: reg.NewCounterVec(prometheus.CounterOpts{
@@ -90,7 +103,7 @@ func NewMetrics() *Metrics {
 		CallbackLatency: reg.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "callback_latency_seconds",
 			Help:    "Latency of callback executions",
-			Buckets: metrics2.DurationBuckets,
+			Buckets: metrics.DurationBuckets,
 		}, []string{"type"}),
 
 		CIRCMessagesTotal: reg.NewCounterVec(prometheus.CounterOpts{
@@ -147,4 +160,22 @@ func (m *Metrics) RecordVoteBroadcast(vote bool) {
 		voteStr = StateCommitStr
 	}
 	m.VoteBroadcast.WithLabelValues(voteStr).Inc()
+}
+
+// NoOpMetrics provides a no-op implementation of MetricsRecorder for testing
+type NoOpMetrics struct{}
+
+// Ensure NoOpMetrics implements MetricsRecorder
+var _ MetricsRecorder = (*NoOpMetrics)(nil)
+
+func (n *NoOpMetrics) RecordTransactionStarted(participantCount int)                   {}
+func (n *NoOpMetrics) RecordTransactionCompleted(state string, duration time.Duration) {}
+func (n *NoOpMetrics) RecordVote(chainID string, vote bool, latency time.Duration)     {}
+func (n *NoOpMetrics) RecordTimeout()                                                  {}
+func (n *NoOpMetrics) RecordDecisionBroadcast(decision bool)                           {}
+func (n *NoOpMetrics) RecordVoteBroadcast(vote bool)                                   {}
+
+// NewNoOpMetrics creates a new no-op metrics recorder for testing
+func NewNoOpMetrics() MetricsRecorder {
+	return &NoOpMetrics{}
 }

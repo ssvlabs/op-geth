@@ -93,7 +93,7 @@ type EthAPIBackend struct {
 
 	// SSV: Store built blocks to send after RequestSeal
 	pendingBlockMutex sync.RWMutex
-	pendingBlocks     []*types.Block // All blocks built during current slot
+	pendingBlocks     []*types.Block
 	pendingBlockSlot  uint64
 }
 
@@ -711,20 +711,6 @@ func (b *EthAPIBackend) StartCallbackFn(chainID *big.Int) spconsensus.StartFn {
 	}
 }
 
-// CIRCCallbackFn returns a function that triggers re-simulation when CIRC messages are received.
-// SSV
-func (b *EthAPIBackend) CIRCCallbackFn(chainID *big.Int) spconsensus.CIRCFn {
-	return func(ctx context.Context, xtID *rollupv1.XtID, circMessage *rollupv1.CIRCMessage) error {
-		log.Info("[SSV] CIRC message received via callback, triggering re-simulation for ACK detection",
-			"xtID", xtID.Hex(),
-			"sourceChain", new(big.Int).SetBytes(circMessage.SourceChain).String())
-
-		log.Info("[SSV] CIRC callback completed - main simulation loop will detect new messages", "xtID", xtID.Hex())
-
-		return nil
-	}
-}
-
 // VoteCallbackFn returns a function that can be used to send votes for cross-chain transactions.
 // SSV
 func (b *EthAPIBackend) VoteCallbackFn(chainID *big.Int) spconsensus.VoteFn {
@@ -1222,7 +1208,7 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(
 	b.pendingBlockMutex.Lock()
 	defer b.pendingBlockMutex.Unlock()
 
-	// Get slot (0 for non-SBCP mode)
+	// Get slot
 	slot := uint64(0)
 	if b.coordinator != nil {
 		slot = b.coordinator.GetCurrentSlot()
@@ -1472,33 +1458,12 @@ func (b *EthAPIBackend) SetSequencerCoordinator(coord sequencer.Coordinator, sp 
 			chainID := b.ChainConfig().ChainID
 			b.coordinator.Consensus().SetStartCallback(b.StartCallbackFn(chainID))
 			b.coordinator.Consensus().SetVoteCallback(b.VoteCallbackFn(chainID))
-			b.coordinator.Consensus().SetCIRCCallback(b.CIRCCallbackFn(chainID))
 		}
 
 		// Register SBCP callbacks
 		b.coordinator.SetCallbacks(sequencer.CoordinatorCallbacks{
 			// For SBCP mode simulation during StartSC
 			SimulateAndVote: b.simulateXTRequestForSBCP,
-
-			OnVoteDecision: func(ctx context.Context, xtID *rollupv1.XtID, chainID string, vote bool) error {
-				log.Debug("[SSV] Vote decision", "xtID", xtID.Hex(), "vote", vote)
-				return nil
-			},
-
-			// Decisions are handled via consensus DecisionCallback above.
-			OnFinalDecision: nil,
-
-			OnBlockReady: func(ctx context.Context, block *rollupv1.L2Block, xtIDs []*rollupv1.XtID) error {
-				log.Info("[SSV] SBCP block ready", "slot", block.Slot, "xtIDs", len(xtIDs))
-				return nil
-			},
-
-			OnStateTransition: func(from, to sequencer.State, slot uint64, reason string) {
-				log.Info("[SSV] SBCP state transition", "from", from.String(), "to", to.String(), "slot", slot)
-				// Do not clear staged sequencer txs on generic Waiting transitions.
-				// They are cleared explicitly in OnBlockBuildingComplete once we know
-				// whether they were included.
-			},
 		})
 
 		// Set miner notifier and start
@@ -1583,20 +1548,49 @@ func (b *EthAPIBackend) sendStoredL2Block(ctx context.Context) error {
 
 	// Get RequestSeal inclusion list
 	b.rsMutex.RLock()
-	included := make([][]byte, len(b.lastRequestSealIncluded))
+	requestSealIncluded := make([][]byte, len(b.lastRequestSealIncluded))
 	for i := range b.lastRequestSealIncluded {
 		dup := make([]byte, len(b.lastRequestSealIncluded[i]))
 		copy(dup, b.lastRequestSealIncluded[i])
-		included[i] = dup
+		requestSealIncluded[i] = dup
 	}
 	b.rsMutex.RUnlock()
 
+	// Get hashes of cross-chain txs (putInbox + original)
+	b.sequencerTxMutex.RLock()
+	crossChainTxHashes := make(map[common.Hash]bool)
+	for _, tx := range b.pendingPutInboxTxs {
+		crossChainTxHashes[tx.Hash()] = true
+	}
+	for _, tx := range b.pendingSequencerTxs {
+		crossChainTxHashes[tx.Hash()] = true
+	}
+	b.sequencerTxMutex.RUnlock()
+
 	log.Info("[SSV] Sending all stored blocks to shared publisher",
 		"slot", slot,
-		"blockCount", len(blocks))
+		"blockCount", len(blocks),
+		"crossChainTxs", len(crossChainTxHashes))
+
+	var lastL2Block *rollupv1.L2Block
 
 	// Send ALL blocks built during this slot
 	for _, block := range blocks {
+		// Determine IncludedXts by checking if block contains cross-chain txs
+		// If block has any cross-chain txs, use RequestSeal list; otherwise empty
+		var included [][]byte
+		hasXTs := false
+		for _, tx := range block.Transactions() {
+			if crossChainTxHashes[tx.Hash()] {
+				hasXTs = true
+				break
+			}
+		}
+		if hasXTs {
+			included = requestSealIncluded
+		} else {
+			included = [][]byte{}
+		}
 		// RLP encode the block
 		var buf bytes.Buffer
 		if err := block.EncodeRLP(&buf); err != nil {
@@ -1628,20 +1622,25 @@ func (b *EthAPIBackend) sendStoredL2Block(ctx context.Context) error {
 			"slot", slot,
 			"blockNumber", l2.BlockNumber,
 			"blockHash", block.Hash().Hex(),
+			"hasXTs", hasXTs,
 			"included_xts", len(included))
 
-		// Mark included xTs as sent in consensus layer (SBCP path)
-		if b.coordinator != nil && b.coordinator.Consensus() != nil {
+		// Mark included XTs as sent in consensus layer for EACH block with XTs
+		// This is important so the consensus layer knows which XTs were committed
+		if b.coordinator != nil && b.coordinator.Consensus() != nil && len(included) > 0 {
 			if err := b.coordinator.Consensus().OnL2BlockCommitted(ctx, l2); err != nil {
 				log.Warn("[SSV] Consensus OnL2BlockCommitted warning", "err", err, "slot", slot)
 			}
 		}
 
-		// Notify sequencer coordinator to complete the block lifecycle
-		if b.coordinator != nil {
-			if err := b.coordinator.OnBlockBuildingComplete(ctx, l2, true); err != nil {
-				log.Warn("[SSV] Coordinator OnBlockBuildingComplete warning", "err", err, "slot", slot)
-			}
+		lastL2Block = l2
+	}
+
+	// Call OnBlockBuildingComplete ONCE after all blocks sent (for state transition)
+	// Use the last block (doesn't matter which one, just need to trigger the transition)
+	if b.coordinator != nil && lastL2Block != nil {
+		if err := b.coordinator.OnBlockBuildingComplete(ctx, lastL2Block, true); err != nil {
+			log.Warn("[SSV] Coordinator OnBlockBuildingComplete warning", "err", err, "slot", slot)
 		}
 	}
 

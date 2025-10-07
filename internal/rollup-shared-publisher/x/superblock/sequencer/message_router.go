@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/rs/zerolog"
 	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/consensus"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/protocol"
+	"github.com/rs/zerolog"
 )
 
 type MessageRouter struct {

@@ -94,6 +94,12 @@ func NewSequencerCoordinator(
 	// Initialize message router with protocol handlers
 	coordinator.messageRouter = NewMessageRouter(sbcpHandler, scpHandler, log)
 
+	// Bind consensus decision callback directly to the coordinator so lifecycle is unified
+	// and external callers (e.g., SDK hosts) don't need to forward decisions.
+	if baseConsensus != nil {
+		baseConsensus.SetDecisionCallback(coordinator.handleConsensusDecision)
+	}
+
 	return coordinator
 }
 
@@ -108,8 +114,9 @@ func (sc *SequencerCoordinator) Start(ctx context.Context) error {
 
 	sc.log.Info().Msg("Starting sequencer coordinator")
 
-	// TODO: consensus coordinator doesn't have Start/Stop methods in current implementation
-	// The consensus is initialized and ready to use
+	if err := sc.consensusCoord.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start consensus coordinator: %w", err)
+	}
 
 	sc.running = true
 
@@ -133,9 +140,12 @@ func (sc *SequencerCoordinator) Stop(ctx context.Context) error {
 	sc.log.Info().Msg("Stopping sequencer coordinator")
 
 	close(sc.stopCh)
-	sc.running = false
 
-	// TODO: consensus coordinator doesn't have Stop method in current implementation
+	if err := sc.consensusCoord.Stop(ctx); err != nil {
+		sc.log.Warn().Err(err).Msg("Failed to stop consensus coordinator gracefully")
+	}
+
+	sc.running = false
 
 	sc.log.Info().Msg("Sequencer coordinator stopped")
 	return nil
@@ -616,11 +626,6 @@ func (sc *SequencerCoordinator) onStateChange(from, to State, slot uint64, reaso
 			sc.log.Error().Err(err).Msg("Failed to notify miner of state change")
 		}
 	}
-
-	// Execute callback
-	if sc.callbacks.OnStateTransition != nil {
-		sc.callbacks.OnStateTransition(from, to, slot, reason)
-	}
 }
 
 // Interface implementations
@@ -715,20 +720,7 @@ func (sc *SequencerCoordinator) OnBlockBuildingComplete(ctx context.Context, blo
 			Str("block_hash", fmt.Sprintf("%x", block.BlockHash)).
 			Msg("Block building completed successfully")
 
-		// Execute block ready callback
-		if sc.callbacks.OnBlockReady != nil {
-			xtIDs := make([]*pb.XtID, len(block.IncludedXts))
-			for i, xtBytes := range block.IncludedXts {
-				xtIDs[i] = &pb.XtID{Hash: xtBytes}
-			}
-			if err := sc.callbacks.OnBlockReady(ctx, block, xtIDs); err != nil {
-				return err
-			}
-		}
-		// Inform consensus layer that a block committed (mark included XTs)
-		if sc.consensusCoord != nil {
-			_ = sc.consensusCoord.OnL2BlockCommitted(ctx, block)
-		}
+		// TODO: we should call Consensus().OnL2BlockCommitted here
 
 		// Transition back to Waiting after successful sealing
 		if sc.stateMachine.GetCurrentState() == StateSubmission {
@@ -737,7 +729,7 @@ func (sc *SequencerCoordinator) OnBlockBuildingComplete(ctx context.Context, blo
 			}
 		}
 
-		// Reset block builder for next slot
+		// Reset block builder for the next slot
 		if sc.blockBuilder != nil {
 			sc.blockBuilder.Reset()
 		}
@@ -749,10 +741,11 @@ func (sc *SequencerCoordinator) OnBlockBuildingComplete(ctx context.Context, blo
 	return nil
 }
 
-// OnConsensusDecision is invoked when the underlying 2PC (SCP) reaches a
-// final decision for the active StartSC. It updates the local SCP integration
+// handleConsensusDecision is invoked by the consensus layer when the underlying 2PC (SCP)
+// reaches a final decision for the active StartSC. It updates the local SCP integration
 // and unblocks any queued StartSC messages.
-func (sc *SequencerCoordinator) OnConsensusDecision(ctx context.Context, xtID *pb.XtID, decision bool) error {
+// TODO: check original transactions (clean up)
+func (sc *SequencerCoordinator) handleConsensusDecision(ctx context.Context, xtID *pb.XtID, decision bool) error {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
@@ -782,8 +775,6 @@ func (sc *SequencerCoordinator) OnConsensusDecision(ctx context.Context, xtID *p
 
 	return nil
 }
-
-// TransactionManager implementation
 
 // PrepareTransactionsForBlock prepares transactions for block inclusion
 func (sc *SequencerCoordinator) PrepareTransactionsForBlock(ctx context.Context, slot uint64) error {

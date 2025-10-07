@@ -9,10 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/rs/zerolog"
 	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/auth"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
+	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/proto"
 )
 

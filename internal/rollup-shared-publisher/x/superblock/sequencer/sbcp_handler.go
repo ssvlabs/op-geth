@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/rs/zerolog"
 	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/superblock/protocol"
+	"github.com/rs/zerolog"
 )
 
 // sbcpHandler implements the protocol.MessageHandler interface for SBCP messages
