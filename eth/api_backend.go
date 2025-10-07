@@ -1228,7 +1228,6 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(
 	for _, tx := range b.pendingSequencerTxs {
 		crossChainTxHashes[tx.Hash()] = true
 	}
-	hasPendingXTs := len(crossChainTxHashes) > 0
 	b.sequencerTxMutex.RUnlock()
 
 	// Check which cross-chain txs are in this block
@@ -1243,23 +1242,43 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(
 		}
 	}
 
-	// Store block WITHOUT deduplication to see the actual issue
-	b.pendingBlockMutex.Lock()
+	// Store block with automatic deduplication. Treat pendingBlocks as a stack keyed
+	// by block number: newer payloads replace older ones, identical hashes are ignored.
 	blockHash := block.Hash()
-	b.pendingBlocks = append(b.pendingBlocks, block)
-	b.pendingBlockSlot = slot
-	totalStored := len(b.pendingBlocks)
-	b.pendingBlockMutex.Unlock()
+	blockNumber := block.NumberU64()
 
-	log.Info("[SSV] OnBlockBuildingComplete called",
-		"slot", slot,
-		"state", currentState,
-		"blockNumber", block.NumberU64(),
-		"hash", blockHash.Hex(),
-		"txs", len(block.Transactions()),
-		"hasXTs", hasXTs,
-		"hasPendingXTs", hasPendingXTs,
-		"totalStored", totalStored)
+	b.pendingBlockMutex.Lock()
+	filtered := make([]*types.Block, 0, len(b.pendingBlocks))
+	isDuplicateHash := false
+	for _, existingBlock := range b.pendingBlocks {
+		switch {
+		case existingBlock.Hash() == blockHash:
+			isDuplicateHash = true
+			filtered = append(filtered, existingBlock)
+		case existingBlock.NumberU64() == blockNumber:
+			// Drop older version for this block number.
+		default:
+			filtered = append(filtered, existingBlock)
+		}
+	}
+
+	if isDuplicateHash {
+		b.pendingBlocks = filtered
+		totalStored := len(b.pendingBlocks)
+		b.pendingBlockMutex.Unlock()
+
+		log.Debug("[SSV] Skipping duplicate block (identical hash already stored)",
+			"slot", slot,
+			"state", currentState,
+			"blockNumber", blockNumber,
+			"hash", blockHash.Hex(),
+			"totalStored", totalStored)
+		return nil
+	}
+
+	b.pendingBlocks = append(filtered, block)
+	b.pendingBlockSlot = slot
+	b.pendingBlockMutex.Unlock()
 
 	// Clear pending cross-chain txs immediately so miner doesn't try to include them again
 	// But we've already tracked which ones were committed above
