@@ -521,7 +521,7 @@ func decodeEntryPointError(revertDataHex string) map[string]any {
 	data := revertData[4:]
 
 	for name, customErr := range parsedABI.Errors {
-		if hex.EncodeToString(customErr.ID[:]) == hex.EncodeToString(selector) {
+		if hex.EncodeToString(customErr.ID[:4]) == hex.EncodeToString(selector) {
 			values, err := customErr.Inputs.Unpack(data)
 			if err != nil {
 				return nil
