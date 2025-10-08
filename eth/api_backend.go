@@ -951,8 +951,21 @@ func (b *EthAPIBackend) ClearSequencerTransactionsAfterBlock() {
 	case sequencer.StateBuildingFree, sequencer.StateBuildingLocked:
 		log.Info("[SSV] Preserving transactions during coordination")
 		return
+	case sequencer.StateSubmission:
+		// Only clear if transactions have been included in blocks
+		// Check if we have committed transaction hashes (set during OnBlockBuildingComplete)
+		b.committedTxsMutex.RLock()
+		hasCommittedTxs := len(b.committedTxHashes) > 0
+		b.committedTxsMutex.RUnlock()
+
+		if hasCommittedTxs {
+			log.Info("[SSV] Clearing transactions after successful inclusion in submission block")
+			b.clearAllSequencerTransactions()
+		} else {
+			log.Info("[SSV] Preserving transactions during submission - not yet included in blocks")
+		}
 	default:
-		log.Info("[SSV] Clearing transactions")
+		log.Info("[SSV] Clearing transactions - default state")
 		b.clearAllSequencerTransactions()
 	}
 }
@@ -1591,19 +1604,43 @@ func (b *EthAPIBackend) NotifyRequestSeal(requestSeal *rollupv1.RequestSeal) err
 	b.lastRequestSealSlot = requestSeal.Slot
 	b.rsMutex.Unlock()
 
-	// Send ALL stored blocks if available
+	hasPendingTxs := len(b.GetPendingPutInboxTxs())+len(b.GetPendingOriginalTxs()) > 0
+
+	if hasPendingTxs {
+		log.Info("[SSV] RequestSeal: Found pending sequencer transactions - discarding pre-built coordination blocks",
+			"slot", requestSeal.Slot,
+			"pendingPutInbox", len(b.GetPendingPutInboxTxs()),
+			"pendingOriginal", len(b.GetPendingOriginalTxs()))
+
+		// Clear pre-built blocks from coordination phases - they don't have sequencer txs
+		b.pendingBlockMutex.Lock()
+		discardedCount := len(b.pendingBlocks)
+		b.pendingBlocks = nil // Force fresh block building in submission state
+		b.pendingBlockMutex.Unlock()
+
+		log.Info("[SSV] RequestSeal: Discarded coordination blocks to force fresh submission blocks",
+			"slot", requestSeal.Slot,
+			"discardedBlocks", discardedCount,
+			"reason", "pending_sequencer_transactions")
+
+		// The coordinator will transition to submission state, and the miner will build fresh blocks
+		// that include the staged sequencer transactions
+		return nil
+	}
+
+	// No pending transactions - send existing blocks
 	b.pendingBlockMutex.RLock()
 	hasStoredBlocks := len(b.pendingBlocks) > 0
 	blockCount := len(b.pendingBlocks)
 	b.pendingBlockMutex.RUnlock()
 
 	if hasStoredBlocks {
-		log.Info("[SSV] Sending stored blocks after RequestSeal", "slot", requestSeal.Slot, "blockCount", blockCount)
+		log.Info("[SSV] RequestSeal: Sending existing blocks (no pending sequencer txs)", "slot", requestSeal.Slot, "blockCount", blockCount)
 		if err := b.sendStoredL2Block(context.Background()); err != nil {
 			log.Error("[SSV] Failed to send stored L2Blocks after RequestSeal", "err", err, "slot", requestSeal.Slot)
 		}
 	} else {
-		log.Info("[SSV] RequestSeal received with no stored blocks yet (will build now)", "slot", requestSeal.Slot)
+		log.Info("[SSV] RequestSeal: No blocks available, letting miner build fresh", "slot", requestSeal.Slot)
 	}
 
 	return nil
