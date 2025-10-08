@@ -849,7 +849,7 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 					break
 				}
 
-				env.state.SetTxContext(tx.Hash(), env.tcount)
+				env.state.SetTxContext(tx.Hash(), originalTxCount+i)
 				log.Info("Commit tx", "tx", tx.Hash().String())
 				if err := miner.commitTransaction(env, tx); err != nil {
 					log.Error("[SSV] Sequencer transaction would fail - aborting ALL sequencer txs for atomicity",
@@ -857,12 +857,12 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 					atomicCommitPossible = false
 					break
 				}
-				env.tcount++
 			}
 
 			if atomicCommitPossible {
 				// All transactions validated successfully - keep the committed state
 				sequencerTxCount = len(orderedSequencerTxs)
+				env.tcount = originalTxCount + sequencerTxCount
 				log.Info("[SSV] Successfully committed ALL sequencer transactions atomically",
 					"count", sequencerTxCount, "putInbox", len(backend.GetPendingPutInboxTxs()),
 					"original", len(backend.GetPendingOriginalTxs()))
