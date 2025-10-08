@@ -1255,11 +1255,8 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(
 	b.sequencerTxMutex.RUnlock()
 
 	// Check which cross-chain txs are in this block
-	hasXTs := false
 	for _, tx := range block.Transactions() {
 		if crossChainTxHashes[tx.Hash()] {
-			hasXTs = true
-			// Track this tx hash for later when sending to SP
 			b.committedTxsMutex.Lock()
 			b.committedTxHashes[tx.Hash()] = true
 			b.committedTxsMutex.Unlock()
@@ -1304,24 +1301,42 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(
 	b.pendingBlockSlot = slot
 	b.pendingBlockMutex.Unlock()
 
-	// Clear pending cross-chain txs immediately so miner doesn't try to include them again
-	// But we've already tracked which ones were committed above
-	if hasXTs {
-		b.sequencerTxMutex.Lock()
-		putInboxCount := len(b.pendingPutInboxTxs)
-		originalCount := len(b.pendingSequencerTxs)
-		b.pendingPutInboxTxs = nil
-		b.pendingSequencerTxs = nil
-		b.sequencerTxMutex.Unlock()
+	return nil
+}
 
-		log.Debug("[SSV] Cleared cross-chain txs after block building",
-			"slot", slot,
-			"blockNumber", block.NumberU64(),
-			"putInbox", putInboxCount,
-			"original", originalCount)
+func (b *EthAPIBackend) clearCommittedSequencerTransactions(committed map[common.Hash]bool) {
+	if len(committed) == 0 {
+		return
 	}
 
-	return nil
+	prune := func(txs []*types.Transaction) ([]*types.Transaction, int) {
+		if len(txs) == 0 {
+			return txs, 0
+		}
+		out := txs[:0]
+		removed := 0
+		for _, tx := range txs {
+			if committed[tx.Hash()] {
+				removed++
+				continue
+			}
+			out = append(out, tx)
+		}
+		return out, removed
+	}
+
+	b.sequencerTxMutex.Lock()
+	defer b.sequencerTxMutex.Unlock()
+
+	var removedPutInbox, removedOriginal int
+	b.pendingPutInboxTxs, removedPutInbox = prune(b.pendingPutInboxTxs)
+	b.pendingSequencerTxs, removedOriginal = prune(b.pendingSequencerTxs)
+
+	if removedPutInbox > 0 || removedOriginal > 0 {
+		log.Debug("[SSV] Cleared committed cross-chain txs after delivery",
+			"putInboxRemoved", removedPutInbox,
+			"originalRemoved", removedOriginal)
+	}
 }
 
 func (b *EthAPIBackend) GetPendingOriginalTxs() []*types.Transaction {
@@ -1733,6 +1748,10 @@ func (b *EthAPIBackend) sendStoredL2Block(ctx context.Context) error {
 		}
 
 		lastL2Block = l2
+	}
+
+	if len(crossChainTxHashes) > 0 {
+		b.clearCommittedSequencerTransactions(crossChainTxHashes)
 	}
 
 	// Call OnBlockBuildingComplete ONCE after all blocks sent (for state transition)
