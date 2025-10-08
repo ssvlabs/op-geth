@@ -836,16 +836,23 @@ func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *type
 	if isPutInbox {
 		b.AddPendingPutInboxTx(tx)
 	}
-	// Also inject into the local txpool so that PENDING state reflects these txs
-	// and re-simulation against rpc.PendingBlockNumber can observe mailbox effects.
-	if err := b.sendTx(ctx, tx); err != nil {
-		log.Warn(
-			"[SSV] Failed to inject sequencer tx into txpool (continuing with staged include)",
-			"err",
-			err,
-			"txHash",
-			tx.Hash().Hex(),
-		)
+
+	// Check if this is during simulation - if so, don't add to real txpool
+	// Simulation should only affect simulation state, not actual txpool
+	if simulation, _ := ctx.Value("simulation").(bool); !simulation {
+		// Only inject into the local txpool for non-simulation requests
+		// so that PENDING state reflects these txs for real block building
+		if err := b.sendTx(ctx, tx); err != nil {
+			log.Warn(
+				"[SSV] Failed to inject sequencer tx into txpool (continuing with staged include)",
+				"err",
+				err,
+				"txHash",
+				tx.Hash().Hex(),
+			)
+		}
+	} else {
+		log.Debug("[SSV] Skipping txpool injection during simulation", "txHash", tx.Hash().Hex())
 	}
 	return nil
 }
@@ -910,6 +917,12 @@ func (b *EthAPIBackend) AddPendingPutInboxTx(tx *types.Transaction) {
 		"totalPending", len(b.pendingPutInboxTxs),
 		"nonce", tx.Nonce(),
 	)
+
+	// Invalidate pending block cache since transaction state changed
+	// This ensures fresh pending blocks reflect new sequencer transactions
+	if miner := b.eth.miner; miner != nil {
+		miner.InvalidatePendingCache()
+	}
 }
 
 // GetPendingPutInboxTxs returns all pending putInbox transactions.
@@ -1499,6 +1512,12 @@ func (b *EthAPIBackend) poolPayloadTx(tx *types.Transaction) {
 	defer b.sequencerTxMutex.Unlock()
 
 	b.pendingSequencerTxs = append(b.pendingSequencerTxs, tx)
+
+	// Invalidate pending block cache since transaction state changed
+	// This ensures fresh pending blocks reflect new sequencer transactions
+	if miner := b.eth.miner; miner != nil {
+		miner.InvalidatePendingCache()
+	}
 }
 
 // SetSequencerCoordinator wires an SBCP sequencer coordinator, consensus callbacks, and SP client routing.

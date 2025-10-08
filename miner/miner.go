@@ -290,10 +290,17 @@ func (miner *Miner) getPending(ctx context.Context) *newPayloadResult {
 	header := miner.chain.CurrentHeader()
 	miner.pendingMu.Lock()
 	defer miner.pendingMu.Unlock()
-	//if cached := miner.pending.resolve(header.Hash()); cached != nil {
-	//	fmt.Println("RETURN CACHED!!!")
-	//	return cached
-	//}
+
+	// Check simulation mode - for simulations, never use cache and don't update cache
+	value := ctx.Value("simulation")
+	simulation, _ := value.(bool)
+
+	// For non-simulation requests, use cache if available
+	if !simulation {
+		if cached := miner.pending.resolve(header.Hash()); cached != nil {
+			return cached
+		}
+	}
 
 	var (
 		timestamp  = uint64(time.Now().Unix())
@@ -306,9 +313,6 @@ func (miner *Miner) getPending(ctx context.Context) *newPayloadResult {
 	if miner.chainConfig.IsHolocene(timestamp) {
 		eip1559Params = miner.createHoloceneEIP1559Params(header, timestamp)
 	}
-
-	value := ctx.Value("simulation")
-	simulation, _ := value.(bool)
 
 	ret := miner.generateWork(&generateParams{
 		timestamp:     timestamp,
@@ -325,7 +329,11 @@ func (miner *Miner) getPending(ctx context.Context) *newPayloadResult {
 	if ret.err != nil {
 		return nil
 	}
-	//miner.pending.update(header.Hash(), ret)
+
+	// Only cache non-simulation results
+	if !simulation {
+		miner.pending.update(header.Hash(), ret)
+	}
 	return ret
 }
 
@@ -351,6 +359,14 @@ func (miner *Miner) createHoloceneEIP1559Params(parent *types.Header, timestamp 
 
 func (miner *Miner) Close() {
 	miner.lifeCtxCancel()
+}
+
+// InvalidatePendingCache invalidates the pending block cache
+// This should be called when transaction state changes that affect pending blocks
+func (miner *Miner) InvalidatePendingCache() {
+	miner.pendingMu.Lock()
+	defer miner.pendingMu.Unlock()
+	miner.pending = &pending{}
 }
 
 // hasCrossChainTransactions checks if there are any cross-chain transactions pending in the tx pool.
