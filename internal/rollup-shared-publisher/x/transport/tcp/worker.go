@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	pb "github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/proto/rollup/v1"
 	"github.com/rs/zerolog"
 
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
@@ -125,6 +126,29 @@ func (ct *ConnectionTask) Execute(ctx context.Context) {
 				}
 				log.Error().Err(err).Msg("Read error")
 				return
+			}
+
+			// Handle ping/pong messages at transport level
+			switch payload := msg.Payload.(type) {
+			case *pb.Message_Ping:
+				// Received ping, send pong
+				log.Debug().Msg("Received ping from client, sending pong")
+				pongMsg := &pb.Message{
+					SenderId: "server",
+					Payload: &pb.Message_Pong{
+						Pong: &pb.Pong{
+							Timestamp: payload.Ping.Timestamp,
+						},
+					},
+				}
+				if err := ct.conn.WriteMessage(pongMsg); err != nil {
+					log.Debug().Err(err).Msg("Failed to send pong")
+				}
+				continue
+			case *pb.Message_Pong:
+				// Received pong, connection is alive
+				log.Debug().Msg("Received pong from client")
+				continue
 			}
 
 			if ct.handler != nil {

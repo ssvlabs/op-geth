@@ -19,6 +19,15 @@ message HandshakeResponse {
   string session_id = 3;         // Unique session identifier
 }
 
+// Connection health check messages
+message Ping {
+  int64 timestamp = 1; // Timestamp for latency measurement
+}
+
+message Pong {
+  int64 timestamp = 1; // Echo back the timestamp from Ping
+}
+
 // Transaction ID (SHA256 hash)
 message XtID {
   bytes hash = 1; // 32-byte SHA256 hash
@@ -139,5 +148,9 @@ message Message {
     // Connection-level authentication
     HandshakeRequest handshake_request = 12;
     HandshakeResponse handshake_response = 13;
+
+    // Connection health check
+    Ping ping = 14;
+    Pong pong = 15;
   }
 }

@@ -18,6 +18,10 @@ import (
 	"github.com/ethereum/go-ethereum/internal/rollup-shared-publisher/x/transport"
 )
 
+const (
+	pingInterval = 15 * time.Second
+)
+
 // ClientConfig contains client-specific configuration
 type ClientConfig struct {
 	ServerAddr      string
@@ -63,6 +67,9 @@ type client struct {
 	reconnecting  atomic.Bool
 	autoReconnect atomic.Bool
 
+	// Ping/Pong for connection health
+	pingRecv chan struct{}
+
 	// Shutdown management
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -83,11 +90,12 @@ func NewClient(config ClientConfig, log zerolog.Logger) transport.Client {
 	}
 
 	c := &client{
-		config:  config,
-		id:      id,
-		codec:   NewCodec(config.MaxMessageSize),
-		log:     log.With().Str("component", "tcp-client").Logger(),
-		metrics: transport.NewMetrics(id),
+		config:   config,
+		id:       id,
+		codec:    NewCodec(config.MaxMessageSize),
+		log:      log.With().Str("component", "tcp-client").Logger(),
+		metrics:  transport.NewMetrics(id),
+		pingRecv: make(chan struct{}, 16),
 	}
 
 	c.autoReconnect.Store(true)
@@ -154,6 +162,10 @@ func (c *client) Connect(ctx context.Context, addr string) error {
 	// Start receive loop
 	c.wg.Add(1)
 	go c.receiveLoop(receiveCtx)
+
+	// Start ping loop for connection health monitoring
+	c.wg.Add(1)
+	go c.pingLoop(receiveCtx)
 
 	// Start connection monitor for auto-reconnect
 	c.wg.Add(1)
@@ -277,7 +289,7 @@ func (c *client) receiveLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			c.log.Debug().Msg("Receive loop cancelled")
+			c.log.Debug().Msg("Receive loop canceled")
 			return
 		default:
 			// Set read timeout
@@ -306,6 +318,22 @@ func (c *client) receiveLoop(ctx context.Context) {
 				return
 			}
 
+			// Handle ping/pong messages
+			switch msg.Payload.(type) {
+			case *pb.Message_Ping:
+				// Received ping, send pong
+				c.log.Debug().Msg("Received ping, sending pong")
+				select {
+				case c.pingRecv <- struct{}{}:
+				default:
+				}
+				continue
+			case *pb.Message_Pong:
+				// Received pong, connection is alive
+				c.log.Debug().Msg("Received pong")
+				continue
+			}
+
 			var verifiedID string
 			if c.conn != nil {
 				verifiedID = c.conn.GetAuthenticatedID()
@@ -325,6 +353,73 @@ func (c *client) receiveLoop(ctx context.Context) {
 						Str("msg_type", fmt.Sprintf("%T", msg.Payload)).
 						Msg("Error handling message")
 				}
+			}
+		}
+	}
+}
+
+// pingLoop sends periodic pings to detect connection health
+func (c *client) pingLoop(ctx context.Context) {
+	defer c.wg.Done()
+
+	ping := time.NewTimer(pingInterval)
+	defer ping.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			c.log.Debug().Msg("Ping loop canceled")
+			return
+		case <-ping.C:
+			c.mu.RLock()
+			conn := c.conn
+			connected := c.connected.Load()
+			c.mu.RUnlock()
+
+			if !connected || conn == nil {
+				return
+			}
+
+			// Send ping message
+			pingMsg := &pb.Message{
+				SenderId: c.id,
+				Payload: &pb.Message_Ping{
+					Ping: &pb.Ping{
+						Timestamp: time.Now().UnixNano(),
+					},
+				},
+			}
+
+			if err := c.Send(ctx, pingMsg); err != nil {
+				c.log.Error().Err(err).Msg("Failed to send ping")
+				c.handleConnectionLoss(err)
+				return
+			}
+
+			c.log.Debug().Msg("Ping sent")
+			ping.Reset(pingInterval)
+
+		case <-c.pingRecv:
+			// Received ping from server, send pong
+			c.mu.RLock()
+			conn := c.conn
+			c.mu.RUnlock()
+
+			if conn == nil {
+				continue
+			}
+
+			pongMsg := &pb.Message{
+				SenderId: c.id,
+				Payload: &pb.Message_Pong{
+					Pong: &pb.Pong{
+						Timestamp: time.Now().UnixNano(),
+					},
+				},
+			}
+
+			if err := c.Send(ctx, pongMsg); err != nil {
+				c.log.Debug().Err(err).Msg("Failed to send pong")
 			}
 		}
 	}
