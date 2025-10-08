@@ -748,6 +748,7 @@ func (b *EthAPIBackend) SimulateTransaction(
 	}()
 
 	ctx = context.WithValue(ctx, "simulation", true)
+	ctx = context.WithValue(ctx, "pure_simulation", true)
 
 	// stateDB should have clear() and putInbox() in its state
 	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
@@ -837,10 +838,10 @@ func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *type
 		b.AddPendingPutInboxTx(tx)
 	}
 
-	// Check if this is during simulation - if so, don't add to real txpool
-	// Simulation should only affect simulation state, not actual txpool
-	if simulation, _ := ctx.Value("simulation").(bool); !simulation {
-		// Only inject into the local txpool for non-simulation requests
+	// Check if this is during PURE simulation (not SBCP simulation)
+	// Pure simulations should not affect txpool, but SBCP creates real transactions
+	if pureSimulation, _ := ctx.Value("pure_simulation").(bool); !pureSimulation {
+		// Inject into the local txpool for real transactions and SBCP-generated transactions
 		// so that PENDING state reflects these txs for real block building
 		if err := b.sendTx(ctx, tx); err != nil {
 			log.Warn(
@@ -852,7 +853,7 @@ func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *type
 			)
 		}
 	} else {
-		log.Debug("[SSV] Skipping txpool injection during simulation", "txHash", tx.Hash().Hex())
+		log.Debug("[SSV] Skipping txpool injection during pure simulation", "txHash", tx.Hash().Hex())
 	}
 	return nil
 }

@@ -826,20 +826,69 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 			}
 		}
 
-		// Commit backend-ordered sequencer txs first (only in Submission)
+		// Commit backend-ordered sequencer txs atomically (only in Submission)
 		sequencerTxCount := 0
-		for _, tx := range orderedSequencerTxs {
-			if env.gasPool.Gas() < params.TxGas {
-				log.Error("[SSV] Not enough gas for sequencer transactions", "have", env.gasPool.Gas(), "want", params.TxGas)
-				break
+		if len(orderedSequencerTxs) > 0 {
+			// Pre-validate atomicity: check if ALL sequencer txs can be committed
+			atomicCommitPossible := true
+
+			// Save state snapshot for rollback if needed
+			stateSnapshot := env.state.Snapshot()
+			gasPoolSnapshot := env.gasPool.Gas()
+			originalTxCount := env.tcount
+			originalSize := env.size
+			originalSidecarCount := len(env.sidecars)
+			originalBlobCount := env.blobs
+
+			// Pre-validate all sequencer transactions
+			for i, tx := range orderedSequencerTxs {
+				if env.gasPool.Gas() < params.TxGas {
+					log.Error("[SSV] Not enough gas for all sequencer transactions",
+						"have", env.gasPool.Gas(), "want", params.TxGas, "failedAt", i)
+					atomicCommitPossible = false
+					break
+				}
+
+				env.state.SetTxContext(tx.Hash(), env.tcount)
+				if err := miner.commitTransaction(env, tx); err != nil {
+					log.Error("[SSV] Sequencer transaction would fail - aborting ALL sequencer txs for atomicity",
+						"hash", tx.Hash(), "err", err, "txIndex", i)
+					atomicCommitPossible = false
+					break
+				}
+				env.tcount++
 			}
-			env.state.SetTxContext(tx.Hash(), env.tcount)
-			log.Info("Commit tx", "tx", tx.Hash().String())
-			if err := miner.commitTransaction(env, tx); err != nil {
-				log.Warn("[SSV] Failed to commit sequencer transaction", "hash", tx.Hash(), "err", err)
-				continue
+
+			if atomicCommitPossible {
+				// All transactions validated successfully - keep the committed state
+				sequencerTxCount = len(orderedSequencerTxs)
+				log.Info("[SSV] Successfully committed ALL sequencer transactions atomically",
+					"count", sequencerTxCount, "putInbox", len(backend.GetPendingPutInboxTxs()),
+					"original", len(backend.GetPendingOriginalTxs()))
+			} else {
+				// Rollback all changes - restore original state
+				env.state.RevertToSnapshot(stateSnapshot)
+				env.gasPool.SetGas(gasPoolSnapshot)
+				env.tcount = originalTxCount
+
+				// Restore original size
+				env.size = originalSize
+
+				// Clear the txs, receipts, sidecars, and blobs that were added during failed validation
+				if len(env.txs) > originalTxCount {
+					env.txs = env.txs[:originalTxCount]
+				}
+				if len(env.receipts) > originalTxCount {
+					env.receipts = env.receipts[:originalTxCount]
+				}
+				if len(env.sidecars) > originalSidecarCount {
+					env.sidecars = env.sidecars[:originalSidecarCount]
+				}
+				env.blobs = originalBlobCount
+
+				log.Error("[SSV] ATOMICITY VIOLATION PREVENTED: Some sequencer txs failed - excluded ALL from block",
+					"attempted", len(orderedSequencerTxs))
 			}
-			sequencerTxCount++
 		}
 
 		// Filter sequencer-managed txs out of account-based pools to avoid premature or double inclusion
