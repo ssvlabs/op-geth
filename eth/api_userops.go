@@ -86,7 +86,10 @@ const entryPointV07ABI = `[
   ],"internalType":"struct PackedUserOperation[]","name":"ops","type":"tuple[]"},
   {"internalType":"address payable","name":"beneficiary","type":"address"}],
    "name":"handleOps","outputs":[],"stateMutability":"nonpayable","type":"function"},
-  {"type":"error","name":"FailedOp","inputs":[{"internalType":"uint256","name":"opIndex","type":"uint256"},{"internalType":"string","name":"reason","type":"string"}]}
+  {"type":"error","name":"FailedOp","inputs":[{"internalType":"uint256","name":"opIndex","type":"uint256"},{"internalType":"string","name":"reason","type":"string"}]},
+  {"type":"error","name":"FailedOpWithRevert","inputs":[{"internalType":"uint256","name":"opIndex","type":"uint256"},{"internalType":"string","name":"reason","type":"string"},{"internalType":"bytes","name":"inner","type":"bytes"}]},
+  {"type":"error","name":"SignatureValidationFailed","inputs":[{"internalType":"address","name":"aggregator","type":"address"}]},
+  {"type":"error","name":"PostOpReverted","inputs":[{"internalType":"bytes","name":"returnData","type":"bytes"}]}
 ]`
 
 // Packed userop for ABI packing
@@ -506,6 +509,7 @@ func GetComposeUserOpsAPI(b *EthAPIBackend) rpc.API {
 
 // decodeEntryPointError attempts to decode EntryPoint custom errors using the ABI.
 // Returns a map with decoded fields if successful, nil otherwise.
+// Recursively decodes nested revert data (e.g., inner reverts in FailedOpWithRevert).
 func decodeEntryPointError(revertDataHex string) map[string]any {
 	revertData, err := hexutil.Decode(revertDataHex)
 	if err != nil || len(revertData) < 4 {
@@ -529,13 +533,102 @@ func decodeEntryPointError(revertDataHex string) map[string]any {
 
 			result := map[string]any{"error": name}
 
-			if name == "FailedOp" && len(values) >= 2 {
-				result["opIndex"] = fmt.Sprintf("%v", values[0])
-				result["reason"] = fmt.Sprintf("%v", values[1])
+			switch name {
+			case "FailedOp":
+				if len(values) >= 2 {
+					result["opIndex"] = fmt.Sprintf("%v", values[0])
+					result["reason"] = fmt.Sprintf("%v", values[1])
+				}
+
+			case "FailedOpWithRevert":
+				if len(values) >= 3 {
+					result["opIndex"] = fmt.Sprintf("%v", values[0])
+					result["reason"] = fmt.Sprintf("%v", values[1])
+					// Recursively decode inner revert data
+					if innerBytes, ok := values[2].([]byte); ok && len(innerBytes) > 0 {
+						innerHex := "0x" + hex.EncodeToString(innerBytes)
+						result["innerRevert"] = innerHex
+						// Try to decode as standard Error(string) or nested EntryPoint error
+						if decoded := decodeRevertReason(innerBytes); decoded != nil {
+							result["innerDecoded"] = decoded
+						}
+					}
+				}
+
+			case "SignatureValidationFailed":
+				if len(values) >= 1 {
+					if addr, ok := values[0].(common.Address); ok {
+						result["aggregator"] = addr.Hex()
+					}
+				}
+
+			case "PostOpReverted":
+				if len(values) >= 1 {
+					if returnData, ok := values[0].([]byte); ok {
+						result["returnData"] = "0x" + hex.EncodeToString(returnData)
+						if decoded := decodeRevertReason(returnData); decoded != nil {
+							result["decoded"] = decoded
+						}
+					}
+				}
 			}
 
 			return result
 		}
+	}
+
+	return nil
+}
+
+// decodeRevertReason attempts to decode standard Solidity revert reasons.
+// Handles Error(string) and Panic(uint256), and recursively tries EntryPoint errors.
+func decodeRevertReason(revertData []byte) map[string]any {
+	if len(revertData) < 4 {
+		return nil
+	}
+
+	selector := revertData[:4]
+	data := revertData[4:]
+
+	// Standard Error(string) selector: 0x08c379a0
+	errorSelector := []byte{0x08, 0xc3, 0x79, 0xa0}
+	// Standard Panic(uint256) selector: 0x4e487b71
+	panicSelector := []byte{0x4e, 0x48, 0x7b, 0x71}
+
+	if len(selector) == 4 && selector[0] == errorSelector[0] && selector[1] == errorSelector[1] &&
+		selector[2] == errorSelector[2] && selector[3] == errorSelector[3] {
+		// Decode Error(string)
+		stringType, _ := abi.NewType("string", "", nil)
+		args := abi.Arguments{{Type: stringType}}
+		decoded, err := args.Unpack(data)
+		if err == nil && len(decoded) > 0 {
+			return map[string]any{
+				"type":    "Error",
+				"message": fmt.Sprintf("%v", decoded[0]),
+			}
+		}
+	}
+
+	if len(selector) == 4 && selector[0] == panicSelector[0] && selector[1] == panicSelector[1] &&
+		selector[2] == panicSelector[2] && selector[3] == panicSelector[3] {
+		// Decode Panic(uint256)
+		uint256Type, _ := abi.NewType("uint256", "", nil)
+		args := abi.Arguments{{Type: uint256Type}}
+		decoded, err := args.Unpack(data)
+		if err == nil && len(decoded) > 0 {
+			if code, ok := decoded[0].(*big.Int); ok {
+				return map[string]any{
+					"type": "Panic",
+					"code": code.String(),
+				}
+			}
+		}
+	}
+
+	// Try to decode as EntryPoint error recursively
+	revertHex := "0x" + hex.EncodeToString(revertData)
+	if entryPointErr := decodeEntryPointError(revertHex); entryPointErr != nil {
+		return entryPointErr
 	}
 
 	return nil
