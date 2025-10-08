@@ -313,7 +313,23 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 		api.b.RPCGasCap(),
 	)
 	if err != nil {
-		// If estimation reverted, surface a simulateValidation-ish error
+		// If estimation reverted, check if we have a revertError with detailed data
+		type errorCoder interface {
+			ErrorCode() int
+			ErrorData() interface{}
+		}
+		if ec, ok := err.(errorCoder); ok {
+			// Return the error with its code and data (e.g., revert reason)
+			return nil, &rpc.JsonError{
+				Code:    -32006,
+				Message: "simulateValidationFailed",
+				Data: map[string]any{
+					"reason":     err.Error(),
+					"revertData": ec.ErrorData(),
+				},
+			}
+		}
+		// Generic error without revert data
 		return nil, &rpc.JsonError{
 			Code:    -32006,
 			Message: "simulateValidationFailed",
