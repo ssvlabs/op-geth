@@ -57,9 +57,11 @@ type client struct {
 	log         zerolog.Logger
 
 	// Connection management
-	conn      transport.Connection
-	connected atomic.Bool
-	mu        sync.RWMutex
+	conn          transport.Connection
+	connected     atomic.Bool
+	mu            sync.RWMutex
+	reconnecting  atomic.Bool
+	autoReconnect atomic.Bool
 
 	// Shutdown management
 	cancel context.CancelFunc
@@ -80,13 +82,17 @@ func NewClient(config ClientConfig, log zerolog.Logger) transport.Client {
 		}
 	}
 
-	return &client{
+	c := &client{
 		config:  config,
 		id:      id,
 		codec:   NewCodec(config.MaxMessageSize),
 		log:     log.With().Str("component", "tcp-client").Logger(),
 		metrics: transport.NewMetrics(id),
 	}
+
+	c.autoReconnect.Store(true)
+
+	return c
 }
 
 // WithAuth adds authentication to the client
@@ -174,6 +180,7 @@ func (c *client) Connect(ctx context.Context, addr string) error {
 
 // Disconnect closes the connection
 func (c *client) Disconnect(ctx context.Context) error {
+	c.autoReconnect.Store(false)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -266,21 +273,18 @@ func (c *client) GetID() string {
 // receiveLoop reads messages from the server
 func (c *client) receiveLoop(ctx context.Context) {
 	defer c.wg.Done()
-	defer func() {
-		c.connected.Store(false)
-		c.log.Info().Msg("Receive loop ended")
-	}()
 
 	for {
 		select {
 		case <-ctx.Done():
+			c.log.Debug().Msg("Receive loop cancelled")
 			return
 		default:
 			// Set read timeout
 			if c.config.ReadTimeout > 0 {
 				deadline := time.Now().Add(c.config.ReadTimeout)
 				if err := c.conn.SetReadDeadline(deadline); err != nil {
-					c.log.Error().Err(err).Msg("Failed to set read deadline")
+					c.handleConnectionLoss(err)
 					return
 				}
 			}
@@ -297,6 +301,8 @@ func (c *client) receiveLoop(ctx context.Context) {
 				} else {
 					c.log.Error().Err(err).Msg("Read error")
 				}
+
+				c.handleConnectionLoss(err)
 				return
 			}
 
@@ -342,7 +348,12 @@ func (c *client) Reconnect(ctx context.Context) error {
 		return ctx.Err()
 	}
 
-	return c.Connect(ctx, "")
+	if err := c.Connect(ctx, ""); err != nil {
+		return err
+	}
+
+	c.autoReconnect.Store(true)
+	return nil
 }
 
 // ConnectWithRetry connects with automatic retry logic using exponential backoff with jitter.
@@ -430,7 +441,7 @@ func (c *client) SetReconnectDelay(delay time.Duration) {
 func (c *client) connectionMonitor(ctx context.Context) {
 	defer c.wg.Done()
 
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -438,51 +449,72 @@ func (c *client) connectionMonitor(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if !c.connected.Load() {
-				c.log.Info().Msg("Connection lost, attempting to reconnect")
-
-				// Try to reconnect with exponential backoff
-				const maxAttempts = 3
-				delay := c.config.ReconnectDelay
-				const maxDelay = time.Minute
-				rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-
-				for attempt := 1; attempt <= maxAttempts; attempt++ {
-					select {
-					case <-ctx.Done():
-						return
-					default:
-						// Add jitter: delay + random(0, delay/2)
-						jitter := time.Duration(rng.Int63n(int64(delay / 2)))
-						waitTime := delay + jitter
-
-						c.log.Info().
-							Int("attempt", attempt).
-							Int("max_attempts", maxAttempts).
-							Dur("delay", waitTime).
-							Msg("Reconnecting...")
-
-						time.Sleep(waitTime)
-
-						if err := c.Connect(context.Background(), ""); err != nil {
-							c.log.Warn().
-								Err(err).
-								Int("attempt", attempt).
-								Msg("Reconnection failed")
-
-							// Exponentially increase backoff
-							delay *= 2
-							if delay > maxDelay {
-								delay = maxDelay
-							}
-						} else {
-							c.log.Info().Msg("Successfully reconnected")
-							return // Exit monitor, new one will be started
-						}
-					}
-				}
-				c.log.Error().Msg("Failed to reconnect after max attempts")
+			if !c.connected.Load() && c.autoReconnect.Load() {
+				c.log.Info().Msg("Connection not active; scheduling reconnect")
+				c.triggerReconnectNow()
 			}
 		}
 	}
+}
+
+func (c *client) handleConnectionLoss(err error) {
+	c.mu.Lock()
+	if c.conn != nil {
+		_ = c.conn.Close()
+		c.conn = nil
+	}
+	c.mu.Unlock()
+
+	wasConnected := c.connected.Swap(false)
+	if wasConnected {
+		c.metrics.RecordConnection("disconnected")
+	}
+
+	if !c.autoReconnect.Load() {
+		c.log.Info().Err(err).Msg("Connection closed (auto-reconnect disabled)")
+		return
+	}
+
+	c.log.Warn().Err(err).Msg("Connection to server lost")
+	c.triggerReconnectNow()
+}
+
+func (c *client) triggerReconnectNow() {
+	if !c.autoReconnect.Load() {
+		return
+	}
+	if !c.reconnecting.CompareAndSwap(false, true) {
+		return
+	}
+
+	go func() {
+		defer c.reconnecting.Store(false)
+
+		delay := c.config.ReconnectDelay
+		if delay <= 0 {
+			delay = time.Second
+		}
+		const maxDelay = time.Minute
+
+		for c.autoReconnect.Load() {
+			if err := c.Connect(context.Background(), ""); err == nil {
+				c.log.Info().Msg("Successfully reconnected to server")
+				return
+			} else {
+				c.log.Warn().
+					Err(err).
+					Dur("retry_in", delay).
+					Msg("Reconnect attempt failed")
+			}
+
+			time.Sleep(delay)
+
+			if delay < maxDelay {
+				delay *= 2
+				if delay > maxDelay {
+					delay = maxDelay
+				}
+			}
+		}
+	}()
 }
