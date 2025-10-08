@@ -748,6 +748,7 @@ func (b *EthAPIBackend) SimulateTransaction(
 	}()
 
 	ctx = context.WithValue(ctx, "simulation", true)
+	ctx = context.WithValue(ctx, "pure_simulation", true)
 
 	// stateDB should have clear() and putInbox() in its state
 	stateDB, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
@@ -837,16 +838,22 @@ func (b *EthAPIBackend) SubmitSequencerTransaction(ctx context.Context, tx *type
 		b.AddPendingPutInboxTx(tx)
 	}
 
-	// Always inject sequencer transactions into txpool
-	// The SBCP state machine will control when they are included in blocks
-	if err := b.sendTx(ctx, tx); err != nil {
-		log.Warn(
-			"[SSV] Failed to inject sequencer tx into txpool (continuing with staged include)",
-			"err",
-			err,
-			"txHash",
-			tx.Hash().Hex(),
-		)
+	// Check if this is during PURE simulation (not SBCP simulation)
+	// Pure simulations should not affect txpool, but SBCP creates real transactions
+	if pureSimulation, _ := ctx.Value("pure_simulation").(bool); !pureSimulation {
+		// Inject into the local txpool for real transactions and SBCP-generated transactions
+		// so that PENDING state reflects these txs for real block building
+		if err := b.sendTx(ctx, tx); err != nil {
+			log.Warn(
+				"[SSV] Failed to inject sequencer tx into txpool (continuing with staged include)",
+				"err",
+				err,
+				"txHash",
+				tx.Hash().Hex(),
+			)
+		}
+	} else {
+		log.Debug("[SSV] Skipping txpool injection during pure simulation", "txHash", tx.Hash().Hex())
 	}
 	return nil
 }
@@ -1579,36 +1586,7 @@ func (b *EthAPIBackend) NotifySlotStart(startSlot *rollupv1.StartSlot) error {
 func (b *EthAPIBackend) NotifyRequestSeal(requestSeal *rollupv1.RequestSeal) error {
 	log.Info("[SSV] Notify miner: RequestSeal", "slot", requestSeal.Slot, "included_xts", len(requestSeal.IncludedXts))
 
-	// CRITICAL: Ensure coordinator processes RequestSeal for state transition
-	// This should already be done via HandleSPMessage, but ensure it happens
-	if b.coordinator != nil {
-		msg := &rollupv1.Message{
-			SenderId: "SP",
-			Payload: &rollupv1.Message_RequestSeal{
-				RequestSeal: requestSeal,
-			},
-		}
-
-		if err := b.coordinator.HandleMessage(context.Background(), "SP", msg); err != nil {
-			log.Error("[SSV] Failed to process RequestSeal in coordinator", "err", err)
-			return fmt.Errorf("coordinator RequestSeal handling failed: %w", err)
-		}
-
-		log.Info("[SSV] RequestSeal processed by coordinator for state transition",
-			"slot", requestSeal.Slot,
-			"state", b.coordinator.GetState().String())
-
-		// Force new pending block generation after state transition to Submission
-		// This ensures sequencer transactions are immediately included in next block
-		if b.coordinator.GetState().String() == "Submission" {
-			if miner := b.eth.miner; miner != nil {
-				log.Info("[SSV] Invalidating pending cache for immediate sequencer tx inclusion")
-				miner.InvalidatePendingCache()
-			}
-		}
-	}
-
-	// Store RequestSeal info for block building
+	// Store RequestSeal info first
 	b.rsMutex.Lock()
 	b.lastRequestSealIncluded = make([][]byte, len(requestSeal.IncludedXts))
 	for i, xt := range requestSeal.IncludedXts {

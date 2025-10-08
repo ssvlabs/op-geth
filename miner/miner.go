@@ -291,9 +291,13 @@ func (miner *Miner) getPending(ctx context.Context) *newPayloadResult {
 	miner.pendingMu.Lock()
 	defer miner.pendingMu.Unlock()
 
-	// For non-simulation requests, use cache if available
+	// Check pure simulation mode - for pure simulations, never use cache and don't update cache
+	// SBCP simulations can still use cache since they represent real blockchain state
+	pureSimulation, _ := ctx.Value("pure_simulation").(bool)
 	simulation, _ := ctx.Value("simulation").(bool)
-	if !simulation {
+
+	// For non-pure-simulation requests, use cache if available
+	if !pureSimulation {
 		if cached := miner.pending.resolve(header.Hash()); cached != nil {
 			return cached
 		}
@@ -327,8 +331,9 @@ func (miner *Miner) getPending(ctx context.Context) *newPayloadResult {
 		return nil
 	}
 
-	// Only cache non-simulation results
-	if !simulation {
+	// Only cache non-pure-simulation results
+	// SBCP simulations represent real state and should be cached
+	if !pureSimulation {
 		miner.pending.update(header.Hash(), ret)
 	}
 	return ret
