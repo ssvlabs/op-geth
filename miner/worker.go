@@ -802,8 +802,10 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 	// SSV: Get ordered transactions from backend if available
 	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
 		// Ask backend for sequencer-managed txs appropriate for the current SBCP state.
-		// We pass no normal txs here; backend returns ONLY sequencer txs when applicable
-		// (e.g., during Submission), and none during Building-*.
+		// Backend returns sequencer txs when ready:
+		// - BuildingFree: After SCP completes, transactions are ready for inclusion
+		// - Submission: Final block with any remaining transactions
+		// - BuildingLocked: No transactions (SCP coordination in progress)
 		orderedSequencerTxs, err := backend.GetOrderedTransactionsForBlock(env.rpcCtx)
 		if err != nil {
 			log.Warn("[SSV] Failed to get backend-ordered sequencer txs", "err", err)
@@ -812,12 +814,12 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 		// Build a skip set to exclude sequencer txs from the normal tx pools
 		skip := make(map[common.Hash]struct{}, 0)
 		if len(orderedSequencerTxs) > 0 {
-			// Submission state: skip exactly what backend asked us to include via sequencer path
+			// BuildingFree or Submission state: skip txs that backend is managing via sequencer path
 			for _, tx := range orderedSequencerTxs {
 				skip[tx.Hash()] = struct{}{}
 			}
 		} else {
-			// Building-* states: skip ALL pending sequencer-managed txs (to avoid premature inclusion)
+			// BuildingLocked state: skip ALL pending sequencer-managed txs (not yet ready for inclusion)
 			for _, tx := range backend.GetPendingPutInboxTxs() {
 				skip[tx.Hash()] = struct{}{}
 			}
@@ -826,7 +828,8 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 			}
 		}
 
-		// Commit backend-ordered sequencer txs atomically (only in Submission)
+		// Commit backend-ordered sequencer txs atomically
+		// This happens in BuildingFree (after SCP) or Submission (final block)
 		sequencerTxCount := 0
 		if len(orderedSequencerTxs) > 0 {
 			// Pre-validate atomicity: check if ALL sequencer txs can be committed

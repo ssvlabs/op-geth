@@ -949,6 +949,10 @@ func (b *EthAPIBackend) ClearSequencerTransactionsAfterBlock() {
 
 	switch currentState {
 	case sequencer.StateBuildingFree, sequencer.StateBuildingLocked:
+		// Preserve transactions during these states:
+		// - BuildingLocked: SCP coordination in progress
+		// - BuildingFree: Transactions ready, waiting for block inclusion
+		// Actual clearing happens in OnBlockBuildingComplete after commitment
 		log.Info("[SSV] Preserving transactions during coordination")
 		return
 	default:
@@ -992,12 +996,17 @@ func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context
 		"original", len(b.GetPendingOriginalTxs()))
 
 	switch currentState {
-	case sequencer.StateBuildingFree, sequencer.StateBuildingLocked:
+	case sequencer.StateBuildingLocked:
+		// During active SCP coordination, don't prepare transactions yet
 		log.Info("[SSV] Coordination state - excluding cross-chain txs from block")
 		if err := b.coordinator.PrepareTransactionsForBlock(ctx, currentSlot); err != nil {
 			log.Warn("[SSV] Coordinator failed to prepare transactions", "err", err)
 		}
 		return nil
+	case sequencer.StateBuildingFree:
+		// After SCP completes, transactions are ready - prepare them for inclusion
+		log.Info("[SSV] Building-free state - preparing ready cross-chain txs")
+		return b.prepareAllCrossChainTransactionsForSubmission(ctx)
 	case sequencer.StateSubmission:
 		log.Info("[SSV] Submission state - preparing ALL cross-chain txs")
 		return b.prepareAllCrossChainTransactionsForSubmission(ctx)
@@ -1032,12 +1041,20 @@ func (b *EthAPIBackend) GetOrderedTransactionsForBlock(
 		"slot", slot)
 
 	switch currentState {
-	case sequencer.StateBuildingFree, sequencer.StateBuildingLocked:
+	case sequencer.StateBuildingLocked:
+		// During coordination, exclude cross-chain txs - they'll be included after decision
 		log.Info("[SSV] Coordination block - no sequencer txs to include")
 		return types.Transactions{}, nil
-	case sequencer.StateSubmission:
-		log.Info("[SSV] Submission block - sequencer-managed txs first")
-		return b.buildSequencerOnlyList(), nil
+	case sequencer.StateBuildingFree, sequencer.StateSubmission:
+		// After SCP completes (BuildingFree) or during final submission, include ready transactions
+		// This ensures transactions are committed in the first possible block after simulation/decision
+		txList := b.buildSequencerOnlyList()
+		if len(txList) > 0 {
+			log.Info("[SSV] Including ready sequencer-managed txs in block",
+				"state", currentState.String(),
+				"count", len(txList))
+		}
+		return txList, nil
 	default:
 		log.Info("[SSV] Default block - no sequencer txs to include")
 		return types.Transactions{}, nil
