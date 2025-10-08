@@ -85,7 +85,8 @@ const entryPointV07ABI = `[
       {"internalType":"bytes","name":"signature","type":"bytes"}
   ],"internalType":"struct PackedUserOperation[]","name":"ops","type":"tuple[]"},
   {"internalType":"address payable","name":"beneficiary","type":"address"}],
-   "name":"handleOps","outputs":[],"stateMutability":"nonpayable","type":"function"}
+   "name":"handleOps","outputs":[],"stateMutability":"nonpayable","type":"function"},
+  {"type":"error","name":"FailedOp","inputs":[{"internalType":"uint256","name":"opIndex","type":"uint256"},{"internalType":"string","name":"reason","type":"string"}]}
 ]`
 
 // Packed userop for ABI packing
@@ -318,22 +319,21 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 			ErrorCode() int
 			ErrorData() interface{}
 		}
+		errData := map[string]any{"reason": err.Error()}
+
 		if ec, ok := err.(errorCoder); ok {
-			// Return the error with its code and data (e.g., revert reason)
-			return nil, &rpc.JsonError{
-				Code:    -32006,
-				Message: "simulateValidationFailed",
-				Data: map[string]any{
-					"reason":     err.Error(),
-					"revertData": ec.ErrorData(),
-				},
+			revertDataHex, ok := ec.ErrorData().(string)
+			if ok && len(revertDataHex) > 2 {
+				errData["revertData"] = revertDataHex
+				if decoded := decodeEntryPointError(revertDataHex); decoded != nil {
+					errData["decoded"] = decoded
+				}
 			}
 		}
-		// Generic error without revert data
 		return nil, &rpc.JsonError{
 			Code:    -32006,
 			Message: "simulateValidationFailed",
-			Data:    map[string]any{"reason": err.Error()},
+			Data:    errData,
 		}
 	}
 	gas := uint64(estGas)
@@ -502,4 +502,41 @@ func GetComposeUserOpsAPI(b *EthAPIBackend) rpc.API {
 		Namespace: "compose",
 		Service:   &composeUserOpsAPI{b: b},
 	}
+}
+
+// decodeEntryPointError attempts to decode EntryPoint custom errors using the ABI.
+// Returns a map with decoded fields if successful, nil otherwise.
+func decodeEntryPointError(revertDataHex string) map[string]any {
+	revertData, err := hexutil.Decode(revertDataHex)
+	if err != nil || len(revertData) < 4 {
+		return nil
+	}
+
+	parsedABI, err := abi.JSON(strings.NewReader(entryPointV07ABI))
+	if err != nil {
+		return nil
+	}
+
+	selector := revertData[:4]
+	data := revertData[4:]
+
+	for name, customErr := range parsedABI.Errors {
+		if hex.EncodeToString(customErr.ID[:]) == hex.EncodeToString(selector) {
+			values, err := customErr.Inputs.Unpack(data)
+			if err != nil {
+				return nil
+			}
+
+			result := map[string]any{"error": name}
+
+			if name == "FailedOp" && len(values) >= 2 {
+				result["opIndex"] = fmt.Sprintf("%v", values[0])
+				result["reason"] = fmt.Sprintf("%v", values[1])
+			}
+
+			return result
+		}
+	}
+
+	return nil
 }
