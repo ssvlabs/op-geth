@@ -309,27 +309,6 @@ func (mp *MailboxProcessor) analyzeTransaction(
 		"dependencies", len(simState.Dependencies),
 		"outboundMessages", len(simState.OutboundMessages))
 
-	// Log detailed dependency information
-	for i, dep := range simState.Dependencies {
-		log.Info("[SSV] Dependency details",
-			"index", i,
-			"chainSrc", dep.SourceChainID,
-			"chainDest", dep.DestChainID,
-			"sessionId", dep.SessionID,
-			"label", string(dep.Label))
-	}
-
-	// Log detailed outbound message information
-	for i, msg := range simState.OutboundMessages {
-		log.Info("[SSV] Outbound message details",
-			"index", i,
-			"chainSrc", msg.SourceChainID,
-			"chainDest", msg.DestChainID,
-			"sessionId", msg.SessionID,
-			"dataLen", len(msg.Data),
-			"label", string(msg.Label))
-	}
-
 	return simState, nil
 }
 
@@ -467,17 +446,6 @@ func (mp *MailboxProcessor) handleCrossRollupCoordination(
 	sentMsgs := make([]CrossRollupMessage, 0)
 	// Send outbound CIRC messages
 	for _, outMsg := range simState.OutboundMessages {
-		log.Info(
-			"[SSV] Send CIRC message",
-			"xtID",
-			xtID.Hex(),
-			"srcChain",
-			outMsg.SourceChainID,
-			"destChain",
-			outMsg.DestChainID,
-			"sessionId",
-			outMsg.SessionID,
-		)
 		if err := mp.sendCIRCMessage(ctx, &outMsg, xtID); err != nil {
 			return nil, nil, fmt.Errorf("failed to send CIRC message: %w", err)
 		}
@@ -488,19 +456,8 @@ func (mp *MailboxProcessor) handleCrossRollupCoordination(
 	circDeps := make([]CrossRollupDependency, 0)
 
 	for _, dep := range simState.Dependencies {
-		log.Info(
-			"[SSV] Await for CIRC message",
-			"srcChain",
-			dep.SourceChainID,
-			"destChain",
-			dep.DestChainID,
-			"sessionId",
-			dep.SessionID,
-		)
-
 		sourceBytes := new(big.Int).SetUint64(dep.SourceChainID).Bytes()
 		sourceKey := spconsensus.ChainKeyBytes(sourceBytes)
-		log.Info("[SSV] Waiting for CIRC message", "xtID", xtID.Hex(), "from", sourceKey)
 		circMsg, err := mp.waitForCIRCMessage(ctx, xtID, sourceKey)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to wait for CIRC message: %w", err)
@@ -573,7 +530,6 @@ func (mp *MailboxProcessor) sendCIRCMessage(ctx context.Context, msg *CrossRollu
 	if err := sequencerClient.Send(ctx, spMsg); err != nil {
 		return err
 	}
-	log.Info("[SSV] CIRC message sent to peer", "xtID", xtID.Hex(), "destChainID", destChainID)
 	return nil
 }
 
@@ -690,14 +646,6 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 		return nil, err
 	}
 
-	log.Info("[SSV] Packing putInbox calldata",
-		"dep.SourceChainID", dep.SourceChainID,
-		"dep.Sender", dep.Sender.Hex(),
-		"dep.Receiver", dep.Receiver.Hex(),
-		"dep.SessionID", dep.SessionID.String(),
-		"dep.Label", string(dep.Label),
-		"dep.Data", hexutil.Encode(dep.Data))
-
 	// putInbox(chainMessageSender, sender, receiver, sessionId, label, data)
 	callData, err := parsedABI.Pack("putInbox",
 		new(big.Int).SetUint64(dep.SourceChainID),
@@ -721,16 +669,6 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 		return nil, fmt.Errorf("unable to select mailbox addr. Unsupported \"%d\" chain id", mp.chainID)
 	}
 
-	log.Info("[SSV] Created putInbox transaction",
-		"nonce", nonce,
-		"mailbox", mailboxAddr.Hex(),
-		"chainMessageSender", dep.SourceChainID,
-		"sender", dep.Sender.Hex(),
-		"receiver", dep.Receiver.Hex(),
-		"sessionId", dep.SessionID,
-		"label", string(dep.Label),
-		"dataLen", len(dep.Data))
-
 	txData := &types.DynamicFeeTx{
 		ChainID:    new(big.Int).SetUint64(mp.chainID),
 		Nonce:      nonce,
@@ -751,10 +689,10 @@ func (mp *MailboxProcessor) createPutInboxTx(dep CrossRollupDependency, nonce ui
 		return nil, fmt.Errorf("failed to sign tx %v", err)
 	}
 
-	log.Info("[SSV] Signed putInbox transaction with coordinator key",
+	log.Info("[SSV] Created putInbox transaction",
 		"txHash", signedTx.Hash().Hex(),
-		"coordinatorAddr", mp.coordinatorAddr.Hex(),
-		"nonce", nonce)
+		"nonce", nonce,
+		"sessionId", dep.SessionID)
 
 	return signedTx, nil
 }
