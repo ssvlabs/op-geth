@@ -1002,9 +1002,7 @@ func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context
 // the correct order for block inclusion. Normal mempool transactions are
 // included by the miner after this list, and must not be returned here.
 // SSV
-func (b *EthAPIBackend) GetOrderedTransactionsForBlock(
-	ctx context.Context,
-) (types.Transactions, error) {
+func (b *EthAPIBackend) GetOrderedTransactionsForBlock(ctx context.Context) (types.Transactions, error) {
 	if b.coordinator == nil {
 		// Non-SBCP mode: return sequencer-managed txs only; miner appends normals
 		return b.buildSequencerOnlyList(), nil
@@ -1383,6 +1381,7 @@ func (b *EthAPIBackend) SetSequencerCoordinator(coord sequencer.Coordinator, sp 
 	}
 }
 
+// NotifySlotStart notifies the backend when a new SBCP slot begins.
 // SSV
 func (b *EthAPIBackend) NotifySlotStart(startSlot *rollupv1.StartSlot) error {
 	log.Info("[SSV] Notify miner: StartSlot", "slot", startSlot.Slot, "next_sb", startSlot.NextSuperblockNumber)
@@ -1402,6 +1401,7 @@ func (b *EthAPIBackend) NotifySlotStart(startSlot *rollupv1.StartSlot) error {
 	return nil
 }
 
+// NotifyRequestSeal notifies the backend when RequestSeal is received from coordinator.
 // SSV
 func (b *EthAPIBackend) NotifyRequestSeal(requestSeal *rollupv1.RequestSeal) error {
 	log.Info("[SSV] Notify miner: RequestSeal", "slot", requestSeal.Slot, "included_xts", len(requestSeal.IncludedXts))
@@ -1648,17 +1648,17 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	allSentMsgs := make([]CrossRollupMessage, 0)
 	allFulfilledDeps := make([]CrossRollupDependency, 0)
 
-	for _, state := range coordinationStates {
-		if !state.RequiresCoordination() {
+	for _, simState := range coordinationStates {
+		if !simState.RequiresCoordination() {
 			continue
 		}
 
 		log.Info("[SSV] Transaction requires cross-rollup coordination",
-			"txHash", state.Tx.Hash().Hex(),
-			"dependencies", len(state.Dependencies),
-			"outbound", len(state.OutboundMessages))
+			"txHash", simState.Tx.Hash().Hex(),
+			"dependencies", len(simState.Dependencies),
+			"outbound", len(simState.OutboundMessages))
 
-		sentMsgs, fulfilledDeps, err := mailboxProcessor.handleCrossRollupCoordination(ctx, state, xtID)
+		sentMsgs, fulfilledDeps, err := mailboxProcessor.handleCrossRollupCoordination(ctx, simState, xtID)
 		if err != nil {
 			return false, fmt.Errorf("failed to handle cross-rollup coordination: %w", err)
 		}
@@ -1714,10 +1714,10 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 		}
 
 		// Re-simulate after putInbox to detect ACK messages that need to be sent
-		for i, state := range coordinationStates {
+		for i, simState := range coordinationStates {
 			traceResult, err := b.SimulateTransaction(
 				ctx,
-				state.Tx,
+				simState.Tx,
 				rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber),
 			)
 			if err != nil {
@@ -1728,14 +1728,14 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 				traceResult,
 				allSentMsgs,
 				allFulfilledDeps,
-				state.Tx,
+				simState.Tx,
 			)
 			if err != nil {
 				continue
 			}
 
 			log.Info("[SSV] Re-simulation mailbox state",
-				"txHash", state.Tx.Hash().Hex(),
+				"txHash", simState.Tx.Hash().Hex(),
 				"success", newSimState.Success,
 				"deps", len(newSimState.Dependencies),
 			)
@@ -1743,7 +1743,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 			log.Info(
 				"[SSV] Re-simulation successful for transaction",
 				"txHash",
-				state.Tx.Hash().Hex(),
+				simState.Tx.Hash().Hex(),
 				"xtID",
 				xtID.Hex(),
 			)
@@ -1774,20 +1774,20 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 			}
 
 			// Pool transactions immediately when they become successful
-			_, done := txDone[state.Tx.Hash().Hex()]
+			_, done := txDone[simState.Tx.Hash().Hex()]
 			if newSimState.Success && !done && len(newSimState.Dependencies) == 0 {
-				log.Info("[SSV] Pooling transaction after re-simulation", "hash", state.Tx.Hash().Hex())
-				b.poolPayloadTx(state.Tx)
-				txDone[state.Tx.Hash().Hex()] = struct{}{}
+				log.Info("[SSV] Pooling transaction after re-simulation", "hash", simState.Tx.Hash().Hex())
+				b.poolPayloadTx(simState.Tx)
+				txDone[simState.Tx.Hash().Hex()] = struct{}{}
 			}
 		}
 	}
 
 	// Final check - pool any remaining successful transactions that weren't pooled yet
-	for _, state := range coordinationStates {
-		tx := state.Tx
+	for _, simState := range coordinationStates {
+		tx := simState.Tx
 		_, done := txDone[tx.Hash().Hex()]
-		if state.Success && !done && len(state.Dependencies) == 0 {
+		if simState.Success && !done && len(simState.Dependencies) == 0 {
 			log.Info("[SSV] Pooling remaining successful transaction", "hash", tx.Hash().Hex())
 			b.poolPayloadTx(tx)
 			txDone[tx.Hash().Hex()] = struct{}{}
