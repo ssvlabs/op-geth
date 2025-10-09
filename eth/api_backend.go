@@ -1196,13 +1196,23 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(
 	}
 	b.sequencerTxMutex.RUnlock()
 
-	// Check which cross-chain txs are in this block
+	// Identify which cross-chain txs are in this block
+	txsToRemove := make(map[common.Hash]bool)
 	for _, tx := range block.Transactions() {
 		if crossChainTxHashes[tx.Hash()] {
 			b.committedTxsMutex.Lock()
 			b.committedTxHashes[tx.Hash()] = true
 			b.committedTxsMutex.Unlock()
+			txsToRemove[tx.Hash()] = true
 		}
+	}
+
+	if len(txsToRemove) > 0 {
+		b.clearCommittedSequencerTransactions(txsToRemove)
+		log.Info("[SSV] Cleared committed sequencer transactions after block build",
+			"slot", slot,
+			"blockNumber", block.NumberU64(),
+			"cleared", len(txsToRemove))
 	}
 
 	// Store block with automatic deduplication. Treat pendingBlocks as a stack keyed
