@@ -10,7 +10,7 @@ import (
 // MinerNotifier defines the interface for notifying miner about sequencer events
 type MinerNotifier interface {
 	NotifySlotStart(startSlot *pb.StartSlot) error
-	NotifyRequestSeal(requestSeal *pb.RequestSeal) error
+	NotifyRequestSeal(ctx context.Context, requestSeal *pb.RequestSeal) error
 	NotifyStateChange(from, to State, slot uint64) error
 }
 

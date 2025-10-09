@@ -839,6 +839,12 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 			originalSize := env.size
 			originalSidecarCount := len(env.sidecars)
 			originalBlobCount := env.blobs
+			originalGasUsed := env.header.GasUsed
+			originalBlobGasPtr := env.header.BlobGasUsed
+			var originalBlobGasUsed uint64
+			if originalBlobGasPtr != nil {
+				originalBlobGasUsed = *originalBlobGasPtr
+			}
 
 			// Pre-validate all sequencer transactions
 			for i, tx := range orderedSequencerTxs {
@@ -871,6 +877,11 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 				env.state.RevertToSnapshot(stateSnapshot)
 				env.gasPool.SetGas(gasPoolSnapshot)
 				env.tcount = originalTxCount
+				env.header.GasUsed = originalGasUsed
+				env.header.BlobGasUsed = originalBlobGasPtr
+				if originalBlobGasPtr != nil {
+					*env.header.BlobGasUsed = originalBlobGasUsed
+				}
 
 				// Restore original size
 				env.size = originalSize

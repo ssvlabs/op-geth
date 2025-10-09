@@ -1087,9 +1087,9 @@ func (b *EthAPIBackend) validateSequencerTransaction(tx *types.Transaction) erro
 
 // OnBlockBuildingStart is called when block building starts
 // SSV
-func (b *EthAPIBackend) OnBlockBuildingStart(context.Context) error {
+func (b *EthAPIBackend) OnBlockBuildingStart(ctx context.Context) error {
 	if b.coordinator != nil {
-		_ = b.coordinator.OnBlockBuildingStart(context.Background(), b.coordinator.GetCurrentSlot())
+		_ = b.coordinator.OnBlockBuildingStart(ctx, b.coordinator.GetCurrentSlot())
 	}
 
 	return nil
@@ -1403,7 +1403,7 @@ func (b *EthAPIBackend) NotifySlotStart(startSlot *rollupv1.StartSlot) error {
 
 // NotifyRequestSeal notifies the backend when RequestSeal is received from coordinator.
 // SSV
-func (b *EthAPIBackend) NotifyRequestSeal(requestSeal *rollupv1.RequestSeal) error {
+func (b *EthAPIBackend) NotifyRequestSeal(ctx context.Context, requestSeal *rollupv1.RequestSeal) error {
 	log.Info("[SSV] Notify miner: RequestSeal", "slot", requestSeal.Slot, "included_xts", len(requestSeal.IncludedXts))
 
 	// Store RequestSeal info first
@@ -1426,7 +1426,7 @@ func (b *EthAPIBackend) NotifyRequestSeal(requestSeal *rollupv1.RequestSeal) err
 
 	if hasStoredBlocks {
 		log.Info("[SSV] Sending stored blocks after RequestSeal", "slot", requestSeal.Slot, "blockCount", blockCount)
-		if err := b.sendStoredL2Block(context.Background()); err != nil {
+		if err := b.sendStoredL2Block(ctx); err != nil {
 			log.Error("[SSV] Failed to send stored L2Blocks after RequestSeal", "err", err, "slot", requestSeal.Slot)
 		}
 	} else {

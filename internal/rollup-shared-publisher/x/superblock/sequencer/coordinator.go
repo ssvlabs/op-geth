@@ -529,7 +529,7 @@ func (sc *SequencerCoordinator) handleRequestSeal(ctx context.Context, from stri
 
 	// Notify miner to seal current block
 	if sc.minerNotifier != nil {
-		if err := sc.minerNotifier.NotifyRequestSeal(requestSeal); err != nil {
+		if err := sc.minerNotifier.NotifyRequestSeal(ctx, requestSeal); err != nil {
 			sc.log.Error().Err(err).Msg("Failed to notify miner of request seal")
 		}
 	}
