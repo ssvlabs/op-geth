@@ -222,15 +222,27 @@ func (r *Runtime) Start(ctx context.Context) error {
 
 // Stop stops coordinator and transports.
 func (r *Runtime) Stop(ctx context.Context) error {
+	r.log.Info().Msg("Stopping sequencer runtime")
+
+	// Stop coordinator first to prevent new message processing
+	_ = r.Coordinator.Stop(ctx)
+
+	// Disconnect from shared publisher
+	if err := r.SPClient.Disconnect(ctx); err != nil {
+		r.log.Debug().Err(err).Msg("SP client disconnect error")
+	}
+
+	// Stop P2P server
 	_ = r.P2PServer.Stop(ctx)
 
+	// Disconnect all peer clients
 	for key, c := range r.Peers {
 		if err := c.Disconnect(ctx); err != nil {
 			r.log.Debug().Str("peer", key).Err(err).Msg("Peer disconnect error")
 		}
 	}
 
-	_ = r.Coordinator.Stop(ctx)
+	r.log.Info().Msg("Sequencer runtime stopped")
 	return nil
 }
 
