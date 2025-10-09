@@ -185,10 +185,7 @@ func (miner *Miner) generateWork(genParam *generateParams, witness bool) *newPay
 		if err := backend.OnBlockBuildingStart(work.rpcCtx); err != nil {
 			log.Error("[SSV] Failed to notify block building start", "err", err)
 		}
-	}
-
-	// SSV: Prepare sequencer transactions for this block
-	if backend, ok := miner.backendAPI.(BackendWithSequencerTransactions); ok {
+		// Prepare sequencer transactions for this block
 		if err := backend.PrepareSequencerTransactionsForBlock(work.rpcCtx); err != nil {
 			log.Error("[SSV] Failed to prepare sequencer transactions", "err", err)
 		}
@@ -853,7 +850,6 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 				}
 
 				env.state.SetTxContext(tx.Hash(), originalTxCount+i)
-				log.Info("Commit tx", "tx", tx.Hash().String())
 				if err := miner.commitTransaction(env, tx); err != nil {
 					log.Error("[SSV] Sequencer transaction would fail - aborting ALL sequencer txs for atomicity",
 						"hash", tx.Hash(), "err", err, "txIndex", i)
@@ -866,9 +862,10 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 				// All transactions validated successfully - keep the committed state
 				sequencerTxCount = len(orderedSequencerTxs)
 				env.tcount = originalTxCount + sequencerTxCount
-				log.Info("[SSV] Successfully committed ALL sequencer transactions atomically",
-					"count", sequencerTxCount, "putInbox", len(backend.GetPendingPutInboxTxs()),
-					"original", len(backend.GetPendingOriginalTxs()))
+				log.Info("[SSV] Committed sequencer transactions atomically",
+					"putInbox", len(backend.GetPendingPutInboxTxs()),
+					"original", len(backend.GetPendingOriginalTxs()),
+					"total", sequencerTxCount)
 			} else {
 				// Rollback all changes - restore original state
 				env.state.RevertToSnapshot(stateSnapshot)
@@ -930,9 +927,9 @@ func (miner *Miner) fillTransactionsWithSequencerOrdering(interrupt *atomic.Int3
 		normalCount := miner.commitAccountBasedTransactions(interrupt, env, normalPlainTxs)
 		normalCount += miner.commitAccountBasedTransactions(interrupt, env, normalBlobTxs)
 
-		// Log if there is any sequencer tx
-		if sequencerTxCount > 0 {
-			log.Info("[SSV] Included sequencer transactions",
+		// Log transaction summary
+		if sequencerTxCount > 0 || prioCount > 0 || normalCount > 0 {
+			log.Info("[SSV] Block transactions",
 				"sequencer", sequencerTxCount,
 				"priority", prioCount,
 				"normal", normalCount,
