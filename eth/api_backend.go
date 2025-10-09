@@ -988,7 +988,7 @@ func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context
 	currentState := b.coordinator.GetState()
 	currentSlot := b.coordinator.GetCurrentSlot()
 
-	// During active SCP coordination, notify the coordinator
+	// During active SCP coordination, notify coordinator
 	if currentState == sequencer.StateBuildingLocked {
 		if err := b.coordinator.PrepareTransactionsForBlock(ctx, currentSlot); err != nil {
 			log.Warn("[SSV] Coordinator failed to prepare transactions", "err", err)
@@ -1039,63 +1039,6 @@ func (b *EthAPIBackend) buildSequencerOnlyList() types.Transactions {
 	}
 
 	return orderedTxs
-}
-
-// buildFullCrossChainBlock builds the final block with all cross-chain transactions
-// SSV
-func (b *EthAPIBackend) buildFullCrossChainBlock(
-	ctx context.Context,
-	normalTxs types.Transactions,
-) (types.Transactions, error) {
-	var orderedTxs types.Transactions
-
-	putInboxTxs := b.GetPendingPutInboxTxs()
-	if len(putInboxTxs) > 0 {
-		orderedTxs = append(orderedTxs, putInboxTxs...)
-	}
-
-	originalTxs := b.GetPendingOriginalTxs()
-	if len(originalTxs) > 0 {
-		orderedTxs = append(orderedTxs, originalTxs...)
-	}
-
-	filteredNormalTxs := b.filterOutSequencerTransactions(normalTxs)
-	orderedTxs = append(orderedTxs, filteredNormalTxs...)
-
-	log.Info("[SSV] Built cross-chain block",
-		"putInbox", len(putInboxTxs),
-		"original", len(originalTxs),
-		"normal", len(filteredNormalTxs),
-		"total", len(orderedTxs))
-
-	return orderedTxs, nil
-}
-
-// filterOutSequencerTransactions removes sequencer transactions from normal transaction list
-// SSV
-func (b *EthAPIBackend) filterOutSequencerTransactions(txs types.Transactions) types.Transactions {
-	var filtered types.Transactions
-	sequencerTxHashes := make(map[common.Hash]bool)
-
-	// Build map of sequencer transaction hashes
-	for _, putInboxTx := range b.GetPendingPutInboxTxs() {
-		sequencerTxHashes[putInboxTx.Hash()] = true
-	}
-
-	// Filter out sequencer transactions
-	for _, tx := range txs {
-		if !sequencerTxHashes[tx.Hash()] {
-			filtered = append(filtered, tx)
-		}
-	}
-
-	if len(filtered) != len(txs) {
-		log.Debug("[SSV] Filtered out sequencer transactions",
-			"original", len(txs),
-			"filtered", len(filtered))
-	}
-
-	return filtered
 }
 
 // validateSequencerTransaction validates that a sequencer transaction is properly formed
@@ -1288,95 +1231,6 @@ func (b *EthAPIBackend) GetPendingOriginalTxs() []*types.Transaction {
 	copy(result, b.pendingSequencerTxs)
 
 	return result
-}
-
-// reSimulateAfterMailboxPopulation re-simulates transactions after mailbox has been populated
-// SSV
-func (b *EthAPIBackend) reSimulateAfterMailboxPopulation(
-	ctx context.Context,
-	xtReq *rollupv1.XTRequest,
-	xtID *rollupv1.XtID,
-	coordinationStates []*SimulationState,
-) (bool, error) {
-	chainID := b.ChainConfig().ChainID
-
-	log.Info("[SSV] Starting re-simulation after mailbox population",
-		"xtID", xtID.Hex(),
-		"chainID", chainID,
-		"transactions", len(xtReq.Transactions))
-
-	// Wait for putInbox transactions to be processed
-	if err := b.waitForPutInboxTransactionsToBeProcessed(); err != nil {
-		log.Error("[SSV] Failed waiting for putInbox transactions", "error", err, "xtID", xtID.Hex())
-		return false, err
-	}
-
-	// Re-simulate each local transaction against PENDING state (so the view
-	// includes just-created putInbox transactions not yet part of latest).
-	allSuccessful := true
-	blockNrOrHash := rpc.BlockNumberOrHashWithNumber(rpc.PendingBlockNumber)
-
-	for _, txReq := range xtReq.Transactions {
-		txChainID := new(big.Int).SetBytes(txReq.ChainId)
-
-		// Only re-simulate transactions for our local chain
-		if txChainID.Cmp(chainID) != 0 {
-			continue
-		}
-
-		log.Info("[SSV] Re-simulating local transactions against pending state",
-			"chainID", txChainID,
-			"txCount", len(txReq.Transaction))
-
-		for i, txBytes := range txReq.Transaction {
-			tx := new(types.Transaction)
-			if err := tx.UnmarshalBinary(txBytes); err != nil {
-				log.Error(
-					"[SSV] Failed to unmarshal transaction for re-simulation - REASON: transaction_unmarshal_failed",
-					"error",
-					err,
-					"index",
-					i,
-					"xtID",
-					xtID.Hex(),
-					"failure_reason",
-					"transaction_unmarshal_failed",
-				)
-				allSuccessful = false
-				continue
-			}
-
-			// Re-simulate the transaction
-			success, err := b.reSimulateTransaction(ctx, tx, blockNrOrHash, xtID)
-			if err != nil {
-				log.Error("[SSV] Re-simulation error - REASON: simulation_error",
-					"txHash", tx.Hash().Hex(),
-					"error", err,
-					"xtID", xtID.Hex(),
-					"failure_reason", "simulation_error")
-				allSuccessful = false
-				continue
-			}
-
-			if !success {
-				log.Warn("[SSV] Re-simulation failed for transaction - REASON: see transaction-specific logs above",
-					"txHash", tx.Hash().Hex(),
-					"xtID", xtID.Hex(),
-					"failure_reason", "simulation_returned_false")
-				allSuccessful = false
-			} else {
-				log.Info("[SSV] Re-simulation successful for transaction",
-					"txHash", tx.Hash().Hex(),
-					"xtID", xtID.Hex())
-			}
-		}
-	}
-
-	log.Info("[SSV] Re-simulation completed",
-		"xtID", xtID.Hex(),
-		"allSuccessful", allSuccessful)
-
-	return allSuccessful, nil
 }
 
 // reSimulateTransaction re-simulates a single transaction and checks for success
