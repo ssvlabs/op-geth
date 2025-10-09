@@ -119,7 +119,7 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 	}
 
 	// Always use the canonical v0.8 EntryPoint address.
-	ep := common.HexToAddress("0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108")
+	ep := common.HexToAddress("0x0000000071727de22e5e9d8baf0edac6f37da032")
 
 	if len(userOps) == 0 {
 		return nil, &rpc.JsonError{
