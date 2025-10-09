@@ -118,8 +118,8 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 		return nil, &rpc.JsonError{Code: -32001, Message: "wrongChainId", Data: map[string]any{"expected": chainID}}
 	}
 
-	// Always use the canonical v0.7 EntryPoint address.
-	ep := common.HexToAddress("0x0000000071727De22E5E9d8BAf0edAc6f37da032")
+	// Always use the canonical v0.8 EntryPoint address.
+	ep := common.HexToAddress("0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108")
 
 	if len(userOps) == 0 {
 		return nil, &rpc.JsonError{
