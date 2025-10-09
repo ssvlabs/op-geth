@@ -1183,6 +1183,17 @@ func (b *EthAPIBackend) OnBlockBuildingComplete(
 	b.pendingBlockSlot = slot
 	b.pendingBlockMutex.Unlock()
 
+	// If RequestSeal already arrived for this slot, send immediately
+	b.rsMutex.RLock()
+	requestSealReady := b.lastRequestSealIncluded != nil && b.lastRequestSealSlot == slot
+	b.rsMutex.RUnlock()
+
+	if requestSealReady {
+		if err := b.sendStoredL2Block(ctx); err != nil {
+			log.Error("[SSV] Failed to send stored L2Blocks after block build", "err", err, "slot", slot)
+		}
+	}
+
 	return nil
 }
 
