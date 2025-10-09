@@ -982,30 +982,19 @@ func (b *EthAPIBackend) clearAllSequencerTransactions() {
 // SSV
 func (b *EthAPIBackend) PrepareSequencerTransactionsForBlock(ctx context.Context) error {
 	if b.coordinator == nil {
-		return b.prepareAllCrossChainTransactionsForSubmission(ctx)
+		return nil
 	}
 
 	currentState := b.coordinator.GetState()
 	currentSlot := b.coordinator.GetCurrentSlot()
 
-	switch currentState {
-	case sequencer.StateBuildingLocked:
-		// During active SCP coordination, don't prepare transactions yet
+	// During active SCP coordination, notify the coordinator
+	if currentState == sequencer.StateBuildingLocked {
 		if err := b.coordinator.PrepareTransactionsForBlock(ctx, currentSlot); err != nil {
 			log.Warn("[SSV] Coordinator failed to prepare transactions", "err", err)
 		}
-		return nil
-	case sequencer.StateBuildingFree, sequencer.StateSubmission:
-		// After SCP completes, transactions are ready - prepare them for inclusion
-		return b.prepareAllCrossChainTransactionsForSubmission(ctx)
-	default:
-		return nil
 	}
-}
 
-// prepareAllCrossChainTransactionsForSubmission prepares all cross-chain transactions for inclusion
-// SSV
-func (b *EthAPIBackend) prepareAllCrossChainTransactionsForSubmission(ctx context.Context) error {
 	return nil
 }
 
