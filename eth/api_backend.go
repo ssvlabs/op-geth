@@ -1619,7 +1619,6 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 	)
 
 	coordinationStates := make([]*SimulationState, 0)
-	txDone := make(map[string]struct{})
 
 	// Simulate each local transaction
 	for _, txReq := range localTxs {
@@ -1646,13 +1645,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 				"dependencies", len(simState.Dependencies),
 				"outbound", len(simState.OutboundMessages))
 
-			// Pool successful transactions immediately
-			_, done := txDone[tx.Hash().Hex()]
-			if simState.Success && !done && len(simState.Dependencies) == 0 {
-				log.Info("[SSV] Pooling successful transaction immediately", "hash", tx.Hash().Hex())
-				b.poolPayloadTx(tx)
-				txDone[tx.Hash().Hex()] = struct{}{}
-			}
+			// Transactions will be pooled after decision=true via HandleDecision → AddSCPTransactions
 		}
 	}
 
@@ -1784,24 +1777,7 @@ func (b *EthAPIBackend) simulateXTRequestForSBCP(
 				)
 			}
 
-			// Pool transactions immediately when they become successful
-			_, done := txDone[simState.Tx.Hash().Hex()]
-			if newSimState.Success && !done && len(newSimState.Dependencies) == 0 {
-				log.Info("[SSV] Pooling transaction after re-simulation", "hash", simState.Tx.Hash().Hex())
-				b.poolPayloadTx(simState.Tx)
-				txDone[simState.Tx.Hash().Hex()] = struct{}{}
-			}
-		}
-	}
-
-	// Final check - pool any remaining successful transactions that weren't pooled yet
-	for _, simState := range coordinationStates {
-		tx := simState.Tx
-		_, done := txDone[tx.Hash().Hex()]
-		if simState.Success && !done && len(simState.Dependencies) == 0 {
-			log.Info("[SSV] Pooling remaining successful transaction", "hash", tx.Hash().Hex())
-			b.poolPayloadTx(tx)
-			txDone[tx.Hash().Hex()] = struct{}{}
+			// Transactions will be pooled after decision=true via HandleDecision → AddSCPTransactions
 		}
 	}
 
