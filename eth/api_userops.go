@@ -333,6 +333,7 @@ func (api *composeUserOpsAPI) BuildSignedUserOpsTx(
 				}
 			}
 		}
+		log.Warn("[SSV] handleOps simulation failed", "err", err, "callData", hexutil.Encode(callData))
 		return nil, &rpc.JsonError{
 			Code:    -32006,
 			Message: "simulateValidationFailed",
